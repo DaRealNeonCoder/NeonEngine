@@ -1,0 +1,202 @@
+# Blender 4.2.3 LTS MTL File: 'None'
+# www.blender.org
+
+newmtl l:Lamborghini_Invencible_2023BadgeA_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/BadgeA_DiffuseAOSO.png
+map_d C:/BadgeA_DiffuseAOSO.png
+map_Bump -bm 1.000000 C:/Lamborghini_Invencible_2023_BadgeA_Normal.png
+
+newmtl l:Lamborghini_Invencible_2023Base_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Kd 0.000000 0.000000 0.000000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 3
+
+newmtl l:Lamborghini_Invencible_2023Carbon1M_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 3
+map_Kd C:/common_carbon05_black_diff.png
+map_Bump -bm 1.000000 C:/common_carbon05_norm.png
+
+newmtl l:Lamborghini_Invencible_2023Coloured_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Global_Texture_Coloured_Diffuse.png
+map_d C:/Global_Texture_Coloured_Diffuse.png
+
+newmtl l:Lamborghini_Invencible_2023EngineA_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_EngineA_DiffuseAOSO.png
+map_d C:/Lamborghini_Invencible_2023_EngineA_DiffuseAOSO.png
+map_Bump -bm 1.000000 C:/Lamborghini_Invencible_2023_EngineA_Normal.png
+
+newmtl l:Lamborghini_Invencible_2023Grille1A_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_Grille1A_DiffuseAOSO.png
+map_d C:/Lamborghini_Invencible_2023_Grille1A_DiffuseAOSO.png
+map_Bump -bm 1.000000 C:/Lamborghini_Invencible_2023_Grille1A_Normal.png
+
+newmtl l:Lamborghini_Invencible_2023Grille2A_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_Grille2A_DiffuseAOSO.png
+map_d C:/Lamborghini_Invencible_2023_Grille2A_DiffuseAOSO.png
+map_Bump -bm 1.000000 C:/Lamborghini_Invencible_2023_Grille2A_Normal.png
+
+newmtl l:Lamborghini_Invencible_2023Grille3A_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_Grille3A_DiffuseAOSO.png
+map_d C:/Lamborghini_Invencible_2023_Grille3A_DiffuseAOSO.png
+map_Bump -bm 1.000000 C:/Lamborghini_Invencible_2023_Grille3A_Normal.png
+
+newmtl l:Lamborghini_Invencible_2023InteriorA_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_InteriorA_DiffuseAOSO.png
+map_d C:/Lamborghini_Invencible_2023_InteriorA_DiffuseAOSO.png
+map_Bump -bm 1.000000 C:/Lamborghini_Invencible_2023_InteriorA_Normal.png
+
+newmtl l:Lamborghini_Invencible_2023InteriorTillingA_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_InteriorTillingA_DiffuseAOSO.png
+map_d C:/Lamborghini_Invencible_2023_InteriorTillingA_DiffuseAOSO.png
+map_Bump -bm 1.000000 C:/Lamborghini_Invencible_2023_InteriorTillingA_Normal.png
+
+newmtl l:Lamborghini_Invencible_2023LightA_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_LightA_Diffuse.png
+map_d C:/Lamborghini_Invencible_2023_LightA_Diffuse.png
+
+newmtl l:Lamborghini_Invencible_2023ManufacturerPlateA_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_ManufacturerPlateA_Diffuse.png
+map_d C:/Lamborghini_Invencible_2023_ManufacturerPlateA_Diffuse.png
+
+newmtl l:Lamborghini_Invencible_2023Paint_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Kd 0.272000 0.000000 0.000000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 3
+
+newmtl l:Lamborghini_Invencible_2023SpecularTintA_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_SpecularTintA_DiffuseAOSO.png
+map_d C:/Lamborghini_Invencible_2023_SpecularTintA_DiffuseAOSO.png
+map_Bump -bm 1.000000 C:/Lamborghini_Invencible_2023_SpecularTintA_Normal.png
+
+newmtl l:Lamborghini_Invencible_2023Window_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Kd 0.000000 0.000000 0.000000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 0.000000
+illum 6
+
+newmtl l:Lamborghini_Invencible_2023_CallipersCalliperA_Zone_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_CalliperA_Zone_Diffuse.png
+map_d C:/Lamborghini_Invencible_2023_CalliperA_Zone_Diffuse.png
+
+newmtl l:Lamborghini_Invencible_2023_CallipersCalliperBadgeA_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/CalliperBadgeA_Diffuse.png
+map_d C:/CalliperBadgeA_Diffuse.png
+
+newmtl l:Lamborghini_Invencible_2023_Wheel1A_3D_3DWheel1A_Material1
+Ns 1000.000000
+Ka 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 3
+map_Kd C:/Lamborghini_Invencible_2023_Wheel1A_DiffuseAOSO.png
+map_d C:/Lamborghini_Invencible_2023_Wheel1A_DiffuseAOSO.png
+map_Bump -bm 1.000000 C:/Lamborghini_Invencible_2023_Wheel1A_Normal.png
+
+newmtl red_glass
+Ns 200.000000
+Ka 0.500000 0.500000 0.500000
+Kd 0.500000 0.000000 0.000000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 0.454545
+illum 6
