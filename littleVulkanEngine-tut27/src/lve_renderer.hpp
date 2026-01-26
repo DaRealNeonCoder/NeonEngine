@@ -3,6 +3,7 @@
 #include "lve_device.hpp"
 #include "lve_swap_chain.hpp"
 #include "lve_window.hpp"
+#include <functional>
 
 // std
 #include <cassert>
@@ -38,8 +39,8 @@ class LveRenderer {
     return currentFrameIndex;
   }
 
-  VkCommandBuffer beginFrame();
-  void endFrame();
+  VkCommandBuffer beginFrame(std::function<void()> onRecreate = {});
+  void endFrame(std::function<void()> onRecreate = {});
   void beginSwapChainRenderPass(VkCommandBuffer commandBuffer);
   void endSwapChainRenderPass(VkCommandBuffer commandBuffer);
 

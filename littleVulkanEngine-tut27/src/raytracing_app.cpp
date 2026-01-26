@@ -33,7 +33,8 @@ globalPool =
                      LveSwapChain::MAX_FRAMES_IN_FLIGHT)
         .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, LveSwapChain::MAX_FRAMES_IN_FLIGHT)
         .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, LveSwapChain::MAX_FRAMES_IN_FLIGHT)
-        .setMaxSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT)
+        .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 3)
+        .setMaxSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT * 3)
         .build();
 
 loadGameObjects();
@@ -67,9 +68,10 @@ auto rayTracingSetLayout =
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
 
-        // Uniform buffer
         .addBinding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_ALL)
-
+        .addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
+        .addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
+        .addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
         .build();
 
 std::cout << "Pass 2 \n";
@@ -96,17 +98,12 @@ for (auto& kv : gameObjects) {
 
     // Transform position by object's model matrix
     glm::vec4 transformedPos = obj.transform.mat4() * glm::vec4(vertex.position, 1.0f);
-    rtVertex.pos = glm::vec3(transformedPos);
-
-    /*
+    rtVertex.pos = transformedPos;
+    rtVertex.materialIndex = obj.getId();
     // Transform normal (use inverse transpose for normals)
     glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(obj.transform.mat4())));
-    rtVertex.normal = glm::normalize(normalMatrix * vertex.normal);
+    rtVertex.normal = glm::vec4(glm::normalize(normalMatrix * vertex.normal), 1);
 
-    // Copy other attributes (adjust based on your RayTracingVertex structure)
-    rtVertex.color = vertex.color;
-    rtVertex.uv = vertex.uv;
-    */
 
     vertices.push_back(rtVertex);
   }
@@ -142,9 +139,17 @@ for (int i = 0; i < LveSwapChain::MAX_FRAMES_IN_FLIGHT; i++) {
 
   LveDescriptorWriter writer(*rayTracingSetLayout, *globalPool);
 
+    auto materialBufferInfo = rayTracingSystem.getMaterialBufferDescriptor();
+  auto vertexBufferInfo = rayTracingSystem.getVertexBufferDescriptor();
+    auto indexBufferInfo = rayTracingSystem.getIndexBufferDescriptor();
+
   writer.writeAccelerationStructure(0, &asInfo, globalDescriptorSets[i])
       .writeImage(1, &storageImageInfo)
       .writeBuffer(2, &uboInfo)
+        .writeBuffer(3, &materialBufferInfo)
+        .writeBuffer(4, &vertexBufferInfo)
+        .writeBuffer(5, &indexBufferInfo)
+
       .build(globalDescriptorSets[i]);
 }
 std::cout << "Pass 4 \n";
@@ -165,15 +170,21 @@ while (!lveWindow.shouldClose()) {
   float frameTime =
       std::chrono::duration<float, std::chrono::seconds::period>(newTime - currentTime).count();
   currentTime = newTime;
-
-  cameraController.moveInPlaneXZ(lveWindow.getGLFWwindow(), frameTime, viewerObject);
+  bool hasMoved = false;
+  cameraController.moveInPlaneXZ(lveWindow.getGLFWwindow(), frameTime, viewerObject, hasMoved);
   camera.setViewYXZ(viewerObject.transform.translation, viewerObject.transform.rotation);
 
   float aspect = lveRenderer.getAspectRatio();
   camera.setPerspectiveProjection(glm::radians(50.f), aspect, 0.1f, 100.f);
 
-  
-  if (auto commandBuffer = lveRenderer.beginFrame()) {
+if (auto commandBuffer = lveRenderer.beginFrame([&]() {
+        rayTracingSystem.handleResize(
+            lveRenderer.getSwapChainExtents().width,
+            lveRenderer.getSwapChainExtents().height,
+            globalDescriptorSets);
+
+        rayTracingSystem.resetFrameId();
+      })) {
     
 int frameIndex = lveRenderer.getFrameIndex();
     
@@ -188,6 +199,7 @@ int frameIndex = lveRenderer.getFrameIndex();
     // Update UBO
     GlobalUbo ubo{};
     ubo.projection = camera.getProjection();
+    ubo.inverseProjection = camera.getInverseProjection();
     ubo.view = camera.getView();
     ubo.inverseView = camera.getInverseView();
     ubo.numLights.x = 1;
@@ -196,6 +208,9 @@ int frameIndex = lveRenderer.getFrameIndex();
     uboBuffers[frameIndex]->flush();
     std::cout << "  UBO updated\n";
 
+    if (hasMoved) {
+      rayTracingSystem.resetFrameId();
+    }
     std::cout << "  Calling rayTracingSystem.render()...\n";
     rayTracingSystem.render(frameInfo);
     std::cout << "  rayTracingSystem.render() completed\n";
@@ -211,21 +226,19 @@ int frameIndex = lveRenderer.getFrameIndex();
         frameIndex);  // ADDED frameIndex parameter
 
     std::cout << "  Calling endFrame()...\n";
-    lveRenderer.endFrame();
+     lveRenderer.endFrame([&]() {
+        rayTracingSystem.handleResize(
+            lveRenderer.getSwapChainExtents().width,
+            lveRenderer.getSwapChainExtents().height,
+            globalDescriptorSets);
+
+        rayTracingSystem.resetFrameId();
+      });
 
     // Check device status after submit
 
     std::cout << "=== Frame completed ===\n";
   } 
-  
-  else {
-
-      std::cout << std::endl << "\nhere we go again\n" << std::endl;
-    rayTracingSystem.handleResize(
-        lveRenderer.getSwapChainExtents().width,
-        lveRenderer.getSwapChainExtents().height, globalDescriptorSets);
-  
-  }
 }
 
   //should do this via deconstructors, but whatever.
@@ -234,37 +247,77 @@ int frameIndex = lveRenderer.getFrameIndex();
 }
 
 void RayTracingApp::loadGameObjects() {
+  /*
   std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\models\\car.obj");
-  auto flatVase = LveGameObject::createGameObject();
-  flatVase.model = lveModel;
-  flatVase.transform.translation = {0.f, -0.25f, 0.f};
-  flatVase.transform.scale = {1, 1, 1};
-  gameObjects.emplace(flatVase.getId(), std::move(flatVase));
-
-
-  /*
-  std::vector<glm::vec3> lightColors{
-      {1.f, 1.f, 1.f}
-      //{.1f, .1f, 1.f},
-      //{.1f, 1.f, .1f},
-      //{1.f, 1.f, .1f},
-      //{.1f, 1.f, 1.f},
-      //{1.f, 1.f, 1.f}  //
-  };
-
-  for (int i = 0; i < lightColors.size(); i++) {
-    auto pointLight = LveGameObject::makePointLight(0.2f);
-    pointLight.color = lightColors[i];
-    auto rotateLight = glm::rotate(
-        glm::mat4(1.f),
-        (i * glm::two_pi<float>()) / lightColors.size(),
-        {0.f, -1.f, 0.f});
-    pointLight.transform.translation = glm::vec3(rotateLight * glm::vec4(-1.f, -1.f, -1.f, 1.f));
-    gameObjects.emplace(pointLight.getId(), std::move(pointLight));
-  }
+      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\models\\Dragon_lowPoly.obj");
+  auto obj = LveGameObject::createGameObject();
+  obj.model = lveModel;
+  obj.transform.translation = {0.07f, -0.4f, 0.f};
+  obj.transform.rotation = {0.f, -70.f + 180, 0.f};
+  obj.transform.scale = {1, 1, 1};
+  gameObjects.emplace(obj.getId(), std::move(obj));
   */
+  /*
+  std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
+      lveDevice,
+      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
+      "tut27\\models\\Knight.obj");
+  auto obj = LveGameObject::createGameObject();
+  obj.model = lveModel;
+  obj.transform.translation = {0.f, -0.55f, 0.f};
+  obj.transform.rotation = {0.f, 0, 0.f};
+  obj.transform.scale = {0.23f, 0.23f, 0.23f};
+  gameObjects.emplace(obj.getId(), std::move(obj));
+  */
+  std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
+      lveDevice,
+      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
+      "tut27\\models\\car.obj");
+  auto obj = LveGameObject::createGameObject();
+  obj.model = lveModel;
+  obj.transform.translation = {0.f, -0.55f, 0.f};
+  obj.transform.rotation = {0.f, glm::radians(-40.f), 0.f};
+  obj.transform.scale = {0.35f, 0.35f, 0.35f};
+  gameObjects.emplace(obj.getId(), std::move(obj));
+ lveModel = LveModel::createModelFromFile(
+      lveDevice,
+      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
+      "tut27\\models\\cube.obj");
+  
+    
+    //ceiling
+    auto cube = LveGameObject::createGameObject();
+  cube.model = lveModel;
+  cube.transform.translation = {0.f, -1.5f, 0.f};
+  cube.transform.scale = {0.58f, 0.04f, 0.5f};
+  gameObjects.emplace(cube.getId(), std::move(cube));
+  //floor
+  cube = LveGameObject::createGameObject();
+  cube.model = lveModel;
+  cube.transform.translation = {0.f, -0.5f, 0.f};
+  cube.transform.scale = {0.58f, 0.04f, 0.5f};
+  gameObjects.emplace(cube.getId(), std::move(cube));
+  //right wall
+  cube = LveGameObject::createGameObject();
+  cube.model = lveModel;
+  cube.transform.translation = {0.54f, -1.f, 0.f};
+  cube.transform.scale = {0.04f, 0.46f, 0.5f};
+  gameObjects.emplace(cube.getId(), std::move(cube));
+  //left wall
+    cube = LveGameObject::createGameObject();
+  cube.model = lveModel;
+  cube.transform.translation = {-0.54f, -1.f, 0.f};
+  cube.transform.scale = {0.04f, 0.46f, 0.5f};
+  gameObjects.emplace(cube.getId(), std::move(cube));
+
+  //backwall
+  cube = LveGameObject::createGameObject();
+  cube.model = lveModel;
+  cube.transform.translation = {0.f, -1.f, 0.5f};
+  cube.transform.scale = {0.5f, 0.5f, 0.04f};
+  gameObjects.emplace(cube.getId(), std::move(cube));
+
 }
 
 }  // namespace lve

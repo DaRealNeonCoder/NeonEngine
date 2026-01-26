@@ -29,6 +29,7 @@ RayTracingSystem::RayTracingSystem(
 
   rayTracingPipelineProperties.sType =
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+  
   VkPhysicalDeviceProperties2 deviceProperties2{};
   deviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
   deviceProperties2.pNext = &rayTracingPipelineProperties;
@@ -50,10 +51,9 @@ RayTracingSystem::RayTracingSystem(
   indices = allIndicies;
 
 
-  // Create storage images for each frame in flight (typically 2 or 3)
-  const uint32_t frameCount = LveSwapChain::MAX_FRAMES_IN_FLIGHT;  // or pass as parameter
   createStorageImage(storageImage, width, height);
 
+  createMaterialBuffer();
   createBottomLevelAccelerationStructure();
   createTopLevelAccelerationStructure();
   createRayTracingPipeline(globalSetLayout);
@@ -81,7 +81,9 @@ RayTracingSystem::~RayTracingSystem() {
 // Public API
 // ============================================================
 
-
+struct PushData {
+  glm::vec4 accum{0};
+};
 // Updated render function
 void RayTracingSystem::render(FrameInfo& frameInfo) {
   
@@ -119,6 +121,20 @@ void RayTracingSystem::render(FrameInfo& frameInfo) {
   hit.size = handleSizeAligned;
 
   VkStridedDeviceAddressRegionKHR callable{};
+  PushData push{};
+
+  if (frameID == UINT32_MAX) {
+    frameID = 0;
+  }
+  push.accum.x = frameID;
+  frameID++;
+  vkCmdPushConstants(
+      frameInfo.commandBuffer,
+      pipelineLayout,
+      VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+      0,
+      sizeof(PushData),
+      &push);
 
   // Use the storage image for the current frame
   const auto& currentStorageImage = storageImage;
@@ -352,7 +368,8 @@ void RayTracingSystem::createBottomLevelAccelerationStructure() {
       sizeof(RayTracingVertex),
       static_cast<uint32_t>(vertices.size()),
       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   vertexBuffer->map();
   vertexBuffer->writeToBuffer(vertices.data());
@@ -362,7 +379,8 @@ void RayTracingSystem::createBottomLevelAccelerationStructure() {
       sizeof(uint32_t),
       static_cast<uint32_t>(indices.size()),
       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   indexBuffer->map();
   indexBuffer->writeToBuffer(indices.data());
@@ -547,7 +565,7 @@ void RayTracingSystem::createStorageImage(
   vulkanDevice.endSingleTimeCommands(cmd);
 }
 
-// New helper function to destroy a single storage image
+/// New helper function to destroy a single storage image
 void RayTracingSystem::destroyStorageImage(StorageImage& storageImage) {
   vkDestroyImageView(device, storageImage.view, nullptr);
   vkDestroyImage(device, storageImage.image, nullptr);
@@ -574,6 +592,53 @@ uint64_t RayTracingSystem::getBufferDeviceAddress(VkBuffer buffer) {
   return vkGetBufferDeviceAddressKHR(device, &bufferDeviceAI);
 }
 
+void RayTracingSystem::createMaterialBuffer() {
+  Material roughMat{};
+  roughMat.emission = glm::vec4{0};
+  roughMat.albedo = glm::vec4{1, 1, 1, 1};
+  roughMat.misc.x = 1.f;
+
+  Material dragonMat{};
+  dragonMat.emission = glm::vec4{0};
+  dragonMat.albedo = glm::vec4{1, 1, 1, 1};
+  dragonMat.misc.x = 1;
+
+  Material notRoughMat{};
+  notRoughMat.emission = glm::vec4{2};
+  notRoughMat.albedo = glm::vec4{1};
+  notRoughMat.misc.x = 1.f;
+
+  Material roughMat1{};
+  roughMat1.emission = glm::vec4{0};
+  roughMat1.albedo = glm::vec4{0, 1, 0, 1};
+  roughMat1.misc.x = 1.f;
+
+  Material roughMat2{};
+  roughMat2.emission = glm::vec4{0};
+  roughMat2.albedo = glm::vec4{1, 0, 0, 1};
+  roughMat2.misc.x = 1.f;
+
+  Material materials[6] = {
+      dragonMat,
+      notRoughMat,
+      roughMat,
+      roughMat1,
+      roughMat2,
+      roughMat,
+  };
+
+
+  materialBuffer = std::make_unique<LveBuffer>(
+      vulkanDevice,
+      sizeof(Material),
+      static_cast<uint32_t>(sizeof(materials) / sizeof(Material)),
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+  materialBuffer->map();
+  materialBuffer->writeToBuffer((void*)materials);
+}
+
 void RayTracingSystem::createTopLevelAccelerationStructure() {
   // ----- Create instance -----
   VkTransformMatrixKHR
@@ -584,7 +649,7 @@ void RayTracingSystem::createTopLevelAccelerationStructure() {
   instance.instanceCustomIndex = 0;
   instance.mask = 0xFF;
   instance.instanceShaderBindingTableRecordOffset = 0;
-  instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+  instance.flags = 0;
   instance.accelerationStructureReference = bottomLevelAS.deviceAddress;
 
   // ----- Instance buffer using LveBuffer -----
@@ -795,7 +860,7 @@ void RayTracingSystem::createRayTracingPipeline(VkDescriptorSetLayout globalSetL
   rayTracingPipelineCI.pStages = shaderStages.data();
   rayTracingPipelineCI.groupCount = static_cast<uint32_t>(shaderGroups.size());
   rayTracingPipelineCI.pGroups = shaderGroups.data();
-  rayTracingPipelineCI.maxPipelineRayRecursionDepth = 1;
+  rayTracingPipelineCI.maxPipelineRayRecursionDepth = 16;
   rayTracingPipelineCI.layout = pipelineLayout;
 
   VkResult result = vkCreateRayTracingPipelinesKHR(

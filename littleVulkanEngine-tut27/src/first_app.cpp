@@ -130,7 +130,6 @@ void FirstApp::run() {
     float frameTime =
         std::chrono::duration<float, std::chrono::seconds::period>(newTime - currentTime).count();
     currentTime = newTime;
-
     cameraController.moveInPlaneXZ(lveWindow.getGLFWwindow(), frameTime, viewerObject);
     camera.setViewYXZ(viewerObject.transform.translation, viewerObject.transform.rotation);
 

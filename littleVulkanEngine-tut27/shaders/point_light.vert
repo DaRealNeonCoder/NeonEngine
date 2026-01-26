@@ -19,9 +19,10 @@ vec4 position; // ignore w
 vec4 color; // w is intensity
 };
 
-
+//TODO: Separate UBOs for separate systems, so that we don't have to pass useless information.
 layout(set = 0, binding = 0, std140) uniform GlobalUbo {
     mat4 projection;
+    mat4 inverseProjection;
     mat4 view;
     mat4 inverseView;
 

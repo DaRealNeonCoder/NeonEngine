@@ -14,6 +14,7 @@ vec4 color; // w is intensity
 
 layout(set = 0, binding = 0, std140) uniform GlobalUbo {
     mat4 projection;
+    mat4 inverseProjection;
     mat4 view;
     mat4 inverseView;
 

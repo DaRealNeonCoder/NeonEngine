@@ -40,7 +40,15 @@ struct AccelerationStructure {
   VkBuffer buffer = VK_NULL_HANDLE;
 };
 struct RayTracingVertex {
-  glm::vec3 pos;
+  glm::vec4 pos;
+  glm::vec4 normal;
+  alignas(16) uint32_t materialIndex;
+};
+
+struct Material {
+  glm::vec4 emission;
+  glm::vec4 albedo;
+  glm::vec4 misc;//x = roughness, y = IOR(only for glass), z = material type (0 = normal, 67 = reflective), w = empty
 };
 class RayTracingSystem {
  public:
@@ -54,13 +62,13 @@ class RayTracingSystem {
       uint32_t height);
   ~RayTracingSystem();
   void VK_CHECK_RESULT(VkResult f);
-  // Public API
+
   void prepare();
   void render(FrameInfo& frameInfo);
   void handleResize(
       uint32_t width, uint32_t height, const std::vector<VkDescriptorSet>& descriptorSets);
   void updateUniforms(uint32_t frameIndex, const glm::mat4& view, const glm::mat4& proj);
-
+  void createMaterialBuffer();
   void copyStorageImageToSwapChain(
       VkCommandBuffer commandBuffer,
       VkImage swapChainImage,
@@ -70,7 +78,16 @@ class RayTracingSystem {
 
   VkDescriptorImageInfo getStorageImageDescriptor(uint32_t frameIndex) const;
   VkAccelerationStructureKHR getTLAS() const;
-
+  VkDescriptorBufferInfo getMaterialBufferDescriptor() const {
+    return materialBuffer->descriptorInfo();
+  }
+  VkDescriptorBufferInfo getVertexBufferDescriptor() const {
+    return vertexBuffer->descriptorInfo();
+  }
+  VkDescriptorBufferInfo getIndexBufferDescriptor() const {
+    return indexBuffer->descriptorInfo();
+  }
+  void resetFrameId() { frameID = 0; }
  private:
   LveDevice& vulkanDevice;
   VkDevice device;
@@ -114,6 +131,8 @@ class RayTracingSystem {
   std::unique_ptr<LveBuffer> raygenShaderBindingTable;
   std::unique_ptr<LveBuffer> missShaderBindingTable;
   std::unique_ptr<LveBuffer> hitShaderBindingTable;
+  std::unique_ptr<LveBuffer> materialBuffer;
+
   std::vector<RayTracingVertex> vertices;
   std::vector<uint32_t> indices;
   // ==========================================================
@@ -127,11 +146,10 @@ class RayTracingSystem {
     uint32_t width;
     uint32_t height;
   };
-  StorageImage storageImage;  // Changed to vector
-
-  // ==========================================================
-  // Uniforms
-  // ==========================================================
+  StorageImage storageImage;
+  StorageImage bloomImage;  
+  StorageImage bloomTempImage;  
+  
   struct UniformData {
     glm::mat4 viewInverse;
     glm::mat4 projInverse;
@@ -166,6 +184,7 @@ class RayTracingSystem {
   void createShaderBindingTable();
 
   void loadFunctionPointers();
+  uint32_t frameID;
 };
 
 }  // namespace lve

@@ -5,6 +5,7 @@
 #include <cassert>
 #include <stdexcept>
 #include <iostream>
+#include <functional>
 
 namespace lve {
 
@@ -57,16 +58,17 @@ void LveRenderer::freeCommandBuffers() {
   commandBuffers.clear();
 }
 
-VkCommandBuffer LveRenderer::beginFrame() {
+
+VkCommandBuffer LveRenderer::beginFrame(std::function<void()> onRecreate) {
   assert(!isFrameStarted && "Can't call beginFrame while already in progress");
 
- auto result = lveSwapChain->acquireNextImage(currentFrameIndex, &currentImageIndex);
-
+  auto result = lveSwapChain->acquireNextImage(currentFrameIndex, &currentImageIndex);
 
   std::cout << "acquireNextImage result: " << result << " (VK_SUCCESS=" << VK_SUCCESS << ")\n";
 
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     recreateSwapChain();
+    if (onRecreate) onRecreate();
     return nullptr;
   }
 
@@ -88,7 +90,7 @@ VkCommandBuffer LveRenderer::beginFrame() {
   return commandBuffer;
 }
 
-void LveRenderer::endFrame() {
+void LveRenderer::endFrame(std::function<void()> onRecreate) {
   assert(isFrameStarted && "Can't call endFrame while frame is not in progress");
   auto commandBuffer = getCurrentCommandBuffer();
   if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
@@ -101,6 +103,8 @@ void LveRenderer::endFrame() {
       lveWindow.wasWindowResized()) {
     lveWindow.resetWindowResizedFlag();
     recreateSwapChain();
+    if (onRecreate) onRecreate();
+
   } else if (result != VK_SUCCESS) {
     throw std::runtime_error("failed to present swap chain image!");
   }

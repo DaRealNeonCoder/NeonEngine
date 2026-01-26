@@ -15,17 +15,35 @@ void LveCamera::setOrthographicProjection(
   projectionMatrix[3][0] = -(right + left) / (right - left);
   projectionMatrix[3][1] = -(bottom + top) / (bottom - top);
   projectionMatrix[3][2] = -near / (far - near);
-}
 
+  inverseProjectionMatrix = glm::mat4{1.0f};
+  inverseProjectionMatrix[0][0] = (right - left) * 0.5f;
+  inverseProjectionMatrix[1][1] = (bottom - top) * 0.5f;
+  inverseProjectionMatrix[2][2] = (far - near);
+  inverseProjectionMatrix[3][0] = (right + left) * 0.5f;
+  inverseProjectionMatrix[3][1] = (bottom + top) * 0.5f;
+  inverseProjectionMatrix[3][2] = near;
+}
 void LveCamera::setPerspectiveProjection(float fovy, float aspect, float near, float far) {
-  assert(glm::abs(aspect - std::numeric_limits<float>::epsilon()) > 0.0f);
-  const float tanHalfFovy = tan(fovy / 2.f);
-  projectionMatrix = glm::mat4{0.0f};
-  projectionMatrix[0][0] = 1.f / (aspect * tanHalfFovy);
-  projectionMatrix[1][1] = 1.f / (tanHalfFovy);
-  projectionMatrix[2][2] = far / (far - near);
+  const float tanHalfFovy = tan(fovy * 0.5f);
+  const float A = 1.f / (aspect * tanHalfFovy);
+  const float B = 1.f / tanHalfFovy;
+  const float C = far / (far - near);
+  const float D = -(far * near) / (far - near);
+
+  projectionMatrix = glm::mat4{0.f};
+  projectionMatrix[0][0] = A;
+  projectionMatrix[1][1] = B;
+  projectionMatrix[2][2] = C;
   projectionMatrix[2][3] = 1.f;
-  projectionMatrix[3][2] = -(far * near) / (far - near);
+  projectionMatrix[3][2] = D;
+
+  inverseProjectionMatrix = glm::mat4{0.f};
+  inverseProjectionMatrix[0][0] = 1.f / A;
+  inverseProjectionMatrix[1][1] = 1.f / B;
+  inverseProjectionMatrix[2][3] = 1.f / D;
+  inverseProjectionMatrix[3][2] = 1.f;
+  inverseProjectionMatrix[3][3] = -C / D;
 }
 
 void LveCamera::setViewDirection(glm::vec3 position, glm::vec3 direction, glm::vec3 up) {
