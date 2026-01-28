@@ -48,7 +48,13 @@ class LveGameObject {
 
   id_t getId() { return id; }
 
-  glm::vec3 color{};
+  glm::vec3 color{1,0,0};
+  glm::vec3 velocity{};
+  glm::vec3 force{};
+  float pressure{};
+  float density = 1.f;
+  float mass = 5.f;
+
   TransformComponent transform{};
 
   // Optional pointer components

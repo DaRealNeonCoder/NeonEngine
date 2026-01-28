@@ -64,7 +64,7 @@ VkCommandBuffer LveRenderer::beginFrame(std::function<void()> onRecreate) {
 
   auto result = lveSwapChain->acquireNextImage(currentFrameIndex, &currentImageIndex);
 
-  std::cout << "acquireNextImage result: " << result << " (VK_SUCCESS=" << VK_SUCCESS << ")\n";
+  //std::cout << "acquireNextImage result: " << result << " (VK_SUCCESS=" << VK_SUCCESS << ")\n";
 
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     recreateSwapChain();

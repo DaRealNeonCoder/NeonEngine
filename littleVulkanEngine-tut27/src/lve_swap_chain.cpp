@@ -67,17 +67,17 @@ LveSwapChain::~LveSwapChain() {
   }
 }
 VkResult LveSwapChain::acquireNextImage(uint32_t currentFrame, uint32_t *imageIndex) {
-  std::cout << "=== ACQUIRE: currentFrame=" << currentFrame << std::endl;
+  //std::cout << "=== ACQUIRE: currentFrame=" << currentFrame << std::endl;
   // Wait FIRST to ensure this frame slot is completely done
   VkResult result3 =
       vkWaitForFences(device.device(), 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-  std::cout << "vkWaitForFences result: " << result3 << std::endl;
+  //std::cout << "vkWaitForFences result: " << result3 << std::endl;
      
  
       vkResetFences(device.device(), 1, &inFlightFences[currentFrame]);
   
-  std::cout << "    Using semaphore[" << currentFrame
-            << "] = " << imageAvailableSemaphores[currentFrame] << std::endl;
+  //std::cout << "    Using semaphore[" << currentFrame
+    //        << "] = " << imageAvailableSemaphores[currentFrame] << std::endl;
 
   VkResult result = vkAcquireNextImageKHR(
       device.device(),
@@ -87,7 +87,7 @@ VkResult LveSwapChain::acquireNextImage(uint32_t currentFrame, uint32_t *imageIn
       VK_NULL_HANDLE,
       imageIndex);
 
-  std::cout << "    Acquired imageIndex=" << *imageIndex << ", result=" << result << std::endl;
+  //std::cout << "    Acquired imageIndex=" << *imageIndex << ", result=" << result << std::endl;
 
   // Remove this second fence wait - it's redundant and checking the wrong thing
   // The fence for inFlightFences tracks currentFrame, not imageIndex
@@ -96,9 +96,9 @@ VkResult LveSwapChain::acquireNextImage(uint32_t currentFrame, uint32_t *imageIn
 }
 VkResult LveSwapChain::submitCommandBuffers(
     uint32_t currentFrame, const VkCommandBuffer *buffers, uint32_t *imageIndex) {
-  std::cout << "=== SUBMIT: currentFrame=" << currentFrame << ", imageIndex=" << *imageIndex
-            << std::endl;
-  /*
+  /* std::cout << "=== SUBMIT: currentFrame=" << currentFrame << ", imageIndex=" << *imageIndex
+           << std::endl;
+  
   if (inFlightFences[*imageIndex] != VK_NULL_HANDLE) {
     vkWaitForFences(device.device(), 1, &inFlightFences[*imageIndex], VK_TRUE, UINT64_MAX);
   }
@@ -121,17 +121,18 @@ VkResult LveSwapChain::submitCommandBuffers(
   submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = signalSemaphores;
   vkResetFences(device.device(), 1, &inFlightFences[currentFrame]);
-  // Reset the fence we will use for this frame, then submit with it
+  /* Reset the fence we will use for this frame, then submit with it
   std::cout << "    Submitting with fence " << inFlightFences[currentFrame]
             << ", waitSemaphore=" << imageAvailableSemaphores[currentFrame]
             << ", signalSemaphore=" << renderFinishedSemaphores[currentFrame] << std::endl;
+  */
   VkResult submitRes =
       vkQueueSubmit(device.graphicsQueue(), 1, &submitInfo, inFlightFences[currentFrame]);
   if (submitRes != VK_SUCCESS) {
     std::cerr << "vkQueueSubmit failed: " << submitRes << std::endl;
     throw std::runtime_error("failed to submit draw command buffer!");
   }
-  std::cout << "attempting vkQueuePresentKHR";
+  //std::cout << "attempting vkQueuePresentKHR";
 
   VkPresentInfoKHR presentInfo{};
   presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -404,8 +405,13 @@ VkSurfaceFormatKHR LveSwapChain::chooseSwapSurfaceFormat(
   return availableFormats[0];
 }
 
+//
 VkPresentModeKHR LveSwapChain::chooseSwapPresentMode(
     const std::vector<VkPresentModeKHR> &availablePresentModes) {
+
+
+  return VK_PRESENT_MODE_IMMEDIATE_KHR;
+
   for (const auto &availablePresentMode : availablePresentModes) {
     if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
       std::cout << "Present mode: Mailbox" << std::endl;
@@ -420,8 +426,6 @@ VkPresentModeKHR LveSwapChain::chooseSwapPresentMode(
   //   }
   // }
 
-  std::cout << "Present mode: V-Sync" << std::endl;
-  return VK_PRESENT_MODE_FIFO_KHR;
 }
 
 VkExtent2D LveSwapChain::chooseSwapExtent(const VkSurfaceCapabilitiesKHR &capabilities) {

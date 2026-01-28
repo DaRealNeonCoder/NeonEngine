@@ -1,4 +1,4 @@
-#include "simple_render_system.hpp"
+#include "water_render_system.hpp"
 
 // libs
 #define GLM_FORCE_RADIANS
@@ -13,28 +13,28 @@
 
 namespace lve {
 
-struct SimplePushConstantData {
+struct WaterPushConstantData {
   glm::mat4 modelMatrix{1.f};
   glm::mat4 normalMatrix{1.f};
-  glm::vec4 thisIsStupid{0.f};
+  glm::vec4 color{0.f};
 };
 
-SimpleRenderSystem::SimpleRenderSystem(
+WaterRenderSystem::WaterRenderSystem(
     LveDevice& device, VkRenderPass renderPass, VkDescriptorSetLayout globalSetLayout)
     : lveDevice{device} {
   createPipelineLayout(globalSetLayout);
   createPipeline(renderPass);
 }
 
-SimpleRenderSystem::~SimpleRenderSystem() {
+WaterRenderSystem::~WaterRenderSystem() {
   vkDestroyPipelineLayout(lveDevice.device(), pipelineLayout, nullptr);
 }
 
-void SimpleRenderSystem::createPipelineLayout(VkDescriptorSetLayout globalSetLayout) {
+void WaterRenderSystem::createPipelineLayout(VkDescriptorSetLayout globalSetLayout) {
   VkPushConstantRange pushConstantRange{};
   pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
   pushConstantRange.offset = 0;
-  pushConstantRange.size = sizeof(SimplePushConstantData);
+  pushConstantRange.size = sizeof(WaterPushConstantData);
 
   std::vector<VkDescriptorSetLayout> descriptorSetLayouts{globalSetLayout};
 
@@ -50,7 +50,7 @@ void SimpleRenderSystem::createPipelineLayout(VkDescriptorSetLayout globalSetLay
   }
 }
 
-void SimpleRenderSystem::createPipeline(VkRenderPass renderPass) {
+void WaterRenderSystem::createPipeline(VkRenderPass renderPass) {
   assert(pipelineLayout != nullptr && "Cannot create pipeline before pipeline layout");
 
   PipelineConfigInfo pipelineConfig{};
@@ -59,12 +59,12 @@ void SimpleRenderSystem::createPipeline(VkRenderPass renderPass) {
   pipelineConfig.pipelineLayout = pipelineLayout;
   lvePipeline = std::make_unique<LvePipeline>(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\shaders\\simple_shader.vert.spv",
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\shaders\\simple_shader.frag.spv",
+      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\shaders\\water_shader.vert.spv",
+      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\shaders\\water_shader.frag.spv",
       pipelineConfig);
 }
 
-void SimpleRenderSystem::renderGameObjects(FrameInfo& frameInfo) {
+void WaterRenderSystem::renderGameObjects(FrameInfo& frameInfo) {
 
 
   lvePipeline->bind(frameInfo.commandBuffer);
@@ -82,26 +82,23 @@ void SimpleRenderSystem::renderGameObjects(FrameInfo& frameInfo) {
   for (auto& kv : frameInfo.gameObjects) {
     auto& obj = kv.second;
     if (obj.model == nullptr) continue;
-    SimplePushConstantData push{};
-
-    if (obj.getId() == -1) { //disabled temporarily, set back to != 2
-      constexpr float rotationSpeed = glm::radians(45.0f);  // 45° per second
-
-      obj.transform.rotation.y += rotationSpeed * frameInfo.frameTime;
-      obj.transform.rotation.x += rotationSpeed * frameInfo.frameTime;
-      obj.transform.rotation.z += rotationSpeed * frameInfo.frameTime;
-      push.thisIsStupid.x = 67.f;
-    }
+    WaterPushConstantData push{};
 
     push.modelMatrix = obj.transform.mat4();
     push.normalMatrix = obj.transform.normalMatrix();
+    
+    push.color = glm::vec4(obj.color, 1);
+    if (obj.getId() == 0) {
+      push.color.w = 2;
+    }
     vkCmdPushConstants(
         frameInfo.commandBuffer,
         pipelineLayout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0,
-        sizeof(SimplePushConstantData),
+        sizeof(WaterPushConstantData),
         &push);
+
     obj.model->bind(frameInfo.commandBuffer);
     obj.model->draw(frameInfo.commandBuffer);
   }

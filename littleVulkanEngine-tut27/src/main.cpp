@@ -1,5 +1,6 @@
 
 #include "first_app.hpp"
+#include "water_app.hpp"
 #include "raytracing_app.hpp"
 
 // std
@@ -8,8 +9,11 @@
 #include <stdexcept>
 
 int main() {
-  //lve::FirstApp app{};
-  lve::RayTracingApp app{};
+   // lve::FirstApp app{};
+   // lve::RayTracingApp app{};
+   
+   lve::WaterApp app{};
+
 
   try {
     app.run();
