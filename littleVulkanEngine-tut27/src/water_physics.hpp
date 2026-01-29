@@ -27,6 +27,14 @@ class WaterPhysics {
   // working list of pointers to active particles (filtered each step)
   std::vector<LveGameObject*> activeParticles;
 
+  std::vector<glm::vec3> p_velocities{};
+  std::vector<glm::vec3> p_forces{};
+  std::vector<glm::vec3> p_positions{};
+  std::vector<float> p_pressures{};
+  std::vector<float> p_densities{};
+
+  float mass = 5.f;
+
   float smoothingRadius;
   float restDensity;
   float viscosity;

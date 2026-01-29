@@ -26,9 +26,13 @@ WaterPhysics::WaterPhysics(
       restDensity(_restDensity),
       viscosity(_viscosity),
       mu(_mu) {
-  
+  p_velocities.resize(curParticles.size());
+  p_positions.resize(curParticles.size());
+  p_forces.resize(curParticles.size());
+  p_pressures.resize(curParticles.size());
+  p_densities.resize(curParticles.size());
 
-  float scale = 1.1f;
+  float scale = 1.1f;//orignal = 1.1f
   float scaleX = 3.2f * scale;
   float scaleY = 1.f * scale;
   float scaleZ = 1.2f * scale;
@@ -41,24 +45,27 @@ WaterPhysics::WaterPhysics(
 
   boxMin.z *= scaleZ;
   boxMax.z *= scaleZ;
+  std::cout << "workin";
 
+  for (auto& kv : particlesMap) {
+    LveGameObject& obj = kv.second;
+    if (obj.getId() == 0) continue;
+    if (obj.model == nullptr) continue;
+    activeParticles.push_back(&obj);
+  }
+
+  std::cout << "also workin";
+
+  for (size_t i = 0; i < activeParticles.size(); i++) {
+    p_positions[i] = activeParticles[i]->transform.translation;
+  }
   // nothing else here
 }
 
 // Run one simulation step
 void WaterPhysics::RunSimulation(float dt) {
   // rebuild the activeParticles list each step, filtering out objects we don't want
-  activeParticles.clear();
-  for (auto& kv : particlesMap) {
-    LveGameObject& obj = kv.second;
-    // skip if explicitly asked (id == 0) or when model is null (similar to render pass)
-    if (obj.getId() == 0) continue;
-    if (obj.model == nullptr) continue;
-    activeParticles.push_back(&obj);
-  }
 
-  // if there are fewer than 1 particle, nothing to do
-  if (activeParticles.size() < 1) return;
 
   ComputeDensities();
   ComputePressures();
@@ -96,117 +103,110 @@ float WaterPhysics::laplacian_W_viscosity(float r, float h) {
 }
 void WaterPhysics::ComputeDensities() {
   const size_t N = activeParticles.size();
-  for (size_t i = 0; i < N; ++i) {
-    LveGameObject* pi = activeParticles[i];
-    //float rho_i = pi->mass * SmoothingFunction(0.0f, smoothingRadius);
 
-    int neighborCount = 0;  // Debug
+
+  for (size_t i = 0; i < N; ++i) {
+    glm::vec3 xi = p_positions[i];
+    float rho = 0.0f;
 
     for (size_t j = 0; j < N; ++j) {
-      if (i == j) continue;
-     
-      LveGameObject* pj = activeParticles[j];
-      float dist = glm::distance(pi->transform.translation, pj->transform.translation);
-      
-      if (dist < smoothingRadius) {
-        
-        pi-> density += pj->mass * SmoothingFunction(dist, smoothingRadius);
-        neighborCount++;
-      
+      glm::vec3 xj = p_positions[j];
+      float r = glm::distance(xi, xj);
+
+      if (r <= smoothingRadius) {
+        rho += mass * SmoothingFunction(r, smoothingRadius);
       }
     }
 
-    pi->density = glm::max(pi->density, eps);
-
-    // Debug first particle
-    if (i == 0) {
-      std::cout << "Neighbors: " << neighborCount << " density: " << pi->density << std::endl;
-    }
+    p_densities[i] = glm::max(rho, eps);
   }
 }
-
 void WaterPhysics::ComputePressures() {
-  for (LveGameObject* p : activeParticles) {
-    // Tait equation of state
-    float gamma = 7.0f;
-    float error = p->density - restDensity;
-    p->pressure = error * mu;
-    //p->pressure = mu * (std::pow(p->density / restDensity, gamma) - 1.0f);
+  for (size_t i = 0; i < p_densities.size(); ++i) {
+    float error = p_densities[i] - restDensity;
+    p_pressures[i] = error * mu;
   }
 }
 
-
-// compute acceleration contributions (rename conceptually from 'force' to 'accel')
 void WaterPhysics::ComputeForces() {
   const size_t N = activeParticles.size();
-  for (size_t i = 0; i < N; ++i) {
-    LveGameObject* pi = activeParticles[i];
 
-    glm::vec3 a_pressure(0.0f);
-    glm::vec3 a_viscosity(0.0f);
+  for (size_t i = 0; i < N; ++i) {
+    glm::vec3 ai(0.0f);
+    glm::vec3 xi = p_positions[i];
+    glm::vec3 vi = p_velocities[i];
 
     for (size_t j = 0; j < N; ++j) {
       if (i == j) continue;
-      LveGameObject* pj = activeParticles[j];
 
-      glm::vec3 r_vec = pi->transform.translation - pj->transform.translation;
+      glm::vec3 xj = p_positions[j];
+      glm::vec3 vj = p_velocities[j];
+
+      glm::vec3 r_vec = xi - xj;
       float r = glm::length(r_vec);
 
-      if (r < smoothingRadius && r > eps) {
-        glm::vec3 grad =
-            grad_W_spiky(r_vec, smoothingRadius);  // returns vector already including /r
-        // --- pressure acceleration contribution (do NOT multiply by pi->mass) ---
-      
-        a_pressure += -pj->mass *
-                      (pi->pressure / (pi->density * pi->density) +
-                       pj->pressure / (pj->density * pj->density)) *
-                      grad;
+      if (r > eps && r < smoothingRadius) {
+        glm::vec3 grad = grad_W_spiky(r_vec, smoothingRadius);
 
-        // --- viscosity acceleration contribution ---
-        a_viscosity += viscosity * pj->mass * (pj->velocity - pi->velocity) / pj->density *
-                       laplacian_W_viscosity(r, smoothingRadius);
+        // pressure
+        ai += -mass *
+              (p_pressures[i] / (p_densities[i] * p_densities[i]) +
+               p_pressures[j] / (p_densities[j] * p_densities[j])) *
+              grad;
+
+        // viscosity
+        ai += viscosity * mass * (vj - vi) / p_densities[j] *
+              laplacian_W_viscosity(r, smoothingRadius);
       }
     }
 
-    // gravity as acceleration (downwards)
-    glm::vec3 a_gravity(0.0f, 15.f, 0.0f);
+    // gravity (acceleration)
+    ai += glm::vec3(0.0f, 15.f, 0.0f);
 
-    // store acceleration (not force). You can rename field or keep p->force but treat it as accel.
-    pi->force = a_pressure + a_viscosity + a_gravity;
+    p_forces[i] = ai;
   }
 }
-
 void WaterPhysics::UpdateParticles(float dt) {
-  for (LveGameObject* p : activeParticles) {
-    // 'p->force' now holds acceleration (m/s^2). Integrate to velocity/position.
-    p->velocity += dt * p->force;
-    p->transform.translation += dt * p->velocity;
+  const size_t N = activeParticles.size();
 
-    // simple boundary containment (same as yours)
-    if (p->transform.translation.x < boxMin.x) {
-      p->transform.translation.x = boxMin.x;
-      p->velocity.x *= -0.5f;
+  for (size_t i = 0; i < N; ++i) {
+    // integrate velocity (a = p_forces)
+    p_velocities[i] += dt * p_forces[i];
+
+    // integrate position (only thing written back to ECS object)
+    LveGameObject* p = activeParticles[i];
+    glm::vec3& x = p_positions[i];
+    glm::vec3& v = p_velocities[i];
+
+    x += dt * v;
+
+    // ---- boundary containment ----
+
+    if (x.x < boxMin.x) {
+      x.x = boxMin.x;
+      v.x *= -0.5f;
+    } else if (x.x > boxMax.x) {
+      x.x = boxMax.x;
+      v.x *= -0.5f;
     }
-    if (p->transform.translation.x > boxMax.x) {
-      p->transform.translation.x = boxMax.x;
-      p->velocity.x *= -0.5f;
+
+    if (x.y < boxMin.y) {
+      x.y = boxMin.y;
+      v.y *= -0.5f;
+    } else if (x.y > boxMax.y) {
+      x.y = boxMax.y;
+      v.y *= -0.5f;
     }
-    if (p->transform.translation.y < boxMin.y) {
-      p->transform.translation.y = boxMin.y;
-      p->velocity.y *= -0.5f;
+
+    if (x.z < boxMin.z) {
+      x.z = boxMin.z;
+      v.z *= -0.5f;
+    } else if (x.z > boxMax.z) {
+      x.z = boxMax.z;
+      v.z *= -0.5f;
     }
-    if (p->transform.translation.y > boxMax.y) {
-      p->transform.translation.y = boxMax.y;
-      p->velocity.y *= -0.5f;
-    }
-    if (p->transform.translation.z < boxMin.z) {
-      p->transform.translation.z = boxMin.z;
-      p->velocity.z *= -0.5f;
-    }
-    if (p->transform.translation.z > boxMax.z) {
-      p->transform.translation.z = boxMax.z;
-      p->velocity.z *= -0.5f;
-    }
+
+    p->transform.translation = x;
   }
 }
 

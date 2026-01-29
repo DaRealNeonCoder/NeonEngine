@@ -82,10 +82,10 @@ void WaterApp::run() {
   
    WaterPhysics waterPhysics{
       gameObjects,
-      0.6f,    // h = 2 × particle radius
+      0.3f,    // h = 2 × particle radius
       1000.f,  // rest density (water)
-      0.f,    // viscosity
-      6000.0f  // pressure stiffness
+      0.3f,    // viscosity
+      1000.0f  // pressure stiffness
   };
   // ... camera setup ...
   LveCamera camera{};
@@ -152,7 +152,7 @@ void WaterApp::run() {
       uboBuffers[frameIndex]->writeToBuffer(&ubo);
       uboBuffers[frameIndex]->flush();
 
-      waterPhysics.RunSimulation(0.01f);
+      waterPhysics.RunSimulation(0.002f);
       
       lveRenderer.beginSwapChainRenderPass(commandBuffer);
       
@@ -194,7 +194,7 @@ void WaterApp::loadGameObjects() {
     float particleScale = 0.1f;
     float particleSpacing = 2.2f * particleScale;
 
-    float spc = 0.002f;  // whatever you actually used when creating the lattice
+    float spc = 0.1f;  // whatever you actually used when creating the lattice
     float particleVolume = spc * spc * spc;
     float particleMass =
         1000.f * particleVolume;  // gives mass that yields rho ~ restDensity i
