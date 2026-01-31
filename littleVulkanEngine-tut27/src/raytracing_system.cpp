@@ -804,7 +804,7 @@ void RayTracingSystem::createRayTracingPipeline(VkDescriptorSetLayout globalSetL
   vkCreatePipelineLayout(device, &pipelineLayoutCI, nullptr, &pipelineLayout);
   // Raygen
 
-  shaderStages.push_back(LvePipeline::loadShader(
+  shaderStages.push_back(LvePipeline::loadShaderCreateInfo(
       "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
       "tut27\\shaders\\raygen.rgen.spv",
       VK_SHADER_STAGE_RAYGEN_BIT_KHR,
@@ -821,7 +821,7 @@ void RayTracingSystem::createRayTracingPipeline(VkDescriptorSetLayout globalSetL
   }
 
   // Miss
-  shaderStages.push_back(LvePipeline::loadShader(
+  shaderStages.push_back(LvePipeline::loadShaderCreateInfo(
       "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
       "tut27\\shaders\\miss.rmiss.spv",
       VK_SHADER_STAGE_MISS_BIT_KHR,
@@ -838,7 +838,7 @@ void RayTracingSystem::createRayTracingPipeline(VkDescriptorSetLayout globalSetL
   }
 
   // Closest hit
-  shaderStages.push_back(LvePipeline::loadShader(
+  shaderStages.push_back(LvePipeline::loadShaderCreateInfo(
       "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
       "tut27\\shaders\\closesthit.rchit.spv",
       VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,

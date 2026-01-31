@@ -42,4 +42,13 @@ struct FrameInfo {
   VkDescriptorSet globalDescriptorSet;
   LveGameObject::Map &gameObjects;
 };
+
+struct WaterFrameInfo {
+  float frameTime;
+  VkCommandBuffer commandBuffer;
+  LveCamera &camera;
+  VkDescriptorSet globalDescriptorSet;
+  VkDescriptorSet computeDescriptorSet;
+  LveGameObject::Map &gameObjects;
+};
 }  // namespace lve

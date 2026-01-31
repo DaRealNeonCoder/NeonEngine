@@ -158,7 +158,8 @@ void LvePipeline::createShaderModule(const std::vector<char>& code, VkShaderModu
     throw std::runtime_error("failed to create shader module");
   }
 }
-VkPipelineShaderStageCreateInfo LvePipeline::loadShader(
+
+VkPipelineShaderStageCreateInfo LvePipeline::loadShaderCreateInfo(
     const std::string& filepath, VkShaderStageFlagBits stage, VkDevice device){
   // Read SPIR-V file as bytes
   std::vector<char> code = LvePipeline::readFile(filepath);
@@ -187,6 +188,24 @@ VkPipelineShaderStageCreateInfo LvePipeline::loadShader(
   return stageInfo;
 }
 
+VkShaderModule LvePipeline::loadShaderModule(const std::string& filepath, VkDevice device) {
+  std::vector<char> code = readFile(filepath);
+  if (code.empty()) {
+    throw std::runtime_error("Failed to read shader file: " + filepath);
+  }
+
+  VkShaderModuleCreateInfo createInfo{};
+  createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  createInfo.codeSize = code.size();
+  createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+  VkShaderModule shaderModule;
+  if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create shader module");
+  }
+
+  return shaderModule;
+}
 
 void LvePipeline::bind(VkCommandBuffer commandBuffer) {
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);

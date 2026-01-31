@@ -26,15 +26,15 @@ namespace lve {
 
 WaterApp::WaterApp() {
 int numFrames = LveSwapChain::MAX_FRAMES_IN_FLIGHT;
-int totalSetsNeeded = 2 * numFrames; // withShadow + noShadow per frame
+int totalSetsNeeded = 2 * numFrames; 
 
-globalPool =
-    LveDescriptorPool::Builder(lveDevice)
-        .setMaxSets(totalSetsNeeded)
-        // UBO: needed in both descriptors per frame => 2 * numFrames
-        .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, totalSetsNeeded)
-        // sampler: only in the 'withShadow' set per frame => numFrames
-        .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, numFrames * 4)
+globalPool = LveDescriptorPool::Builder(lveDevice)
+                 .setMaxSets(numFrames * 8)
+                 // UBO: needed in both descriptors per frame => 2 * numFrames
+                 .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, totalSetsNeeded)
+                 // sampler: only in the 'withShadow' set per frame => numFrames
+                 .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, numFrames * 4)
+                 .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, numFrames * 2)
         .build();
 
 loadGameObjects();
@@ -42,6 +42,7 @@ loadGameObjects();
 WaterApp::~WaterApp() {}
 void WaterApp::run() {
   std::cout << "Pass 1 \n";
+  
   std::vector<std::unique_ptr<LveBuffer>> uboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
   for (int i = 0; i < (int)uboBuffers.size(); i++) {
@@ -58,35 +59,53 @@ void WaterApp::run() {
       LveDescriptorSetLayout::Builder(lveDevice)
           .addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)  // UBO
           .build();
-
+  
+  auto computeSetLayout =
+      LveDescriptorSetLayout::Builder(lveDevice)
+          .addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .build();
 
   std::cout << "Pass 2 \n";
 
   std::vector<VkDescriptorSet> globalDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
+  std::vector<VkDescriptorSet> computeDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
   for (int i = 0; i < (int)globalDescriptorSets.size(); i++) {
     auto bufferInfo = uboBuffers[i]->descriptorInfo();
-
-    // write the full descriptor for main pass: UBO + shadow image
 
     LveDescriptorWriter(*globalSetLayout, *globalPool)
         .writeBuffer(0, &bufferInfo)
         .build(globalDescriptorSets[i]);
   }
+
+  WaterPhysics waterPhysics{
+      computeSetLayout->getDescriptorSetLayout(),
+      gameObjects,
+      0.3f,     // h = 2 × particle radius
+      1000.f,   // rest density (water)
+      0.3f,     // viscosity
+      1000.0f,  // pressure stiffness
+      &lveDevice,
+  };
+
+  for (int i = 0; i < (int)computeDescriptorSets.size(); i++) {
+    auto inputInfo = waterPhysics.getInputDescInfo();
+    auto outputInfo = waterPhysics.getOutputDescInfo();
+
+    LveDescriptorWriter(*computeSetLayout, *globalPool)
+        .writeBuffer(0, &inputInfo)   // binding 0: input positions
+        .writeBuffer(1, &outputInfo)  // binding 1: output positions
+        .build(computeDescriptorSets[i]);
+  }
+
   std::cout << "Pass 4 \n";
 
   WaterRenderSystem waterRenderSystem{
       lveDevice,
       lveRenderer.getSwapChainRenderPass(),
       globalSetLayout->getDescriptorSetLayout()};
-  
-   WaterPhysics waterPhysics{
-      gameObjects,
-      0.3f,    // h = 2 × particle radius
-      1000.f,  // rest density (water)
-      0.3f,    // viscosity
-      1000.0f  // pressure stiffness
-  };
+
   // ... camera setup ...
   LveCamera camera{};
   auto viewerObject = LveGameObject::createGameObject();
