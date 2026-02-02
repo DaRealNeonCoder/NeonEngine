@@ -504,7 +504,19 @@ void LveDevice::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
 
   vkFreeCommandBuffers(device_, commandPool, 1, &commandBuffer);
 }
+void LveDevice::endSingleTimeCommands(VkCommandBuffer commandBuffer, VkQueue &queue) {
+  vkEndCommandBuffer(commandBuffer);
 
+  VkSubmitInfo submitInfo{};
+  submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submitInfo.commandBufferCount = 1;
+  submitInfo.pCommandBuffers = &commandBuffer;
+
+  vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+  vkQueueWaitIdle(queue);
+
+  vkFreeCommandBuffers(device_, commandPool, 1, &commandBuffer);
+}
 void LveDevice::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
   VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 

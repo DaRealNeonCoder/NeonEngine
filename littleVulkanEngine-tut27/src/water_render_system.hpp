@@ -20,7 +20,7 @@ class WaterRenderSystem {
   WaterRenderSystem(const WaterRenderSystem &) = delete;
   WaterRenderSystem &operator=(const WaterRenderSystem &) = delete;
 
-  void renderGameObjects(FrameInfo &frameInfo);
+  void renderGameObjects(WaterFrameInfo &frameInfo);
 
  private:
   void createPipelineLayout(VkDescriptorSetLayout globalSetLayout);

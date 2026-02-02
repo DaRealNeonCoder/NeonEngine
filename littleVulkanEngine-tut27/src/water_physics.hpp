@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 #include "lve_game_object.hpp"
+#include "lve_frame_info.hpp"
 
 namespace lve {
 
@@ -28,9 +29,25 @@ struct GridCellHash {
 };
 
 class WaterPhysics {
+  struct Grid {
+    int numCells;
+    glm::ivec3 gridDim;
+    float cellSize;
+
+    // Per-cell metadata
+    std::vector<int> cellStart;  // size = numCells
+    std::vector<int> cellCount;  // size = numCells
+
+    // Packed particle indices
+    std::vector<int> cellIndices;  // size = numParticles
+  };
+  struct WaterPushConstants {
+    alignas(16) int uPass;
+  };
  public:
   WaterPhysics(
       VkDescriptorSetLayout setLayout,
+      WaterPhysUbo &ubo, 
       std::unordered_map<unsigned int, LveGameObject>& curParticles,
       float _smoothingRadius = 0.1f,
       float _restDensity = 1000.0f,
@@ -38,11 +55,17 @@ class WaterPhysics {
       float _mu = 1000.0f, LveDevice *_device = nullptr);
   ~WaterPhysics();
 
-  void RunSimulation(float dt);
-  VkDescriptorBufferInfo getInputDescInfo() { return inputBuffer->descriptorInfo(); }
+  void RunSimulation(float dt, WaterFrameInfo &info);
+  VkDescriptorBufferInfo getCellStartDescInfo() { return cellStart->descriptorInfo(); }
+  VkDescriptorBufferInfo getCellIndiciesDescInfo() { return cellIndices->descriptorInfo(); }
+  VkDescriptorBufferInfo getCellCountDescInfo() { return cellCount->descriptorInfo(); }
+  VkDescriptorBufferInfo getVelocitiesDescInfo() { return velocitiesBuff->descriptorInfo(); }
+  VkDescriptorBufferInfo getDensitiesDescInfo() { return densitiesBuff->descriptorInfo(); }
+  VkDescriptorBufferInfo getPressuresDescInfo() { return pressuresBuff->descriptorInfo(); }
+  VkDescriptorBufferInfo getForcesDescInfo() { return forcesBuff->descriptorInfo(); }
   VkDescriptorBufferInfo getOutputDescInfo() { return outputBuffer->descriptorInfo(); }
 
-  void UploadBuffers(const std::vector<glm::vec4>& positions);
+  void UploadBuffers(const Grid& grid);
  private:
   // Kernel functions
   float SmoothingFunction(float x);
@@ -54,15 +77,28 @@ class WaterPhysics {
   void ComputePressures();
   void ComputeForces();
   void UpdateParticles(float dt);
-  void CreateBuffers();
+  void CreateBuffers(Grid& grid);
   void CreateComputePipeline();
   void CreateComputePipelineLayout(VkDescriptorSetLayout setLayout);
-  void RunAndReadback(std::vector<glm::vec4>& outPositions, VkDescriptorSet& descriptorSet);
+  void RunAndReadback(WaterFrameInfo &frameInfo);
   // Grid-based neighbor finding
   void BuildSpatialGrid();
   GridCell GetGridCell(const glm::vec3& position) const;
   void GetNeighborCells(const GridCell& cell, std::vector<GridCell>& neighbors) const;
 
+  glm::ivec3 PositionToGridCell(const glm::vec3& pos, float cellSize, const glm::ivec3& gridDim);
+
+  int Cell3DToIndex(const glm::ivec3& cell, const glm::ivec3& gridDim);
+
+  void ClearGrid(Grid& grid);
+
+  void CountParticlesPerCell(Grid& grid, const std::vector<glm::vec3>& positions);
+
+  void BuildCellStart(Grid& grid);
+
+  void FillCellIndices(Grid& grid, const std::vector<glm::vec3>& positions);
+
+  void BuildUniformGrid(Grid& grid, const std::vector<glm::vec3>& positions);
   // Reference to the game objects map
   std::unordered_map<unsigned int, LveGameObject>& particlesMap;
 
@@ -73,9 +109,9 @@ class WaterPhysics {
   std::vector<glm::vec3> p_velocities;
   std::vector<glm::vec3> p_positions;
   std::vector<glm::vec3> p_forces;
+  std::vector<glm::vec4> outPositions;
   std::vector<float> p_pressures;
   std::vector<float> p_densities;
-
   // Spatial grid for fast neighbor queries
   std::unordered_map<GridCell, std::vector<size_t>, GridCellHash> spatialGrid;
   float cellSize = 1.f;  // Should be >= smoothingRadius for optimal performance
@@ -99,13 +135,20 @@ class WaterPhysics {
   VkQueue computeQueue;
 
   uint32_t particleCount = 0;
-  std::unique_ptr<LveBuffer> inputBuffer;
+  std::unique_ptr<LveBuffer> cellStart;
+  std::unique_ptr<LveBuffer> cellCount;
+  std::unique_ptr<LveBuffer> cellIndices;
+  std::unique_ptr<LveBuffer> velocitiesBuff;
+  std::unique_ptr<LveBuffer> densitiesBuff;
+  std::unique_ptr<LveBuffer> pressuresBuff;
+  std::unique_ptr<LveBuffer> forcesBuff;
+
   std::unique_ptr<LveBuffer> outputBuffer;
 
   VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
   VkPipeline computePipeline = VK_NULL_HANDLE;
   VkShaderModule computeShaderModule = VK_NULL_HANDLE;
-
+  Grid mainGrid;
 };
 
 }  // namespace lve

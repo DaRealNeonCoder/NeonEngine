@@ -10,6 +10,7 @@
 #include <array>
 #include <cassert>
 #include <stdexcept>
+#include <iostream>
 
 namespace lve {
 
@@ -64,7 +65,7 @@ void WaterRenderSystem::createPipeline(VkRenderPass renderPass) {
       pipelineConfig);
 }
 
-void WaterRenderSystem::renderGameObjects(FrameInfo& frameInfo) {
+void WaterRenderSystem::renderGameObjects(WaterFrameInfo& frameInfo) {
 
 
   lvePipeline->bind(frameInfo.commandBuffer);
@@ -98,7 +99,6 @@ void WaterRenderSystem::renderGameObjects(FrameInfo& frameInfo) {
         0,
         sizeof(WaterPushConstantData),
         &push);
-
     obj.model->bind(frameInfo.commandBuffer);
     obj.model->draw(frameInfo.commandBuffer);
   }

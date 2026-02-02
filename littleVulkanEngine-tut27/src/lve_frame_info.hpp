@@ -33,7 +33,39 @@ struct WaterUbo {
   glm::mat4 view{1.f};
   glm::mat4 inverseView{1.f};
 };
+struct alignas(16) WaterPhysUbo {
+  int32_t uNumParticles;
+  int32_t uNumCells;
+  int32_t pad;
+  int32_t pad2;
 
+  glm::ivec4 uGridDim;  // ivec3 + padding
+
+  float uCellSize;
+  float uH;
+  float uH2;
+  float poly6Coeff;
+
+  float spikyGradCoeff;
+  float viscLapCoeff;
+  float uMass;
+  float uRestDensity;
+
+  float uMu;
+  float uViscosity;
+  float uEps;
+  float uDt;
+
+  glm::vec4 uBoxMin;
+  glm::vec4 uBoxMax;
+  glm::vec4 uGravity;
+
+  float uDamping;
+  float pad3;
+  float pad4;
+  float pad5;
+};
+;
 struct FrameInfo {
   int frameIndex;
   float frameTime;

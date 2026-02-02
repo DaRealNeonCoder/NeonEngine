@@ -29,12 +29,12 @@ int numFrames = LveSwapChain::MAX_FRAMES_IN_FLIGHT;
 int totalSetsNeeded = 2 * numFrames; 
 
 globalPool = LveDescriptorPool::Builder(lveDevice)
-                 .setMaxSets(numFrames * 8)
+                 .setMaxSets(numFrames * 24)
                  // UBO: needed in both descriptors per frame => 2 * numFrames
                  .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, totalSetsNeeded)
                  // sampler: only in the 'withShadow' set per frame => numFrames
                  .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, numFrames * 4)
-                 .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, numFrames * 2)
+                 .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, numFrames * 16)
         .build();
 
 loadGameObjects();
@@ -44,6 +44,7 @@ void WaterApp::run() {
   std::cout << "Pass 1 \n";
   
   std::vector<std::unique_ptr<LveBuffer>> uboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
+  std::vector<std::unique_ptr<LveBuffer>> phyUboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
   for (int i = 0; i < (int)uboBuffers.size(); i++) {
     uboBuffers[i] = std::make_unique<LveBuffer>(
@@ -55,6 +56,17 @@ void WaterApp::run() {
     uboBuffers[i]->map();
   }
 
+
+
+  for (int i = 0; i < (int)phyUboBuffers.size(); i++) {
+    phyUboBuffers[i] = std::make_unique<LveBuffer>(
+        lveDevice,
+        sizeof(WaterPhysUbo),
+        1,
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    phyUboBuffers[i]->map();
+  }
   auto globalSetLayout =
       LveDescriptorSetLayout::Builder(lveDevice)
           .addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)  // UBO
@@ -62,8 +74,15 @@ void WaterApp::run() {
   
   auto computeSetLayout =
       LveDescriptorSetLayout::Builder(lveDevice)
-          .addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .build();
 
   std::cout << "Pass 2 \n";
@@ -78,11 +97,48 @@ void WaterApp::run() {
         .writeBuffer(0, &bufferInfo)
         .build(globalDescriptorSets[i]);
   }
+    float smoothingRadius = 0.3f;
+    float pressureMult = 1000.f;
+
+    WaterPhysUbo phyUbo{};
+
+    phyUbo.uGridDim = glm::ivec4(20,20,20,20);
+
+    phyUbo.uCellSize = 0.7f;
+
+    phyUbo.uH = smoothingRadius;
+    phyUbo.uH2 = smoothingRadius * smoothingRadius;
+    phyUbo.poly6Coeff = 315.0f / (64.0f * glm::pi<float>() * pow(smoothingRadius, 9));
+    phyUbo.spikyGradCoeff = -45.0f / (glm::pi<float>() * pow(smoothingRadius, 6));
+    phyUbo.viscLapCoeff = 45.0f / (glm::pi<float>() * pow(smoothingRadius, 6));
+
+    phyUbo.uMass = 100.0f;
+    phyUbo.uRestDensity = 1000.f;
+
+    phyUbo.uMu = pressureMult;
+    phyUbo.uViscosity = 0.3f;
+    phyUbo.uEps = 0.01f * smoothingRadius * smoothingRadius;
+    phyUbo.uDt = 0.002f;
+
+    phyUbo.uBoxMin = glm::vec4(-4.928f, -3.08f, -1.848f, 1);
+    phyUbo.uBoxMax = glm::vec4(4.928f, 0.55f, 4.928f, 1);
+    phyUbo.uGravity = glm::vec4(0.f,9.81f,0.f,0.f);
+
+    phyUbo.uDamping = 0.6;
+    phyUbo.uNumParticles = 343;
+    phyUbo.uNumCells = phyUbo.uGridDim.x * phyUbo.uGridDim.y * phyUbo.uGridDim.z;
+      
+    for (size_t i = 0; i < phyUboBuffers.size(); i++) {
+            phyUboBuffers[i]->writeToBuffer(&phyUbo);
+            phyUboBuffers[i]->flush();
+        }
+      
 
   WaterPhysics waterPhysics{
       computeSetLayout->getDescriptorSetLayout(),
+      phyUbo,
       gameObjects,
-      0.3f,     // h = 2 × particle radius
+      smoothingRadius,  // h = 2 × particle radius
       1000.f,   // rest density (water)
       0.3f,     // viscosity
       1000.0f,  // pressure stiffness
@@ -90,15 +146,28 @@ void WaterApp::run() {
   };
 
   for (int i = 0; i < (int)computeDescriptorSets.size(); i++) {
-    auto inputInfo = waterPhysics.getInputDescInfo();
+    auto cellCountInfo = waterPhysics.getCellCountDescInfo();
+    auto cellIndicesInfo = waterPhysics.getCellIndiciesDescInfo();
+    auto cellStartInfo = waterPhysics.getCellStartDescInfo();
+    auto velocitiesInfo = waterPhysics.getVelocitiesDescInfo();
+    auto densitiesInfo = waterPhysics.getDensitiesDescInfo();
+    auto pressuresInfo = waterPhysics.getPressuresDescInfo();
+    auto forcesInfo = waterPhysics.getForcesDescInfo();
+    auto uboInfo = phyUboBuffers[i]->descriptorInfo();
     auto outputInfo = waterPhysics.getOutputDescInfo();
 
     LveDescriptorWriter(*computeSetLayout, *globalPool)
-        .writeBuffer(0, &inputInfo)   // binding 0: input positions
+        .writeBuffer(0, &uboInfo)         // binding 1: output positions
         .writeBuffer(1, &outputInfo)  // binding 1: output positions
+        .writeBuffer(2, &velocitiesInfo)  // binding 1: output positions
+        .writeBuffer(3, &densitiesInfo)  // binding 1: output positions
+        .writeBuffer(4, &pressuresInfo)  // binding 1: output positions
+        .writeBuffer(5, &forcesInfo)  // binding 1: output positions
+        .writeBuffer(6, &cellStartInfo)   
+        .writeBuffer(7, &cellCountInfo)  // binding 0: input positions
+        .writeBuffer(8, &cellIndicesInfo)  // binding 0: input positions
         .build(computeDescriptorSets[i]);
   }
-
   std::cout << "Pass 4 \n";
 
   WaterRenderSystem waterRenderSystem{
@@ -120,6 +189,7 @@ void WaterApp::run() {
   float fps = 0.0f;
   std::vector<float> fpsHistory(31, 0.0f);  // fixed size
   int fpsIndex = 0;                         // circular write index
+  std::cout << gameObjects.size() << "THAT WAS THE SIZE" << "\n";
 
   while (!lveWindow.shouldClose()) {
     glfwPollEvents();
@@ -153,15 +223,15 @@ void WaterApp::run() {
 
     if (auto commandBuffer = lveRenderer.beginFrame()) {
       int frameIndex = lveRenderer.getFrameIndex();
-      FrameInfo frameInfo{
-          frameIndex,
+      WaterFrameInfo frameInfo{
           frameTime,
           commandBuffer,
           camera,
           globalDescriptorSets[frameIndex],
+          computeDescriptorSets[frameIndex],
           gameObjects};
 
-      // ---- UPDATE GLOBAL UBO ----
+
       WaterUbo ubo{};
       ubo.projection = camera.getProjection();
       ubo.inverseProjection = camera.getProjection();
@@ -171,7 +241,7 @@ void WaterApp::run() {
       uboBuffers[frameIndex]->writeToBuffer(&ubo);
       uboBuffers[frameIndex]->flush();
 
-      waterPhysics.RunSimulation(0.002f);
+      waterPhysics.RunSimulation(0.002f, frameInfo);
       
       lveRenderer.beginSwapChainRenderPass(commandBuffer);
       
