@@ -64,6 +64,7 @@ class WaterPhysics {
   VkDescriptorBufferInfo getPressuresDescInfo() { return pressuresBuff->descriptorInfo(); }
   VkDescriptorBufferInfo getForcesDescInfo() { return forcesBuff->descriptorInfo(); }
   VkDescriptorBufferInfo getOutputDescInfo() { return outputBuffer->descriptorInfo(); }
+  VkDescriptorBufferInfo getCellCursorDescInfo() { return cellCursorBuff->descriptorInfo(); }
 
   void UploadBuffers(const Grid& grid);
  private:
@@ -142,6 +143,7 @@ class WaterPhysics {
   std::unique_ptr<LveBuffer> densitiesBuff;
   std::unique_ptr<LveBuffer> pressuresBuff;
   std::unique_ptr<LveBuffer> forcesBuff;
+  std::unique_ptr<LveBuffer> cellCursorBuff;
 
   std::unique_ptr<LveBuffer> outputBuffer;
 

@@ -1,4 +1,5 @@
 #include "water_physics.hpp"
+
 #include "lve_pipeline.hpp"
 
 // glm
@@ -11,6 +12,7 @@
 // std
 #include <cmath>
 #include <iostream>
+
 #include "lve_descriptors.hpp"
 
 namespace lve {
@@ -18,24 +20,22 @@ namespace lve {
 glm::vec3 boxMin(-1.4f, -1.4f, -1.4f);
 glm::vec3 boxMax(1.4f, 0.5f, 1.4f);
 
-
 WaterPhysics::WaterPhysics(
-    VkDescriptorSetLayout setLayout, WaterPhysUbo &ubo, 
+    VkDescriptorSetLayout setLayout,
+    WaterPhysUbo& ubo,
     std::unordered_map<unsigned int, LveGameObject>& curParticles,
     float _smoothingRadius,
     float _restDensity,
     float _viscosity,
-    float _mu, LveDevice *_device)
+    float _mu,
+    LveDevice* _device)
     : particlesMap(curParticles),
       smoothingRadius(_smoothingRadius),
       restDensity(_restDensity),
       viscosity(_viscosity),
       mu(_mu),
       cellSize(_smoothingRadius),
-     device{*_device}  
-{
-
-
+      device{*_device} {
   // Scale bounding box
   float scale = 1.1f;
   float scaleX = 3.2f * scale;
@@ -84,7 +84,7 @@ WaterPhysics::WaterPhysics(
 
   particleCount = temp.size();
   outPositions.resize(particleCount);
-  
+
   mainGrid.gridDim = ubo.uGridDim;
 
   mainGrid.numCells = ubo.uNumCells;
@@ -96,7 +96,6 @@ WaterPhysics::WaterPhysics(
   mainGrid.cellIndices.resize(ubo.uNumParticles);
   std::cout << "cellIndices Size  " << ubo.uNumParticles << std::endl;
   std::cout << "cellcount Size  " << ubo.uNumCells << std::endl;
-
 
   BuildUniformGrid(mainGrid, p_positions);
 
@@ -123,23 +122,21 @@ WaterPhysics::WaterPhysics(
   forcesBuff->writeToBuffer(zeroForces.data());
   forcesBuff->flush();
 
-
   UploadBuffers(mainGrid);
   CreateComputePipelineLayout(setLayout);
   CreateComputePipeline();
 
-  std::cout << "\n"<< "done";
+  std::cout << "\n"
+            << "done";
 }
 
-WaterPhysics::~WaterPhysics() { 
-    vkDestroyPipeline(device.device(), computePipeline, nullptr);
+WaterPhysics::~WaterPhysics() {
+  vkDestroyPipeline(device.device(), computePipeline, nullptr);
   vkDestroyPipelineLayout(device.device(), pipelineLayout, nullptr);
   vkDestroyShaderModule(device.device(), computeShaderModule, nullptr);
 }
 
-void WaterPhysics::RunSimulation(float dt, WaterFrameInfo &info) {
-  RunAndReadback(info);
-}
+void WaterPhysics::RunSimulation(float dt, WaterFrameInfo& info) { RunAndReadback(info); }
 
 // ============================================================================
 // Grid Functions
@@ -175,7 +172,7 @@ void WaterPhysics::BuildSpatialGrid() {
   }
 }
 
-void WaterPhysics::UploadBuffers(const Grid &grid) {
+void WaterPhysics::UploadBuffers(const Grid& grid) {
   cellIndices->writeToBuffer((void*)grid.cellIndices.data());
   cellIndices->flush();
 
@@ -190,6 +187,7 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
   BuildUniformGrid(mainGrid, p_positions);
   UploadBuffers(mainGrid);
 
+  /*
   // 1. Verify grid population
   int totalInGrid = 0;
   int nonEmpty = 0;
@@ -242,7 +240,7 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
 
   std::cout << "==================" << std::endl;
   std::cout << p_positions[0].x << "  " << p_positions[0].y << "  " << p_positions[0].z << "\n";
-
+  */
   // ========================================
   // CRITICAL: Buffer-specific barriers for grid data
   // ========================================
@@ -383,8 +381,9 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
   // Copy data from buffer
   void* mapped2 = outputBuffer->getMappedMemory();
   memcpy(outPositions.data(), mapped2, sizeof(glm::vec4) * particleCount);
-  std::cout << "Particle 0 neighbor count from GPU: " << outPositions[0].w << std::endl;
-  std::cout << "Particle 0 density: " << outPositions[0].x << std::endl;
+
+  //std::cout << "Particle 0 neighbor count from GPU: " << outPositions[0].w << std::endl;
+  //std::cout << "Particle 0 density: " << outPositions[0].x << std::endl;
 
   // Update game objects
   for (size_t i = 0; i < activeParticles.size(); i++) {
@@ -464,28 +463,28 @@ void WaterPhysics::CreateBuffers(Grid& grid) {
 }
 
 void WaterPhysics::CreateComputePipelineLayout(VkDescriptorSetLayout setLayout) {
-    
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(WaterPushConstants);
+  VkPushConstantRange pushConstantRange{};
+  pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  pushConstantRange.offset = 0;
+  pushConstantRange.size = sizeof(WaterPushConstants);
 
-    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 
-    layoutInfo.setLayoutCount = 1;
-    layoutInfo.pSetLayouts = &setLayout;
-    layoutInfo.pushConstantRangeCount = 1;
-    layoutInfo.pPushConstantRanges = &pushConstantRange;
+  layoutInfo.setLayoutCount = 1;
+  layoutInfo.pSetLayouts = &setLayout;
+  layoutInfo.pushConstantRangeCount = 1;
+  layoutInfo.pPushConstantRanges = &pushConstantRange;
 
-    if (vkCreatePipelineLayout(device.device(), &layoutInfo, nullptr, &pipelineLayout) !=
-        VK_SUCCESS) {
-      throw std::runtime_error("failed to create compute pipeline layout");
-    }
+  if (vkCreatePipelineLayout(device.device(), &layoutInfo, nullptr, &pipelineLayout) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("failed to create compute pipeline layout");
+  }
 }
 
 void WaterPhysics::CreateComputePipeline() {
   // Create shader module
-  computeShaderModule = LvePipeline::loadShaderModule("C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
+  computeShaderModule = LvePipeline::loadShaderModule(
+      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
       "tut27\\shaders\\water_phy.comp.spv",
       device.device());
 
@@ -509,12 +508,10 @@ void WaterPhysics::CreateComputePipeline() {
 
 glm::ivec3 WaterPhysics::PositionToGridCell(
     const glm::vec3& pos, float cellSize, const glm::ivec3& gridDim) {
-  
   glm::vec3 extent = -0.5f * glm::vec3(gridDim) * cellSize;
-    
+
   glm::vec3 relPos = pos - extent;  // position relative to grid origin
   glm::ivec3 cell;
-
 
   // center grid at origin
   cell.x = static_cast<int>(floor(relPos.x / cellSize));
@@ -538,20 +535,19 @@ void WaterPhysics::ClearGrid(Grid& grid) {
 }
 
 void WaterPhysics::CountParticlesPerCell(Grid& grid, const std::vector<glm::vec3>& positions) {
-
   for (int i = 0; i < positions.size(); ++i) {
-      glm::ivec3 cell = PositionToGridCell(positions[i], grid.cellSize, grid.gridDim);
+    glm::ivec3 cell = PositionToGridCell(positions[i], grid.cellSize, grid.gridDim);
 
-      int cellIndex = Cell3DToIndex(cell, grid.gridDim);
-      grid.cellCount[cellIndex]++;
+    int cellIndex = Cell3DToIndex(cell, grid.gridDim);
+    grid.cellCount[cellIndex]++;
   }
 }
 
 void WaterPhysics::BuildCellStart(Grid& grid) {
   int running = 0;
   for (int c = 0; c < grid.numCells; ++c) {
-      grid.cellStart[c] = running;
-      running += grid.cellCount[c];
+    grid.cellStart[c] = running;
+    running += grid.cellCount[c];
   }
 }
 
@@ -560,12 +556,11 @@ void WaterPhysics::FillCellIndices(Grid& grid, const std::vector<glm::vec3>& pos
   std::vector<int> cursor = grid.cellStart;
 
   for (int i = 0; i < N; ++i) {
-      glm::ivec3 cell = PositionToGridCell(positions[i], grid.cellSize, grid.gridDim);
-      int cellIndex = Cell3DToIndex(cell, grid.gridDim);
-      int dst = cursor[cellIndex]++;
+    glm::ivec3 cell = PositionToGridCell(positions[i], grid.cellSize, grid.gridDim);
+    int cellIndex = Cell3DToIndex(cell, grid.gridDim);
+    int dst = cursor[cellIndex]++;
 
-      grid.cellIndices[dst] = i;
-
+    grid.cellIndices[dst] = i;
   }
 }
 
@@ -576,5 +571,4 @@ void WaterPhysics::BuildUniformGrid(Grid& grid, const std::vector<glm::vec3>& po
   FillCellIndices(grid, positions);
 }
 
-};
-
+};  // namespace lve

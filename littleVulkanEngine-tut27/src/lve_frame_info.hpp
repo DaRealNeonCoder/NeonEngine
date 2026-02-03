@@ -39,33 +39,38 @@ struct alignas(16) WaterPhysUbo {
   int32_t pad;
   int32_t pad2;
 
-  glm::ivec4 uGridDim;  // ivec3 + padding
+  glm::ivec4 uGridDim;  // 16 bytes
 
-  float uCellSize;
+  // ---- 4-float block ----
   float uH;
   float uH2;
   float poly6Coeff;
-
   float spikyGradCoeff;
+
+  // ---- 4-float block ----
   float viscLapCoeff;
   float uMass;
   float uRestDensity;
-
   float uMu;
+
+  // ---- 4-float block ----
   float uViscosity;
   float uEps;
   float uDt;
+  float uCellSize;
 
+  // ---- vec4s ----
   glm::vec4 uBoxMin;
   glm::vec4 uBoxMax;
   glm::vec4 uGravity;
 
+  // ---- tail ----
   float uDamping;
   float pad3;
   float pad4;
   float pad5;
 };
-;
+
 struct FrameInfo {
   int frameIndex;
   float frameTime;

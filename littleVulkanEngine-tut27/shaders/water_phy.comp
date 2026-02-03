@@ -8,27 +8,31 @@ layout(std140, set = 0, binding = 0) uniform WaterPhysUbo {
     int pad;
     int pad2;
 
-    ivec3 uGridDim;           // grid dimensions (cells in x,y,z)
-    float uCellSize;
+    ivec4 uGridDim;           // grid dimensions (cells in x,y,z)
 
     float uH;                 
     float uH2;                 
     float poly6Coeff;
     float spikyGradCoeff;
-    float viscLapCoeff;
 
+    float viscLapCoeff;
     float uMass;
     float uRestDensity;
     float uMu;                // pressure constant (mu)
+    
     float uViscosity;
     float uEps;
     float uDt;
+    float uCellSize; 
 
     vec4 uBoxMin;             // xyz = min, w unused
     vec4 uBoxMax;             // xyz = max, w unused
     vec4 uGravity;            // gravity.xyz
 
     float uDamping;
+    float pad3;
+    float pad4;
+    float pad5;
 } ubo;
 
 // ---- Buffers ----
@@ -55,9 +59,6 @@ layout(std430, set = 0, binding = 5) buffer Forces {
     coherent vec4 forces[];
 };
 
-// For each cell index c (0..uNumCells-1): cellStart[c] is start index into cellIndices,
-// and cellCount[c] is number of consecutive particle indices in cellIndices for that cell.
-// If a cellCount[c] == 0, skip it.
 layout(std430, set = 0, binding = 6) buffer CellStart {
     int cellStart[]; // length uNumCells
 };
@@ -78,11 +79,11 @@ layout(push_constant) uniform Push {
 
 const float PI = 3.14159265359;
 ivec3 positionToGridCell(vec3 pos) {
-    vec3 gridMin = -0.5 * vec3(ubo.uGridDim) * ubo.uCellSize;
+    vec3 gridMin = -0.5 * vec3(ubo.uGridDim.xyz) * ubo.uCellSize;
     vec3 relPos = pos - gridMin;
 
     ivec3 cell = ivec3(floor(relPos / ubo.uCellSize));
-    return clamp(cell, ivec3(0), ubo.uGridDim - ivec3(1));
+    return clamp(cell, ivec3(0), ubo.uGridDim.xyz - ivec3(1));
 }
 
 int cell3DtoIndex(ivec3 c) {
@@ -145,15 +146,11 @@ void main() {
     if (pc.uPass == 0) {
         // ----- PASS 0: Compute density -----
         float rho = 0.0;
-
         for (int dz = -1; dz <= 1; ++dz) {
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dx = -1; dx <= 1; ++dx) {
                     ivec3 nc = cell + ivec3(dx, dy, dz);
-                    // skip cells outside grid bounds
-                    if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ubo.uGridDim))) {
-                        continue;
-                    }
+
                     int nIndex = cell3DtoIndex(nc);
                     int start = cellStart[nIndex];
                     int count = cellCount[nIndex];
@@ -186,12 +183,13 @@ void main() {
     {
         // ----- PASS 2: Compute forces and integrate -----
         vec3 acc = vec3(0.0);
+            // write cellCount[4150] into positions[0].w so the CPU readback shows it directly
 
         for (int dz = -1; dz <= 1; ++dz) {
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dx = -1; dx <= 1; ++dx) {
                     ivec3 nc = cell + ivec3(dx, dy, dz);
-                    if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ubo.uGridDim))) {
+                    if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ubo.uGridDim.xyz))) {
                         continue;
                     }
                     int nIndex = cell3DtoIndex(nc);
@@ -238,7 +236,6 @@ void main() {
             }
         }
 
-        // gravity (note: uGravity stored in vec4)
         acc += ubo.uGravity.xyz;
 
         // Store forces (vec4)
@@ -278,9 +275,8 @@ void main() {
             v_new.z *= -damping;
         }
 
-        // Write back results
         velocities[i] = vec4(v_new, 0.0);
-        positions[i] = vec4(x_new, positions[i].w); // preserve w if used
+        positions[i] = vec4(x_new, positions[i].w);
     }
 
 }
