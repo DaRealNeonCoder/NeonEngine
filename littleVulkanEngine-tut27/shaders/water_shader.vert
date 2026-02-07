@@ -51,7 +51,7 @@ void main() {
     vec3 worldPos =
         instancePos +
         camRight * quadPos.x * radius +
-        camUp    * quadPos.y * radius;
+        -camUp    * quadPos.y * radius;
 
     fragPosWorld = worldPos;
     fragColor = instanceColor.rgb;

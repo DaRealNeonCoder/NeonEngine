@@ -55,7 +55,7 @@ void WaterApp::run() {
   std::vector<std::unique_ptr<LveBuffer>> uboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
   std::vector<std::unique_ptr<LveBuffer>> phyUboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
-  int particleLen = 25;
+  int particleLen = 15;
   int particleCount = particleLen * particleLen * particleLen;
 
     std::vector<glm::vec4> posTemp(particleCount);
