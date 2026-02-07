@@ -75,6 +75,11 @@ layout(std430, set = 0, binding = 8) buffer CellIndices {
 // ---- Control uniform to select which pass to execute ----
 layout(push_constant) uniform Push {
     int uPass; // 0 = assign to cells->, 1 = densities+pressure, 2 = forces+integrate
+    int pad; // 0 = assign to cells->, 1 = densities+pressure, 2 = forces+integrate
+    int pad2; // 0 = assign to cells->, 1 = densities+pressure, 2 = forces+integrate
+    int pad3; // 0 = assign to cells->, 1 = densities+pressure, 2 = forces+integrate
+
+    float dt;
 } pc;
 
 const float PI = 3.14159265359;
@@ -99,12 +104,11 @@ float SmoothingFunction(float r, float h, float poly6C, float h2) {
     }
     return 0.0;
 }
-
 vec3 grad_W_spiky(vec3 r_vec, float h, float spikyC) {
     float r = length(r_vec);
     if (r > 0.0 && r <= h) {
         float hr = h - r;
-        float scalar = spikyC * (hr * hr) / r;
+        float scalar = spikyC * (hr * hr) / r; // ^3
         return scalar * r_vec;
     }
     return vec3(0.0);
@@ -176,14 +180,13 @@ void main() {
 
         densities[i] = max(rho, eps);
         float error = densities[i] - ubo.uRestDensity;
-        pressures[i] = error * ubo.uMu;
+        pressures[i] = max(0, error * ubo.uMu);
         return;
     } 
     else if (pc.uPass == 1)
     {
         // ----- PASS 2: Compute forces and integrate -----
         vec3 acc = vec3(0.0);
-            // write cellCount[4150] into positions[0].w so the CPU readback shows it directly
 
         for (int dz = -1; dz <= 1; ++dz) {
             for (int dy = -1; dy <= 1; ++dy) {
@@ -215,7 +218,6 @@ void main() {
                             float pi_val = pressures[i];
                             float pj_val = pressures[j];
 
-                            // Note: original CPU used p_pressures[i] / (p_densities[i] * p_densities[i])
                             float denom_i = densities[i] * densities[i];
                             float denom_j = densities[j] * densities[j];
                             float presTerm = 0.0;
@@ -242,8 +244,8 @@ void main() {
         forces[i] = vec4(acc, 0.0);
 
         // Integrate (semi-implicit Euler)
-        vec3 v_new = vi + ubo.uDt * acc;
-        vec3 x_new = xi + ubo.uDt * v_new;
+        vec3 v_new = vi + pc.dt * acc;
+        vec3 x_new = xi + pc.dt * v_new;
 
         // boundary containment with damping
         float damping = ubo.uDamping;

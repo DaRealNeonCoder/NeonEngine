@@ -44,8 +44,34 @@ WaterApp::~WaterApp() {}
 void WaterApp::run() {
   std::cout << "Pass 1 \n";
 
+  auto currentTime = std::chrono::high_resolution_clock::now();
+  char title[128];
+  float fpsTimer = 0.0f;
+  int frameCount = 0;
+  float fps = 0.0f;
+  std::vector<float> fpsHistory(31, 0.0f);  // fixed size
+  int fpsIndex = 0;                         // circular write index
+
   std::vector<std::unique_ptr<LveBuffer>> uboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
   std::vector<std::unique_ptr<LveBuffer>> phyUboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
+
+  int particleLen = 25;
+  int particleCount = particleLen * particleLen * particleLen;
+
+    std::vector<glm::vec4> posTemp(particleCount);
+  colors.assign(particleCount, glm::vec3(0, 0.4f, 0.8f));  
+
+  float particleScale = 0.2f;
+  glm::vec4 offset(0, -2.f, 0, 0);
+  float particleSpacing = 2.2f * particleScale;
+  for (size_t x = 0; x < particleLen; x++) {
+    for (size_t y = 0; y < particleLen; y++) {
+      for (size_t z = 0; z < particleLen; z++) {
+        posTemp[x + y * particleLen + z * particleLen * particleLen] =
+            glm::vec4(x * particleSpacing, y * particleSpacing, z * particleSpacing, 0.1f);
+      }
+    }
+  }
 
   for (int i = 0; i < (int)uboBuffers.size(); i++) {
     uboBuffers[i] = std::make_unique<LveBuffer>(
@@ -96,15 +122,15 @@ void WaterApp::run() {
         .writeBuffer(0, &bufferInfo)
         .build(globalDescriptorSets[i]);
   }
-  float scleThing = 2.f;
-  float smoothingRadius = 0.3f * scleThing;
-  float pressureMult = 1250.f;
+  float scleThing = 1.2f;
+  float smoothingRadius = 0.3f;
+  float pressureMult = 1000.f;
 
   WaterPhysUbo phyUbo{};
 
   phyUbo.uGridDim = glm::ivec4(20, 20, 20, 1);
 
-  phyUbo.uCellSize = 0.3f * scleThing;
+  phyUbo.uCellSize = 0.3f;
 
   phyUbo.uH = smoothingRadius;
   phyUbo.uH2 = smoothingRadius * smoothingRadius;
@@ -118,14 +144,14 @@ void WaterApp::run() {
   phyUbo.uMu = pressureMult;
   phyUbo.uViscosity = 0.20f;
   phyUbo.uEps = 0.01f * smoothingRadius * smoothingRadius;
-  phyUbo.uDt = 0.002f;
-
+  //phyUbo.uDt = 0.002f;
+  //dt in push 
   phyUbo.uBoxMin = glm::vec4(-4.928f, -3.08f, -1.848f, 1);
   phyUbo.uBoxMax = glm::vec4(4.928f, 0.55f, 4.928f / 2.f, 1);
   phyUbo.uGravity = glm::vec4(0.f, 9.81f, 0.f, 0.f);
 
   phyUbo.uDamping = 0.6;
-  phyUbo.uNumParticles = gameObjects.size() - 1;
+  phyUbo.uNumParticles = particleCount ;
   std::cout << waterParticles.size() << 
      "\n";
   phyUbo.uNumCells = phyUbo.uGridDim.x * phyUbo.uGridDim.y * phyUbo.uGridDim.z;
@@ -136,6 +162,8 @@ void WaterApp::run() {
   }
 
   WaterPhysics waterPhysics{
+      particleCount, 
+      posTemp,
       computeSetLayout->getDescriptorSetLayout(),
       phyUbo,
       gameObjects,
@@ -170,11 +198,25 @@ void WaterApp::run() {
         .build(computeDescriptorSets[i]);
   }
   std::cout << "Pass 4 \n";
-
+ 
+  std::shared_ptr<LveModel> model;
+  for (auto& kv : gameObjects) {
+      auto& obj = kv.second;
+      if (obj.model == nullptr) continue;
+      model = obj.model;
+    break;
+  }
+  std::cout << "Pass 4.1\n";
   WaterRenderSystem waterRenderSystem{
       lveDevice,
       lveRenderer.getSwapChainRenderPass(),
-      globalSetLayout->getDescriptorSetLayout()};
+      globalSetLayout->getDescriptorSetLayout(),
+      particleCount,
+      model->getVertices()};
+  waterRenderSystem.particleVert = model->getVertices().size();
+  waterRenderSystem.updateBuffers(posTemp, colors);
+
+  std::cout << "Pass 4.2\n";
 
   // ... camera setup ...
   LveCamera camera{};
@@ -182,15 +224,11 @@ void WaterApp::run() {
   viewerObject.transform.translation.z = -2.5f;
   KeyboardMovementController cameraController{};
 
-  auto currentTime = std::chrono::high_resolution_clock::now();
   std::cout << "Pass 5 \n";
-  char title[128];
-  float fpsTimer = 0.0f;
-  int frameCount = 0;
-  float fps = 0.0f;
-  std::vector<float> fpsHistory(31, 0.0f);  // fixed size
-  int fpsIndex = 0;                         // circular write index
 
+
+
+  std::cout << "Pass 6 \n";
 
   while (!lveWindow.shouldClose()) {
     glfwPollEvents();
@@ -242,6 +280,7 @@ void WaterApp::run() {
 
       waterPhysics.RunSimulation(0.002f, frameInfo);
 
+      waterRenderSystem.updateBuffers(waterPhysics.outPositions, colors);
       lveRenderer.beginSwapChainRenderPass(commandBuffer);
 
       waterRenderSystem.renderGameObjects(frameInfo);
@@ -249,6 +288,7 @@ void WaterApp::run() {
       lveRenderer.endSwapChainRenderPass(commandBuffer);
 
       lveRenderer.endFrame();
+
     }
   }
 
@@ -271,41 +311,34 @@ void WaterApp::loadGameObjects() {
   flatVase.transform.translation = {-3.1f, -1.3f, 0};
   flatVase.transform.scale = {2, 2, 2};
   flatVase.color = glm::vec3(0.8f);
-  gameObjects.emplace(flatVase.getId(), std::move(flatVase));
+  //gameObjects.emplace(flatVase.getId(), std::move(flatVase));
 
   std::shared_ptr<LveModel> cubeModel = LveModel::createModelFromFile(
       lveDevice,
       "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\models\\WaterParticle.obj");
+      "tut27\\models\\quad.obj");
   int particleLen = 15;
-  float particleScale = 0.2f;
-  float particleSpacing = 2.2f * particleScale;
 
+  
   float spc = 0.1f;  // whatever you actually used when creating the lattice
   float particleVolume = spc * spc * spc;
   float particleMass = 1000.f * particleVolume;  // gives mass that yields rho ~ restDensity i
   glm::vec3 offset(0, -2.f, 0);
+  float particleScale = 0.2f;
 
-  for (size_t x = 0; x < particleLen; x++) {
-    for (size_t y = 0; y < particleLen; y++) {
-      for (size_t z = 0; z < particleLen; z++) {
-        LveGameObject particle = LveGameObject::createGameObject();
-        particle.model = cubeModel;
+ LveGameObject particle = LveGameObject::createGameObject();
+  particle.model = cubeModel;
 
-        particle.transform.translation = {
-            x * particleSpacing,
-            y * particleSpacing,
-            z * particleSpacing};
+  particle.transform.translation = {0, 0, 0};
 
-        particle.transform.translation += offset;
+  particle.transform.translation += offset;
 
-        particle.transform.scale = {particleScale, particleScale, particleScale};
-        particle.color = glm::vec3(0, 0.4f, 1.f);
+  particle.transform.scale = {particleScale, particleScale, particleScale};
+  particle.color = glm::vec3(0, 0.4f, 1.f);
 
-        gameObjects.emplace(particle.getId(), std::move(particle));
-      }
-    }
-  }
+  gameObjects.emplace(particle.getId(), std::move(particle));
+
+
 }
 
 }  // namespace lve

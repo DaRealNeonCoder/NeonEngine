@@ -21,6 +21,8 @@ glm::vec3 boxMin(-1.4f, -1.4f, -1.4f);
 glm::vec3 boxMax(1.4f, 0.5f, 1.4f);
 
 WaterPhysics::WaterPhysics(
+    int _particleCount,
+    std::vector<glm::vec4>& startPos,
     VkDescriptorSetLayout setLayout,
     WaterPhysUbo& ubo,
     std::unordered_map<unsigned int, LveGameObject>& curParticles,
@@ -36,6 +38,8 @@ WaterPhysics::WaterPhysics(
       mu(_mu),
       cellSize(_smoothingRadius),
       device{*_device} {
+  particleCount = _particleCount;
+
   // Scale bounding box
   float scale = 1.1f;
   float scaleX = 3.2f * scale;
@@ -63,15 +67,15 @@ WaterPhysics::WaterPhysics(
 
   std::cout << "Active particles: " << activeParticles.size() << std::endl;
 
-  p_velocities.resize(activeParticles.size());
-  p_positions.resize(activeParticles.size());
-  p_forces.resize(activeParticles.size());
-  p_pressures.resize(activeParticles.size());
-  p_densities.resize(activeParticles.size());
+  p_velocities.resize(particleCount);
+  p_positions.resize(particleCount);
+  p_forces.resize(particleCount);
+  p_pressures.resize(particleCount);
+  p_densities.resize(particleCount);
 
   // Initialize positions
-  for (size_t i = 0; i < activeParticles.size(); i++) {
-    p_positions[i] = activeParticles[i]->transform.translation;
+  for (size_t i = 0; i < particleCount; i++) {
+    p_positions[i] = startPos[i];
   }
 
   std::vector<glm::vec4> temp;
@@ -82,7 +86,6 @@ WaterPhysics::WaterPhysics(
   }
   std::cout << "Active particles: " << activeParticles.size() << std::endl;
 
-  particleCount = temp.size();
   outPositions.resize(particleCount);
 
   mainGrid.gridDim = ubo.uGridDim;
@@ -165,7 +168,7 @@ void WaterPhysics::GetNeighborCells(const GridCell& cell, std::vector<GridCell>&
 void WaterPhysics::BuildSpatialGrid() {
   spatialGrid.clear();
 
-  const size_t N = activeParticles.size();
+  const size_t N = particleCount;
   for (size_t i = 0; i < N; ++i) {
     GridCell cell = GetGridCell(p_positions[i]);
     spatialGrid[cell].push_back(i);
@@ -309,6 +312,9 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
 
   // Pass 0: Compute densities/pressures
   pc.uPass = 0;
+  pc.dt = 0.002f;
+
+
   vkCmdPushConstants(
       frameInfo.commandBuffer,
       pipelineLayout,
@@ -386,10 +392,8 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
   //std::cout << "Particle 0 density: " << outPositions[0].x << std::endl;
 
   // Update game objects
-  for (size_t i = 0; i < activeParticles.size(); i++) {
-    LveGameObject* p = activeParticles[i];
+  for (size_t i = 0; i < particleCount; i++) {
     p_positions[i] = glm::vec3(outPositions[i].x, outPositions[i].y, outPositions[i].z);
-    p->transform.translation = glm::vec3(outPositions[i].x, outPositions[i].y, outPositions[i].z);
   }
 }
 

@@ -1,49 +1,33 @@
- #version 450
+#version 450
 
-// y'know what I really hate? people who answer their own questions.
-
-layout(location = 0) in vec3 fragColor;          
-layout(location = 1) in vec3 fragPosWorld;      
-layout(location = 2) in vec3 fragNormalWorld;   
+layout(location = 0) in vec3 fragColor;
+layout(location = 1) in vec3 fragPosWorld;
+layout(location = 2) in vec2 fragLocalPos;
 
 layout(location = 0) out vec4 outColor;
 
-layout(set = 0, binding = 0, std140) uniform WaterUbo {
-    mat4 projection;
-    mat4 inverseProjection;
-    mat4 view;
-    mat4 inverseView;
-
-} ubo;
-
-layout(push_constant) uniform Push {
-    mat4 modelMatrix;
-    mat4 normalMatrix;
-    vec4 color;
-} push;
-
-
 void main() {
-    if(push.color.w == 2) //for da water tank.
-    {
-    outColor = vec4(push.color.xyz, 1.0);
-    return;
-    }
-    vec3 ambient =  0.3 * vec3(0.0, 0.4, 1.0);
-    vec3 diffuseLight = vec3(0.0);
-    vec3 surfaceNormal = normalize(fragNormalWorld);
 
-    vec3 cameraPosWorld = ubo.inverseView[3].xyz;
-    vec3 viewDirection = normalize(cameraPosWorld - fragPosWorld);
+    // Convert quad coords (-1..1) into circle radius
+    float r2 = dot(fragLocalPos, fragLocalPos);
 
-    vec3 directionToLight = normalize(vec3(-10,-10,-10) - fragPosWorld);
+    // Discard pixels outside circle
+    if (r2 > 1.0)
+        discard;
 
-    float cosAngIncidence = max(dot(surfaceNormal, directionToLight), 0);
-    vec3 intensity = vec3(0.9, 0.9, 0.9);
+    // Reconstruct sphere normal in view-facing space
+    float z = sqrt(1.0 - r2);
+    vec3 normal = normalize(vec3(fragLocalPos.xy, z));
 
-    diffuseLight += intensity * cosAngIncidence;
+    // Simple directional light
+    vec3 lightDir = normalize(vec3(0.4, 0.7, 0.2));
 
-    outColor = vec4((diffuseLight * push.color.xyz)+ ambient, 1.0);
+    float diffuse = max(dot(normal, lightDir), 0.0);
+
+    // Soft ambient term
+    float ambient = 0.2;
+
+    vec3 color = fragColor * (ambient + diffuse);
+
+    outColor = vec4(color, 1.0);
 }
-
-

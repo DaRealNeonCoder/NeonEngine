@@ -35,5 +35,6 @@ class WaterApp {
   // note: order of declarations matters
   std::unique_ptr<LveDescriptorPool> globalPool{};
   LveGameObject::Map gameObjects;
+  std::vector<glm::vec3> colors;
 };
 }  // namespace lve

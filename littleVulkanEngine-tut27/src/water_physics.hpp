@@ -42,17 +42,25 @@ class WaterPhysics {
     std::vector<int> cellIndices;  // size = numParticles
   };
   struct WaterPushConstants {
-    alignas(16) int uPass;
+    int uPass;
+    int pad;
+    int pad2;
+    int pad3;
+
+    float dt;
   };
  public:
   WaterPhysics(
+      int _particleCount,
+      std::vector<glm::vec4>& startPos,
       VkDescriptorSetLayout setLayout,
-      WaterPhysUbo &ubo, 
+      WaterPhysUbo& ubo,
       std::unordered_map<unsigned int, LveGameObject>& curParticles,
-      float _smoothingRadius = 0.1f,
-      float _restDensity = 1000.0f,
-      float _viscosity = 0.01f,
-      float _mu = 1000.0f, LveDevice *_device = nullptr);
+      float _smoothingRadius,
+      float _restDensity,
+      float _viscosity,
+      float _mu,
+      LveDevice* _device);
   ~WaterPhysics();
 
   void RunSimulation(float dt, WaterFrameInfo &info);
@@ -67,6 +75,8 @@ class WaterPhysics {
   VkDescriptorBufferInfo getCellCursorDescInfo() { return cellCursorBuff->descriptorInfo(); }
 
   void UploadBuffers(const Grid& grid);
+  std::vector<glm::vec4> outPositions;
+
  private:
   // Kernel functions
   float SmoothingFunction(float x);
@@ -110,7 +120,6 @@ class WaterPhysics {
   std::vector<glm::vec3> p_velocities;
   std::vector<glm::vec3> p_positions;
   std::vector<glm::vec3> p_forces;
-  std::vector<glm::vec4> outPositions;
   std::vector<float> p_pressures;
   std::vector<float> p_densities;
   // Spatial grid for fast neighbor queries

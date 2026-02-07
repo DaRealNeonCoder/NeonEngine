@@ -85,7 +85,7 @@ void SimpleRenderSystem::renderGameObjects(FrameInfo& frameInfo) {
     SimplePushConstantData push{};
 
     if (obj.getId() == -1) { //disabled temporarily, set back to != 2
-      constexpr float rotationSpeed = glm::radians(45.0f);  // 45° per second
+      constexpr float rotationSpeed = glm::radians(45.0f);  // 45 per second
 
       obj.transform.rotation.y += rotationSpeed * frameInfo.frameTime;
       obj.transform.rotation.x += rotationSpeed * frameInfo.frameTime;
