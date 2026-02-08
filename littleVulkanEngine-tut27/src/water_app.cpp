@@ -30,12 +30,12 @@ WaterApp::WaterApp() {
   int totalSetsNeeded = 2 * numFrames;
 
   globalPool = LveDescriptorPool::Builder(lveDevice)
-                   .setMaxSets(numFrames * 24)
+                   .setMaxSets(numFrames * 26)
                    // UBO: needed in both descriptors per frame => 2 * numFrames
                    .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, totalSetsNeeded)
                    // sampler: only in the 'withShadow' set per frame => numFrames
                    .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, numFrames * 4)
-                   .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, numFrames * 16)
+                   .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, numFrames * 18)
                    .build();
 
   loadGameObjects();
@@ -55,7 +55,7 @@ void WaterApp::run() {
   std::vector<std::unique_ptr<LveBuffer>> uboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
   std::vector<std::unique_ptr<LveBuffer>> phyUboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
-  int particleLen = 15;
+  int particleLen = 25;
   int particleCount = particleLen * particleLen * particleLen;
 
     std::vector<glm::vec4> posTemp(particleCount);
@@ -108,6 +108,7 @@ void WaterApp::run() {
           .addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .build();
 
   std::cout << "Pass 2 \n";
@@ -184,6 +185,7 @@ void WaterApp::run() {
     auto forcesInfo = waterPhysics.getForcesDescInfo();
     auto uboInfo = phyUboBuffers[i]->descriptorInfo();
     auto outputInfo = waterPhysics.getOutputDescInfo();
+    auto cellCursorInfo = waterPhysics.getCellCursorDescInfo();
 
     LveDescriptorWriter(*computeSetLayout, *globalPool)
         .writeBuffer(0, &uboInfo)         // binding 1: output positions
@@ -195,6 +197,7 @@ void WaterApp::run() {
         .writeBuffer(6, &cellStartInfo)
         .writeBuffer(7, &cellCountInfo)    // binding 0: input positions
         .writeBuffer(8, &cellIndicesInfo)  // binding 0: input positions
+        .writeBuffer(9, &cellCursorInfo)  // binding 0: input positions
         .build(computeDescriptorSets[i]);
   }
   std::cout << "Pass 4 \n";
@@ -260,6 +263,7 @@ void WaterApp::run() {
     }
 
     if (auto commandBuffer = lveRenderer.beginFrame()) {
+
       int frameIndex = lveRenderer.getFrameIndex();
       WaterFrameInfo frameInfo{
           frameTime,
@@ -317,7 +321,7 @@ void WaterApp::loadGameObjects() {
       lveDevice,
       "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
       "tut27\\models\\quad.obj");
-  int particleLen = 15;
+  int particleLen = 7;
 
   
   float spc = 0.1f;  // whatever you actually used when creating the lattice

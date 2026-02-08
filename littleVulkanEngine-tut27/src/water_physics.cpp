@@ -109,23 +109,6 @@ WaterPhysics::WaterPhysics(
   outputBuffer->writeToBuffer(temp.data());
   outputBuffer->flush();
 
-  std::vector<glm::vec4> zeroVel(particleCount, glm::vec4(0.0f));
-  velocitiesBuff->writeToBuffer(zeroVel.data());
-  velocitiesBuff->flush();
-
-  std::vector<float> initDensity(particleCount, restDensity /* or phyUbo.uRestDensity */);
-  densitiesBuff->writeToBuffer(initDensity.data());
-  densitiesBuff->flush();
-
-  std::vector<float> zeroFloat(particleCount, 0.0f);
-  pressuresBuff->writeToBuffer(zeroFloat.data());
-  pressuresBuff->flush();
-
-  std::vector<glm::vec4> zeroForces(particleCount, glm::vec4(0.0f));
-  forcesBuff->writeToBuffer(zeroForces.data());
-  forcesBuff->flush();
-
-  UploadBuffers(mainGrid);
   CreateComputePipelineLayout(setLayout);
   CreateComputePipeline();
 
@@ -187,113 +170,7 @@ void WaterPhysics::UploadBuffers(const Grid& grid) {
   // keep mapped or unmap if your LveBuffer's writeToBuffer already unmaps
 }
 void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
-  BuildUniformGrid(mainGrid, p_positions);
-  UploadBuffers(mainGrid);
-
-  /*
-  // 1. Verify grid population
-  int totalInGrid = 0;
-  int nonEmpty = 0;
-  for (int c = 0; c < mainGrid.numCells; c++) {
-    if (mainGrid.cellCount[c] > 0) {
-      nonEmpty++;
-      totalInGrid += mainGrid.cellCount[c];
-    }
-  }
-  std::cout << "=== GRID DEBUG ===" << std::endl;
-  std::cout << "Non-empty cells: " << nonEmpty << " / " << mainGrid.numCells << std::endl;
-  std::cout << "Particles in grid: " << totalInGrid << " / " << particleCount << std::endl;
-
-  // 2. Check first few particles
-  for (int i = 0; i < std::min(3, (int)particleCount); i++) {
-    glm::ivec3 cell = PositionToGridCell(p_positions[i], mainGrid.cellSize, mainGrid.gridDim);
-    int cellIdx = Cell3DToIndex(cell, mainGrid.gridDim);
-    std::cout << "Particle " << i << ": pos=" << p_positions[i].x << "," << p_positions[i].y << ","
-              << p_positions[i].z << " -> cell(" << cell.x << "," << cell.y << "," << cell.z
-              << ") = idx " << cellIdx << " has " << mainGrid.cellCount[cellIdx] << " particles"
-              << std::endl;
-  }
-
-  // 3. Dump first cell's contents
-  if (nonEmpty > 0) {
-    int firstCellIdx = -1;
-    for (int c = 0; c < mainGrid.numCells; c++) {
-      if (mainGrid.cellCount[c] > 0) {
-        firstCellIdx = c;
-        break;
-      }
-    }
-    std::cout << "First non-empty cell " << firstCellIdx << " contains:" << std::endl;
-    int start = mainGrid.cellStart[firstCellIdx];
-    int count = mainGrid.cellCount[firstCellIdx];
-    for (int i = 0; i < count && i < 5; i++) {
-      std::cout << "  cellIndices[" << (start + i) << "] = " << mainGrid.cellIndices[start + i]
-                << std::endl;
-    }
-  }
-
-  // DEBUG: Verify data made it into buffers
-  void* mapped = cellCount->getMappedMemory();
-  int* countData = static_cast<int*>(mapped);
-  std::cout << "cellCount[4150] on CPU after upload: " << countData[4150] << std::endl;
-
-  mapped = cellStart->getMappedMemory();
-  int* startData = static_cast<int*>(mapped);
-  std::cout << "cellStart[4150] on CPU after upload: " << startData[4150] << std::endl;
-
-  std::cout << "==================" << std::endl;
-  std::cout << p_positions[0].x << "  " << p_positions[0].y << "  " << p_positions[0].z << "\n";
-  */
-  // ========================================
-  // CRITICAL: Buffer-specific barriers for grid data
-  // ========================================
-  std::array<VkBufferMemoryBarrier, 3> bufferBarriers{};
-
-  // cellIndices barrier
-  bufferBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-  bufferBarriers[0].pNext = nullptr;
-  bufferBarriers[0].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-  bufferBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  bufferBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  bufferBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  bufferBarriers[0].buffer = cellIndices->getBuffer();
-  bufferBarriers[0].offset = 0;
-  bufferBarriers[0].size = VK_WHOLE_SIZE;
-
-  // cellCount barrier
-  bufferBarriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-  bufferBarriers[1].pNext = nullptr;
-  bufferBarriers[1].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-  bufferBarriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  bufferBarriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  bufferBarriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  bufferBarriers[1].buffer = cellCount->getBuffer();
-  bufferBarriers[1].offset = 0;
-  bufferBarriers[1].size = VK_WHOLE_SIZE;
-
-  // cellStart barrier
-  bufferBarriers[2].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-  bufferBarriers[2].pNext = nullptr;
-  bufferBarriers[2].srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-  bufferBarriers[2].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  bufferBarriers[2].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  bufferBarriers[2].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  bufferBarriers[2].buffer = cellStart->getBuffer();
-  bufferBarriers[2].offset = 0;
-  bufferBarriers[2].size = VK_WHOLE_SIZE;
-
-  vkCmdPipelineBarrier(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_HOST_BIT,            // src stage
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,  // dst stage
-      0,
-      0,
-      nullptr,
-      3,
-      bufferBarriers.data(),
-      0,
-      nullptr);
-
+  // Bind pipeline & descriptor set once
   vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
   vkCmdBindDescriptorSets(
       frameInfo.commandBuffer,
@@ -310,11 +187,120 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
 
   WaterPushConstants pc;
 
-  // Pass 0: Compute densities/pressures
-  pc.uPass = 0;
+  // Create a helper function for barriers
+  auto makeBufferBarrier = [&](VkBuffer buf, VkAccessFlags srcAccess, VkAccessFlags dstAccess) {
+    VkBufferMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = srcAccess;
+    barrier.dstAccessMask = dstAccess;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = buf;
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    return barrier;
+  };
+
+  // Get all buffer handles
+  VkBuffer outputBuf = outputBuffer->getBuffer();
+  VkBuffer velocitiesBuf = velocitiesBuff->getBuffer();
+  VkBuffer positionsBuf = outputBuffer->getBuffer();  // Make sure this exists
+  VkBuffer cellCountBuf = cellCount->getBuffer();
+  VkBuffer cellStartBuf = cellStart->getBuffer();
+  VkBuffer cellIndicesBuf = cellIndices->getBuffer();
+  VkBuffer cellCursorBuf = cellCursorBuff->getBuffer();
+  VkBuffer densitiesBuf = densitiesBuff->getBuffer();
+  VkBuffer pressuresBuf = pressuresBuff->getBuffer();
+  VkBuffer forcesBuf = forcesBuff->getBuffer();  // Make sure this exists
+
+  // --------------- STEP 1: Host -> Compute barrier for all uploaded data ---------------
+  std::vector<VkBufferMemoryBarrier> hostToComputeBarriers;
+
+  // All buffers that host might have written to
+  hostToComputeBarriers.push_back(makeBufferBarrier(
+      positionsBuf,
+      VK_ACCESS_HOST_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+
+  hostToComputeBarriers.push_back(makeBufferBarrier(
+      velocitiesBuf,
+      VK_ACCESS_HOST_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+
+  hostToComputeBarriers.push_back(makeBufferBarrier(
+      cellCountBuf,
+      VK_ACCESS_HOST_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+
+  hostToComputeBarriers.push_back(makeBufferBarrier(
+      cellStartBuf,
+      VK_ACCESS_HOST_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+
+  hostToComputeBarriers.push_back(makeBufferBarrier(
+      cellIndicesBuf,
+      VK_ACCESS_HOST_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+
+  hostToComputeBarriers.push_back(makeBufferBarrier(
+      cellCursorBuf,
+      VK_ACCESS_HOST_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+
+  if (!hostToComputeBarriers.empty()) {
+    vkCmdPipelineBarrier(
+        frameInfo.commandBuffer,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        0,
+        nullptr,
+        static_cast<uint32_t>(hostToComputeBarriers.size()),
+        hostToComputeBarriers.data(),
+        0,
+        nullptr);
+  }
+
+  // --------------- PASS -1: Clear grid ---------------
+  pc.uPass = -1;
   pc.dt = 0.002f;
+  vkCmdPushConstants(
+      frameInfo.commandBuffer,
+      pipelineLayout,
+      VK_SHADER_STAGE_COMPUTE_BIT,
+      0,
+      sizeof(WaterPushConstants),
+      &pc);
 
+  // Dispatch for grid cells
+  uint32_t gridGroups = (mainGrid.numCells + groupSize - 1) / groupSize;
+  vkCmdDispatch(frameInfo.commandBuffer, gridGroups, 1, 1);
 
+  // Barrier: Pass -1 writes -> Pass 0 reads
+  std::vector<VkBufferMemoryBarrier> passNeg1Barriers;
+  passNeg1Barriers.push_back(makeBufferBarrier(
+      cellCountBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  passNeg1Barriers.push_back(makeBufferBarrier(
+      cellCursorBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+
+  vkCmdPipelineBarrier(
+      frameInfo.commandBuffer,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      0,
+      nullptr,
+      static_cast<uint32_t>(passNeg1Barriers.size()),
+      passNeg1Barriers.data(),
+      0,
+      nullptr);
+
+  // --------------- PASS 0: Count particles per cell ---------------
+  pc.uPass = 0;
   vkCmdPushConstants(
       frameInfo.commandBuffer,
       pipelineLayout,
@@ -325,27 +311,24 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
 
   vkCmdDispatch(frameInfo.commandBuffer, groups, 1, 1);
 
-  // ========================================
-  // BARRIER BETWEEN PASSES
-  // ========================================
-  VkMemoryBarrier memoryBarrier{};
-  memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-  memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  memoryBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  // Barrier: Pass 0 writes -> Pass 1 reads (atomic counters)
+  std::vector<VkBufferMemoryBarrier> pass0Barriers;
+  pass0Barriers.push_back(
+      makeBufferBarrier(cellCountBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
 
   vkCmdPipelineBarrier(
       frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,  // src stage
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,  // dst stage
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
       0,
-      1,
-      &memoryBarrier,
       0,
       nullptr,
+      static_cast<uint32_t>(pass0Barriers.size()),
+      pass0Barriers.data(),
       0,
       nullptr);
 
-  // Pass 1: Compute forces and integrate
+  // --------------- PASS 1: Exclusive scan ---------------
   pc.uPass = 1;
   vkCmdPushConstants(
       frameInfo.commandBuffer,
@@ -355,20 +338,124 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       sizeof(WaterPushConstants),
       &pc);
 
+  // Only 1 thread for scan, but we still need a dispatch
+  vkCmdDispatch(frameInfo.commandBuffer, 1, 1, 1);
+
+  // Barrier: Pass 1 writes -> Pass 2 reads
+  std::vector<VkBufferMemoryBarrier> pass1Barriers;
+  pass1Barriers.push_back(
+      makeBufferBarrier(cellStartBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+  pass1Barriers.push_back(makeBufferBarrier(
+      cellCursorBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+
+  vkCmdPipelineBarrier(
+      frameInfo.commandBuffer,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      0,
+      nullptr,
+      static_cast<uint32_t>(pass1Barriers.size()),
+      pass1Barriers.data(),
+      0,
+      nullptr);
+
+  // --------------- PASS 2: Fill cell indices ---------------
+  pc.uPass = 2;
+  vkCmdPushConstants(
+      frameInfo.commandBuffer,
+      pipelineLayout,
+      VK_SHADER_STAGE_COMPUTE_BIT,
+      0,
+      sizeof(WaterPushConstants),
+      &pc);
+
   vkCmdDispatch(frameInfo.commandBuffer, groups, 1, 1);
 
-  // ========================================
-  // BARRIER FOR HOST READ
-  // ========================================
-  VkBufferMemoryBarrier barrier{};
-  barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.buffer = outputBuffer->getBuffer();
-  barrier.offset = 0;
-  barrier.size = VK_WHOLE_SIZE;
+  // Barrier: Pass 2 writes -> Pass 3 reads (density computation)
+  std::vector<VkBufferMemoryBarrier> pass2Barriers;
+  pass2Barriers.push_back(
+      makeBufferBarrier(cellIndicesBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+  pass2Barriers.push_back(
+      makeBufferBarrier(cellCursorBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+
+  vkCmdPipelineBarrier(
+      frameInfo.commandBuffer,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      0,
+      nullptr,
+      static_cast<uint32_t>(pass2Barriers.size()),
+      pass2Barriers.data(),
+      0,
+      nullptr);
+
+  // --------------- PASS 3: Compute density and pressure ---------------
+  pc.uPass = 3;
+  vkCmdPushConstants(
+      frameInfo.commandBuffer,
+      pipelineLayout,
+      VK_SHADER_STAGE_COMPUTE_BIT,
+      0,
+      sizeof(WaterPushConstants),
+      &pc);
+
+  vkCmdDispatch(frameInfo.commandBuffer, groups, 1, 1);
+
+  // Barrier: Pass 3 writes -> Pass 4 reads
+  std::vector<VkBufferMemoryBarrier> pass3Barriers;
+  pass3Barriers.push_back(
+      makeBufferBarrier(densitiesBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+  pass3Barriers.push_back(
+      makeBufferBarrier(pressuresBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+
+  vkCmdPipelineBarrier(
+      frameInfo.commandBuffer,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      0,
+      nullptr,
+      static_cast<uint32_t>(pass3Barriers.size()),
+      pass3Barriers.data(),
+      0,
+      nullptr);
+
+  // --------------- PASS 4: Compute forces and integrate ---------------
+  pc.uPass = 4;
+  vkCmdPushConstants(
+      frameInfo.commandBuffer,
+      pipelineLayout,
+      VK_SHADER_STAGE_COMPUTE_BIT,
+      0,
+      sizeof(WaterPushConstants),
+      &pc);
+
+  vkCmdDispatch(frameInfo.commandBuffer, groups, 1, 1);
+
+  // --------------- FINAL: Compute -> Host barrier for readback ---------------
+  std::vector<VkBufferMemoryBarrier> finalBarriers;
+
+  // Positions were written by pass 4
+  finalBarriers.push_back(
+      makeBufferBarrier(positionsBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
+
+  // Velocities were written by pass 4
+  finalBarriers.push_back(
+      makeBufferBarrier(velocitiesBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
+
+  // Forces were written by pass 4
+  finalBarriers.push_back(
+      makeBufferBarrier(forcesBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
+
+  // Densities and pressures if you want to read them
+  finalBarriers.push_back(
+      makeBufferBarrier(densitiesBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
+  finalBarriers.push_back(
+      makeBufferBarrier(pressuresBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
 
   vkCmdPipelineBarrier(
       frameInfo.commandBuffer,
@@ -377,19 +464,21 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       0,
       0,
       nullptr,
-      1,
-      &barrier,
+      static_cast<uint32_t>(finalBarriers.size()),
+      finalBarriers.data(),
       0,
       nullptr);
 
+  // Submit and wait
   vkQueueWaitIdle(computeQueue);
 
-  // Copy data from buffer
-  void* mapped2 = outputBuffer->getMappedMemory();
-  memcpy(outPositions.data(), mapped2, sizeof(glm::vec4) * particleCount);
+  // Copy data from buffers
+  void* mappedPos = outputBuffer->getMappedMemory();
+  void* mappedVel = velocitiesBuff->getMappedMemory();
 
-  //std::cout << "Particle 0 neighbor count from GPU: " << outPositions[0].w << std::endl;
-  //std::cout << "Particle 0 density: " << outPositions[0].x << std::endl;
+  if (mappedPos) {
+    memcpy(outPositions.data(), mappedPos, sizeof(glm::vec4) * particleCount);
+  }
 
   // Update game objects
   for (size_t i = 0; i < particleCount; i++) {
@@ -397,75 +486,58 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
   }
 }
 
-void WaterPhysics::CreateBuffers(Grid& grid) {
-  // Grid-related buffers
-  cellCount = std::make_unique<LveBuffer>(
+std::unique_ptr<LveBuffer> CreateDeviceLocalBuffer(
+    LveDevice& device, VkDeviceSize elementSize, uint32_t count) {
+  return std::make_unique<LveBuffer>(
       device,
-      sizeof(int),
-      grid.numCells,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  cellCount->map();
-
-  cellIndices = std::make_unique<LveBuffer>(
-      device,
-      sizeof(int),
-      particleCount,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  cellIndices->map();
-
-  cellStart = std::make_unique<LveBuffer>(
-      device,
-      sizeof(int),
-      grid.numCells,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  cellStart->map();
-
-  // Physics state buffers (per-particle)
-  velocitiesBuff = std::make_unique<LveBuffer>(
-      device,
-      sizeof(glm::vec4),
-      particleCount,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  velocitiesBuff->map();
-
-  densitiesBuff = std::make_unique<LveBuffer>(
-      device,
-      sizeof(float),
-      particleCount,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  densitiesBuff->map();
-
-  pressuresBuff = std::make_unique<LveBuffer>(
-      device,
-      sizeof(float),
-      particleCount,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  pressuresBuff->map();
-
-  forcesBuff = std::make_unique<LveBuffer>(
-      device,
-      sizeof(glm::vec4),
-      particleCount,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  forcesBuff->map();
-
-  // Output positions buffer
-  outputBuffer = std::make_unique<LveBuffer>(
-      device,
-      sizeof(glm::vec4),
-      particleCount,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  outputBuffer->map();
+      elementSize,
+      count,
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 }
+void WaterPhysics::CreateBuffers(Grid& grid) {
+  auto makeDeviceLocal = [&](VkDeviceSize elemSize, uint32_t count) {
+    return std::make_unique<LveBuffer>(
+        device,
+        elemSize,
+        count,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  };
 
+  auto makeHostVisible = [&](VkDeviceSize elemSize, uint32_t count) {
+    auto buf = std::make_unique<LveBuffer>(
+        device,
+        elemSize,
+        count,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    buf->map();
+    return buf;
+  };
+
+  // =====================================================
+  // GRID BUFFERS (GPU only)
+  // =====================================================
+  cellCount = makeDeviceLocal(sizeof(int), grid.numCells);
+  cellCursorBuff = makeDeviceLocal(sizeof(int), grid.numCells);
+  cellIndices = makeDeviceLocal(sizeof(int), particleCount);
+  cellStart = makeDeviceLocal(sizeof(int), grid.numCells);
+
+  // =====================================================
+  // PARTICLE STATE (GPU compute heavy)
+  // =====================================================
+  velocitiesBuff = makeDeviceLocal(sizeof(glm::vec4), particleCount);
+  densitiesBuff = makeDeviceLocal(sizeof(float), particleCount);
+  pressuresBuff = makeDeviceLocal(sizeof(float), particleCount);
+  forcesBuff = makeDeviceLocal(sizeof(glm::vec4), particleCount);
+
+  // =====================================================
+  // OUTPUT POSITIONS (CPU READBACK REQUIRED)
+  // =====================================================
+  outputBuffer = makeHostVisible(sizeof(glm::vec4), particleCount);
+}
 void WaterPhysics::CreateComputePipelineLayout(VkDescriptorSetLayout setLayout) {
   VkPushConstantRange pushConstantRange{};
   pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;

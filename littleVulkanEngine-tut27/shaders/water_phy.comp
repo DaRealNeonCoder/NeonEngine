@@ -72,6 +72,10 @@ layout(std430, set = 0, binding = 8) buffer CellIndices {
     int cellIndices[]; // length == totalParticles
 };
 
+layout(std430, set=0, binding=9) buffer CellCursor {
+    int cellCursor[];
+};
+
 // ---- Control uniform to select which pass to execute ----
 layout(push_constant) uniform Push {
     int uPass; // 0 = assign to cells->, 1 = densities+pressure, 2 = forces+integrate
@@ -143,17 +147,72 @@ void main() {
     vec3 xi = positions[i].xyz;
     vec3 vi = velocities[i].xyz;
 
-    // compute cell of particle i
+
+
+    if(pc.uPass == -1)
+    {
+        if(i < ubo.uNumCells)
+        {
+            cellCount[i] = 0;
+            cellCursor[i] = 0;
+        }
+        return;
+    }
+    if(pc.uPass == 0)
+    {
+        ivec3 cell = positionToGridCell(xi);
+        int idx = cell3DtoIndex(cell);
+
+        atomicAdd(cellCount[idx], 1);
+        return;
+    }
+    if(pc.uPass == 1)
+    {
+        // only ONE thread runs the scan
+        if(gl_GlobalInvocationID.x == 0)
+        {
+            int running = 0;
+
+            for(int c = 0; c < ubo.uNumCells; ++c)
+            {
+                int count = cellCount[c];
+
+                cellStart[c] = running;
+                cellCursor[c] = 0; 
+
+                running += count;
+            }
+        }
+
+        return;
+    }
+    if(pc.uPass == 2)
+    {
+        ivec3 cell = positionToGridCell(xi);
+        int idx = cell3DtoIndex(cell);
+
+        int offset = atomicAdd(cellCursor[idx],1);
+
+        int writeIndex = cellStart[idx] + offset;
+
+        cellIndices[writeIndex] = i;
+        return;
+    }
+       
+       
+       // compute cell of particle i
     ivec3 cell = positionToGridCell(xi);
 
     // We loop 27 times deterministically, and for each neighbor cell check if it has items via cellCount
-    if (pc.uPass == 0) {
+    if (pc.uPass == 3) {
         // ----- PASS 0: Compute density -----
         float rho = 0.0;
         for (int dz = -1; dz <= 1; ++dz) {
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dx = -1; dx <= 1; ++dx) {
+
                     ivec3 nc = cell + ivec3(dx, dy, dz);
+                  if (any(lessThan(nc, ivec3(0))) || any(greaterThanEqual(nc, ubo.uGridDim.xyz))) continue;
 
                     int nIndex = cell3DtoIndex(nc);
                     int start = cellStart[nIndex];
@@ -180,10 +239,10 @@ void main() {
 
         densities[i] = max(rho, eps);
         float error = densities[i] - ubo.uRestDensity;
-        pressures[i] = max(0, error * ubo.uMu);
+        pressures[i] = max(0.0, error * ubo.uMu);
         return;
     } 
-    else if (pc.uPass == 1)
+    else if (pc.uPass == 4)
     {
         // ----- PASS 2: Compute forces and integrate -----
         vec3 acc = vec3(0.0);
@@ -282,3 +341,4 @@ void main() {
     }
 
 }
+
