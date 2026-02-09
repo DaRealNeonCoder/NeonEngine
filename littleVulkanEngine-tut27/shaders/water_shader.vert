@@ -1,8 +1,7 @@
 #version 450
 
-// Instance attributes only - no per-vertex attributes
-layout(location = 0) in vec4 instancePosRadius;  // xyz = position, w = radius
-layout(location = 1) in vec4 instanceColor;       // rgba color
+layout(location = 0) in vec4 instancePosRadius;
+layout(location = 1) in vec4 instanceColor;
 
 layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec3 fragPosWorld;

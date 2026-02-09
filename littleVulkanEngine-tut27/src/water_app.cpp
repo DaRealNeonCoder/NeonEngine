@@ -95,6 +95,8 @@ void WaterApp::run() {
   auto globalSetLayout =
       LveDescriptorSetLayout::Builder(lveDevice)
           .addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)  // UBO
+          .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)  // pos
+          .addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)  // col
           .build();
 
   auto computeSetLayout =
@@ -109,6 +111,7 @@ void WaterApp::run() {
           .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .build();
 
   std::cout << "Pass 2 \n";
@@ -116,13 +119,7 @@ void WaterApp::run() {
   std::vector<VkDescriptorSet> globalDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
   std::vector<VkDescriptorSet> computeDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
-  for (int i = 0; i < (int)globalDescriptorSets.size(); i++) {
-    auto bufferInfo = uboBuffers[i]->descriptorInfo();
 
-    LveDescriptorWriter(*globalSetLayout, *globalPool)
-        .writeBuffer(0, &bufferInfo)
-        .build(globalDescriptorSets[i]);
-  }
   float scleThing = 1.2f;
   float smoothingRadius = 0.3f;
   float pressureMult = 1000.f;
@@ -186,6 +183,7 @@ void WaterApp::run() {
     auto uboInfo = phyUboBuffers[i]->descriptorInfo();
     auto outputInfo = waterPhysics.getOutputDescInfo();
     auto cellCursorInfo = waterPhysics.getCellCursorDescInfo();
+    auto colorsInfo = waterPhysics.getColorDescInfo();
 
     LveDescriptorWriter(*computeSetLayout, *globalPool)
         .writeBuffer(0, &uboInfo)         // binding 1: output positions
@@ -198,6 +196,7 @@ void WaterApp::run() {
         .writeBuffer(7, &cellCountInfo)    // binding 0: input positions
         .writeBuffer(8, &cellIndicesInfo)  // binding 0: input positions
         .writeBuffer(9, &cellCursorInfo)  // binding 0: input positions
+        .writeBuffer(10, &colorsInfo)   // binding 0: input positions
         .build(computeDescriptorSets[i]);
   }
   std::cout << "Pass 4 \n";
@@ -219,6 +218,18 @@ void WaterApp::run() {
   waterRenderSystem.particleVert = model->getVertices().size();
   waterRenderSystem.updateBuffers(posTemp, colors);
 
+  
+  for (int i = 0; i < (int)globalDescriptorSets.size(); i++) {
+    auto bufferInfo = uboBuffers[i]->descriptorInfo();
+    auto bufferInfo2 = waterPhysics.getOutputDescInfo();
+    auto bufferInfo3 = waterPhysics.getColorDescInfo();
+
+    LveDescriptorWriter(*globalSetLayout, *globalPool)
+        .writeBuffer(0, &bufferInfo)
+        .writeBuffer(1, &bufferInfo2)
+        .writeBuffer(2, &bufferInfo3)
+        .build(globalDescriptorSets[i]);
+  }
   std::cout << "Pass 4.2\n";
 
   // ... camera setup ...
@@ -232,6 +243,7 @@ void WaterApp::run() {
 
 
   std::cout << "Pass 6 \n";
+  std::this_thread::sleep_for(std::chrono::seconds(3));
 
   while (!lveWindow.shouldClose()) {
     glfwPollEvents();
@@ -284,10 +296,10 @@ void WaterApp::run() {
 
       waterPhysics.RunSimulation(0.002f, frameInfo);
 
-      waterRenderSystem.updateBuffers(waterPhysics.outPositions, colors);
+      //waterRenderSystem.updateBuffers(waterPhysics.outPositions, colors);
       lveRenderer.beginSwapChainRenderPass(commandBuffer);
 
-      waterRenderSystem.renderGameObjects(frameInfo);
+      waterRenderSystem.renderGameObjects(frameInfo, waterPhysics);
 
       lveRenderer.endSwapChainRenderPass(commandBuffer);
 
@@ -341,8 +353,6 @@ void WaterApp::loadGameObjects() {
   particle.color = glm::vec3(0, 0.4f, 1.f);
 
   gameObjects.emplace(particle.getId(), std::move(particle));
-
-
 }
 
 }  // namespace lve

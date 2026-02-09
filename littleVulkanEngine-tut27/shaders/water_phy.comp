@@ -37,26 +37,26 @@ layout(std140, set = 0, binding = 0) uniform WaterPhysUbo {
 
 // ---- Buffers ----
 layout(std430, set = 0, binding = 1) buffer Positions {
-    coherent vec4 positions[]; // read/write when pass == 2 (integration)
+    vec4 positions[]; // read/write when pass == 2 (integration)
 };
 
 layout(std430, set = 0, binding = 2) buffer Velocities {
-    coherent vec4 velocities[]; // read/write when pass == 2
+    vec4 velocities[]; // read/write when pass == 2
 };
 
 // Densities
 layout(std430, set = 0, binding = 3) buffer Densities {
-    coherent float densities[];
+    float densities[];
 };
 
 // Pressures
 layout(std430, set = 0, binding = 4) buffer Pressures {
-    coherent float pressures[];
+    float pressures[];
 };
 
 // Forces
 layout(std430, set = 0, binding = 5) buffer Forces {
-    coherent vec4 forces[];
+    vec4 forces[];
 };
 
 layout(std430, set = 0, binding = 6) buffer CellStart {
@@ -76,6 +76,9 @@ layout(std430, set=0, binding=9) buffer CellCursor {
     int cellCursor[];
 };
 
+layout(std430, set=0, binding=10) buffer Colors {
+    vec4 colors[];
+};
 // ---- Control uniform to select which pass to execute ----
 layout(push_constant) uniform Push {
     int uPass; // 0 = assign to cells->, 1 = densities+pressure, 2 = forces+integrate
@@ -147,7 +150,7 @@ void main() {
     vec3 xi = positions[i].xyz;
     vec3 vi = velocities[i].xyz;
 
-
+    positions[i].w = 0.1f;
 
     if(pc.uPass == -1)
     {
@@ -335,9 +338,9 @@ void main() {
             x_new.z = boxMax.z;
             v_new.z *= -damping;
         }
-
+        colors[i] = vec4(0.f,0.2f,0.8f, 0.1f);
         velocities[i] = vec4(v_new, 0.0);
-        positions[i] = vec4(x_new, positions[i].w);
+        positions[i] = vec4(x_new, 0.1f);
     }
 
 }

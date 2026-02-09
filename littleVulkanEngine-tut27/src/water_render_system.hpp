@@ -5,6 +5,7 @@
 #include "lve_frame_info.hpp"
 #include "lve_game_object.hpp"
 #include "lve_pipeline.hpp"
+#include "water_physics.hpp"
 
 // std
 #include <memory>
@@ -29,7 +30,7 @@ class WaterRenderSystem {
   WaterRenderSystem(const WaterRenderSystem &) = delete;
   WaterRenderSystem &operator=(const WaterRenderSystem &) = delete;
 
-  void renderGameObjects(WaterFrameInfo &frameInfo);
+    void renderGameObjects(WaterFrameInfo &frameInfo, WaterPhysics &waterPhys);
   void updateBuffers(std::vector<glm::vec4> &positions, std::vector<glm::vec3> &colors);
   int particleVert;
  private:

@@ -73,9 +73,12 @@ class WaterPhysics {
   VkDescriptorBufferInfo getForcesDescInfo() { return forcesBuff->descriptorInfo(); }
   VkDescriptorBufferInfo getOutputDescInfo() { return outputBuffer->descriptorInfo(); }
   VkDescriptorBufferInfo getCellCursorDescInfo() { return cellCursorBuff->descriptorInfo(); }
-
+  VkDescriptorBufferInfo getColorDescInfo() { return colorsBuff->descriptorInfo(); }
+  std::unique_ptr<LveBuffer> makeHostVisible(VkDeviceSize elemSize, uint32_t count); 
   void UploadBuffers(const Grid& grid);
   std::vector<glm::vec4> outPositions;
+  std::unique_ptr<LveBuffer> colorsBuff;
+  std::unique_ptr<LveBuffer> outputBuffer;
 
  private:
   // Kernel functions
@@ -154,7 +157,6 @@ class WaterPhysics {
   std::unique_ptr<LveBuffer> forcesBuff;
   std::unique_ptr<LveBuffer> cellCursorBuff;
 
-  std::unique_ptr<LveBuffer> outputBuffer;
 
   VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
   VkPipeline computePipeline = VK_NULL_HANDLE;

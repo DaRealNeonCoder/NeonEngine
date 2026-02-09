@@ -102,12 +102,19 @@ WaterPhysics::WaterPhysics(
 
   BuildUniformGrid(mainGrid, p_positions);
 
-  vkGetDeviceQueue(device.device(), 0, 0, &computeQueue);
-
   CreateBuffers(mainGrid);
 
-  outputBuffer->writeToBuffer(temp.data());
-  outputBuffer->flush();
+  // Temporary upload of particles arranged in a grid
+
+  std::unique_ptr<LveBuffer> outputStaging = makeHostVisible(sizeof(glm::vec4), particleCount);
+
+  outputStaging->writeToBuffer(temp.data());
+  outputStaging->flush();
+
+  device.copyBuffer(
+      outputStaging->getBuffer(),
+      outputBuffer->getBuffer(),
+      sizeof(glm::vec4) * particleCount);
 
   CreateComputePipelineLayout(setLayout);
   CreateComputePipeline();
@@ -123,10 +130,6 @@ WaterPhysics::~WaterPhysics() {
 }
 
 void WaterPhysics::RunSimulation(float dt, WaterFrameInfo& info) { RunAndReadback(info); }
-
-// ============================================================================
-// Grid Functions
-// ============================================================================
 
 GridCell WaterPhysics::GetGridCell(const glm::vec3& position) const {
   return GridCell{
@@ -424,7 +427,6 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       0,
       nullptr);
 
-  // --------------- PASS 4: Compute forces and integrate ---------------
   pc.uPass = 4;
   vkCmdPushConstants(
       frameInfo.commandBuffer,
@@ -435,6 +437,30 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       &pc);
 
   vkCmdDispatch(frameInfo.commandBuffer, groups, 1, 1);
+
+  // --- make compute writes visible to the vertex input (so the renderer can read positions/colors)
+  // ---
+  std::vector<VkBufferMemoryBarrier> computeToVertexBarriers;
+  computeToVertexBarriers.push_back(makeBufferBarrier(
+      positionsBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT));
+  computeToVertexBarriers.push_back(makeBufferBarrier(
+      colorsBuff->getBuffer(),
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT));
+
+  vkCmdPipelineBarrier(
+      frameInfo.commandBuffer,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,  // allow vertex input to consume these buffers
+      0,
+      0,
+      nullptr,
+      static_cast<uint32_t>(computeToVertexBarriers.size()),
+      computeToVertexBarriers.data(),
+      0,
+      nullptr);
 
   // --------------- FINAL: Compute -> Host barrier for readback ---------------
   std::vector<VkBufferMemoryBarrier> finalBarriers;
@@ -468,34 +494,18 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       finalBarriers.data(),
       0,
       nullptr);
-
-  // Submit and wait
-  vkQueueWaitIdle(computeQueue);
-
-  // Copy data from buffers
-  void* mappedPos = outputBuffer->getMappedMemory();
-  void* mappedVel = velocitiesBuff->getMappedMemory();
-
-  if (mappedPos) {
-    memcpy(outPositions.data(), mappedPos, sizeof(glm::vec4) * particleCount);
-  }
-
-  // Update game objects
-  for (size_t i = 0; i < particleCount; i++) {
-    p_positions[i] = glm::vec3(outPositions[i].x, outPositions[i].y, outPositions[i].z);
-  }
 }
 
-std::unique_ptr<LveBuffer> CreateDeviceLocalBuffer(
-    LveDevice& device, VkDeviceSize elementSize, uint32_t count) {
-  return std::make_unique<LveBuffer>(
+std::unique_ptr<LveBuffer> WaterPhysics::makeHostVisible(VkDeviceSize elemSize, uint32_t count) {
+  std::unique_ptr<LveBuffer> buf = std::make_unique<LveBuffer>(
       device,
-      elementSize,
+      elemSize,
       count,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-}
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  buf->map();
+  return buf;
+};
 void WaterPhysics::CreateBuffers(Grid& grid) {
   auto makeDeviceLocal = [&](VkDeviceSize elemSize, uint32_t count) {
     return std::make_unique<LveBuffer>(
@@ -506,17 +516,23 @@ void WaterPhysics::CreateBuffers(Grid& grid) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   };
 
-  auto makeHostVisible = [&](VkDeviceSize elemSize, uint32_t count) {
+  auto makeDeviceLocal_Output = [&](VkDeviceSize elemSize, uint32_t count) {
     auto buf = std::make_unique<LveBuffer>(
         device,
         elemSize,
         count,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    buf->map();
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     return buf;
   };
 
+  colorsBuff = std::make_unique<LveBuffer>(
+      device,
+      sizeof(glm::vec4),
+      particleCount,
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  ;
   // =====================================================
   // GRID BUFFERS (GPU only)
   // =====================================================
@@ -536,7 +552,14 @@ void WaterPhysics::CreateBuffers(Grid& grid) {
   // =====================================================
   // OUTPUT POSITIONS (CPU READBACK REQUIRED)
   // =====================================================
-  outputBuffer = makeHostVisible(sizeof(glm::vec4), particleCount);
+  outputBuffer = std::make_unique<LveBuffer>(
+      device,
+      sizeof(glm::vec4),
+      particleCount,
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  ;
 }
 void WaterPhysics::CreateComputePipelineLayout(VkDescriptorSetLayout setLayout) {
   VkPushConstantRange pushConstantRange{};
@@ -646,5 +669,4 @@ void WaterPhysics::BuildUniformGrid(Grid& grid, const std::vector<glm::vec3>& po
   BuildCellStart(grid);
   FillCellIndices(grid, positions);
 }
-
-};  // namespace lve
+}  // namespace lve

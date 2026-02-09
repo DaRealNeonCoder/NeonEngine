@@ -1,4 +1,5 @@
 #include "water_render_system.hpp"
+#include "water_physics.hpp"
 
 // libs
 #define GLM_FORCE_RADIANS
@@ -46,10 +47,8 @@ void WaterRenderSystem::updateBuffers(std::vector<glm::vec4>& positions, std::ve
     particleInstances[i].color = glm::vec4(0.f, 0.4f, 0.8f, 0.f);
 
   }
-
     instanceBuffer->writeToBuffer(particleInstances.data());
     instanceBuffer->flush();
-    
 }
 
 void WaterRenderSystem::createPipelineLayout(VkDescriptorSetLayout globalSetLayout) {
@@ -77,28 +76,38 @@ void WaterRenderSystem::createPipeline(VkRenderPass renderPass) {
   PipelineConfigInfo pipelineConfig{};
   LvePipeline::defaultPipelineConfigInfo(pipelineConfig);
 
-  // Only instance data binding
-  std::vector<VkVertexInputBindingDescription> bindingDescriptions(1);
+  // =========================
+  // TWO INSTANCE BINDINGS
+  // =========================
+  std::vector<VkVertexInputBindingDescription> bindings(2);
 
-  // per-instance only
-  bindingDescriptions[0].binding = 0;
-  bindingDescriptions[0].stride = sizeof(InstanceData);
-  bindingDescriptions[0].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+  bindings[0].binding = 0;
+  bindings[0].stride = sizeof(glm::vec4);
+  bindings[0].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
-  pipelineConfig.bindingDescriptions = bindingDescriptions;
+  bindings[1].binding = 1;
+  bindings[1].stride = sizeof(glm::vec4);
+  bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
-  // Only instance attributes (no per-vertex attributes)
+  pipelineConfig.bindingDescriptions = bindings;
+
+  // =========================
+  // ATTRIBUTES
+  // =========================
   std::vector<VkVertexInputAttributeDescription> attributes(2);
 
-  // location 0: instance position/radius
-  attributes[0] = {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(InstanceData, posRadius)};
+  attributes[0].location = 0;
+  attributes[0].binding = 0;
+  attributes[0].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  attributes[0].offset = 0;
 
-  // location 1: instance color
-  attributes[1] = {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(InstanceData, color)};
+  attributes[1].location = 1;
+  attributes[1].binding = 1;
+  attributes[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+  attributes[1].offset = 0;
 
   pipelineConfig.attributeDescriptions = attributes;
 
-  // Set other pipeline config
   pipelineConfig.renderPass = renderPass;
   pipelineConfig.pipelineLayout = pipelineLayout;
 
@@ -110,20 +119,18 @@ void WaterRenderSystem::createPipeline(VkRenderPass renderPass) {
       "tut27\\shaders\\water_shader.frag.spv",
       pipelineConfig);
 }
-
 void WaterRenderSystem::createBuffers(
     int particleCount, std::vector<LveModel::Vertex> particleVerts) {
-  // No need for mesh buffer anymore since we're generating vertices in shader
   instanceBuffer = std::make_unique<LveBuffer>(
       lveDevice,
-      sizeof(InstanceData),
+      sizeof(glm::vec4),  // ONLY positions now
       particleCount,
       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
   instanceBuffer->map();
 }
-
-void WaterRenderSystem::renderGameObjects(WaterFrameInfo& frameInfo) {
+void WaterRenderSystem::renderGameObjects(WaterFrameInfo& frameInfo, WaterPhysics& waterPhys) {
   lvePipeline->bind(frameInfo.commandBuffer);
 
   vkCmdBindDescriptorSets(
@@ -136,13 +143,14 @@ void WaterRenderSystem::renderGameObjects(WaterFrameInfo& frameInfo) {
       0,
       nullptr);
 
-  VkBuffer buffers[] = {instanceBuffer->getBuffer()};
-  VkDeviceSize offsets[] = {0};
+  // Use compute-written position buffer (outputBuffer) + compute-written color buffer
+  VkBuffer buffers[] = {waterPhys.outputBuffer->getBuffer(), waterPhys.colorsBuff->getBuffer()};
+  VkDeviceSize offsets[] = {0, 0};
 
-  // Bind only instance buffer (no mesh buffer)
-  vkCmdBindVertexBuffers(frameInfo.commandBuffer, 0, 1, buffers, offsets);
+  // Bind instance buffers at binding 0 & 1
+  vkCmdBindVertexBuffers(frameInfo.commandBuffer, 0, 2, buffers, offsets);
 
-  // Draw 6 vertices per instance (for a quad) without a vertex buffer
+  // Draw (6 vertices per instance quad)
   vkCmdDraw(frameInfo.commandBuffer, 6, particleCount, 0, 0);
 }
 
