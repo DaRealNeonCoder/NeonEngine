@@ -266,7 +266,7 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
 
   // --------------- PASS -1: Clear grid ---------------
   pc.uPass = -1;
-  pc.dt = 0.002f;
+  pc.dt = frameInfo.frameTime;
   vkCmdPushConstants(
       frameInfo.commandBuffer,
       pipelineLayout,

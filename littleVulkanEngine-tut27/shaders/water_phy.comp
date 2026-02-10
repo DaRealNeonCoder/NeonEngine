@@ -125,7 +125,10 @@ float laplacian_W_viscosity(float r, float h, float viscC) {
     if (r >= 0.0 && r <= h) return viscC * (h - r);
     return 0.0;
 }
-
+vec3 predictPosition(vec3 x, vec3 v, float dt)
+{
+    return x + dt * v + 1 * dt * dt * ubo.uGravity.xyz;
+}
 // ---- main ----
 void main() {
     uint gid = gl_GlobalInvocationID.x;
@@ -149,9 +152,7 @@ void main() {
     // Read particle position and velocity
     vec3 xi = positions[i].xyz;
     vec3 vi = velocities[i].xyz;
-
-    positions[i].w = 0.1f;
-
+    xi = predictPosition(xi, vi, pc.dt);
     if(pc.uPass == -1)
     {
         if(i < ubo.uNumCells)
@@ -228,7 +229,7 @@ void main() {
                         // j must be valid
                         if (j < 0 || j >= ubo.uNumParticles) continue;
 
-                        vec3 xj = positions[j].xyz;
+                        vec3 xj = predictPosition(positions[j].xyz, velocities[j].xyz, pc.dt);
                         vec3 diff = xi - xj;
                         float r2 = dot(diff, diff);
                         if (r2 <= h2) {
@@ -268,7 +269,7 @@ void main() {
                         if (j < 0 || j >= ubo.uNumParticles) continue;
                         if (j == i) continue;
 
-                        vec3 xj = positions[j].xyz;
+                        vec3 xj = predictPosition(positions[j].xyz, velocities[j].xyz, pc.dt);
                         vec3 vj = velocities[j].xyz;
                         vec3 r_vec = xi - xj;
                         float r = length(r_vec);
@@ -338,9 +339,24 @@ void main() {
             x_new.z = boxMax.z;
             v_new.z *= -damping;
         }
-        colors[i] = vec4(0.f,0.2f,0.8f, 0.1f);
+
         velocities[i] = vec4(v_new, 0.0);
         positions[i] = vec4(x_new, 0.1f);
+        
+        float speed = length(v_new);
+
+        float minSpeed = 0.0;
+        float maxSpeed = 15.0;
+
+        float t = clamp((speed - minSpeed) / maxSpeed, 0.0, 1.0);
+
+        // blue -> red gradient
+        vec3 slowColor = vec3(0.0, 0.2, 0.8);
+        vec3 fastColor = vec3(1.0, 0.2, 0.0);
+
+        vec3 finalColor = mix(slowColor, fastColor, t);
+
+        colors[i] = vec4(finalColor, 0.1);
     }
 
 }

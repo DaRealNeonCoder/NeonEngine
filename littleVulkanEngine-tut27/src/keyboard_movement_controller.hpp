@@ -21,7 +21,7 @@ class KeyboardMovementController {
 
   void moveInPlaneXZ(GLFWwindow* window, float dt, LveGameObject& gameObject, bool& hasMoved);
   void moveInPlaneXZ(GLFWwindow* window, float dt, LveGameObject& gameObject);
-
+  void editBoxDimensions(GLFWwindow* window, float dt, glm::vec4& boxDims, bool& hasMoved);
   KeyMappings keys{};
   float moveSpeed{3.f};
   float lookSpeed{1.5f};

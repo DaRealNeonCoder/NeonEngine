@@ -36,5 +36,7 @@ class WaterApp {
   std::unique_ptr<LveDescriptorPool> globalPool{};
   LveGameObject::Map gameObjects;
   std::vector<glm::vec3> colors;
+
+  glm::vec4 boxDim{1.f,1.f,1.f,1.f};
 };
 }  // namespace lve

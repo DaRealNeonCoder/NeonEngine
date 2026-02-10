@@ -76,4 +76,38 @@ void KeyboardMovementController::moveInPlaneXZ(
     gameObject.transform.translation += moveSpeed * dt * glm::normalize(moveDir);
   }
 }
+
+
+void KeyboardMovementController::editBoxDimensions(
+    GLFWwindow* window, float dt, glm::vec4& boxDims, bool& hasMoved) {
+  const float editSpeed = 2.0f;  // units per second
+  float delta = 0.f;
+
+  // increase / decrease
+  if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
+    delta += editSpeed * dt;
+  }
+  if (glfwGetKey(window, GLFW_KEY_O) == GLFW_PRESS) {
+    delta -= editSpeed * dt;
+  }
+
+  if (delta == 0.f) return;
+
+  // axis selection
+  if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) {
+    boxDims.x = glm::max(0.01f, boxDims.x + delta);
+    hasMoved = true;
+  }
+
+  if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS) {
+    boxDims.y = glm::max(0.01f, boxDims.y + delta);
+    hasMoved = true;
+  }
+
+  if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) {
+    boxDims.z = glm::max(0.01f, boxDims.z + delta);
+    hasMoved = true;
+  }
+}
+
 }  // namespace lve

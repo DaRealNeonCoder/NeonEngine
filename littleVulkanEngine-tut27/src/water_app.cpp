@@ -72,6 +72,7 @@ void WaterApp::run() {
       }
     }
   }
+  KeyboardMovementController waterBoxController{};
 
   for (int i = 0; i < (int)uboBuffers.size(); i++) {
     uboBuffers[i] = std::make_unique<LveBuffer>(
@@ -122,7 +123,7 @@ void WaterApp::run() {
 
   float scleThing = 1.2f;
   float smoothingRadius = 0.3f;
-  float pressureMult = 1000.f;
+  float pressureMult = 300.f;
 
   WaterPhysUbo phyUbo{};
 
@@ -140,7 +141,7 @@ void WaterApp::run() {
   phyUbo.uRestDensity = 1000.f;
 
   phyUbo.uMu = pressureMult;
-  phyUbo.uViscosity = 0.20f;
+  phyUbo.uViscosity = 0.10f;
   phyUbo.uEps = 0.01f * smoothingRadius * smoothingRadius;
   //phyUbo.uDt = 0.002f;
   //dt in push 
@@ -244,7 +245,7 @@ void WaterApp::run() {
 
   std::cout << "Pass 6 \n";
   std::this_thread::sleep_for(std::chrono::seconds(3));
-
+  bool hasMoved;
   while (!lveWindow.shouldClose()) {
     glfwPollEvents();
 
@@ -274,6 +275,16 @@ void WaterApp::run() {
       frameCount = 0;
     }
 
+
+    waterBoxController.editBoxDimensions(lveWindow.getGLFWwindow(), frameTime, boxDim, hasMoved);
+    if (hasMoved) {
+      phyUbo.uBoxMin = boxDim * glm::vec4(-4.928f, -3.08f, -1.848f, 1);
+      phyUbo.uBoxMax = boxDim * glm::vec4(4.928f, 0.55f, 4.928f / 2.f, 1);
+      phyUboBuffers[0]->writeToBuffer(&phyUbo);
+      phyUboBuffers[0]->flush();
+
+      hasMoved = false;
+    }
     if (auto commandBuffer = lveRenderer.beginFrame()) {
 
       int frameIndex = lveRenderer.getFrameIndex();
@@ -282,7 +293,7 @@ void WaterApp::run() {
           commandBuffer,
           camera,
           globalDescriptorSets[frameIndex],
-          computeDescriptorSets[frameIndex],
+          computeDescriptorSets[0],
           gameObjects};
 
       WaterUbo ubo{};
