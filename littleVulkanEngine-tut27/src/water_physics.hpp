@@ -64,21 +64,27 @@ class WaterPhysics {
   ~WaterPhysics();
 
   void RunSimulation(float dt, WaterFrameInfo &info);
-  VkDescriptorBufferInfo getCellStartDescInfo() { return cellStart->descriptorInfo(); }
-  VkDescriptorBufferInfo getCellIndiciesDescInfo() { return cellIndices->descriptorInfo(); }
-  VkDescriptorBufferInfo getCellCountDescInfo() { return cellCount->descriptorInfo(); }
-  VkDescriptorBufferInfo getVelocitiesDescInfo() { return velocitiesBuff->descriptorInfo(); }
-  VkDescriptorBufferInfo getDensitiesDescInfo() { return densitiesBuff->descriptorInfo(); }
-  VkDescriptorBufferInfo getPressuresDescInfo() { return pressuresBuff->descriptorInfo(); }
-  VkDescriptorBufferInfo getForcesDescInfo() { return forcesBuff->descriptorInfo(); }
-  VkDescriptorBufferInfo getOutputDescInfo() { return outputBuffer->descriptorInfo(); }
-  VkDescriptorBufferInfo getCellCursorDescInfo() { return cellCursorBuff->descriptorInfo(); }
-  VkDescriptorBufferInfo getColorDescInfo() { return colorsBuff->descriptorInfo(); }
-  std::unique_ptr<LveBuffer> makeHostVisible(VkDeviceSize elemSize, uint32_t count); 
+    VkDescriptorBufferInfo getPartPosDescInfo()       { return partPosBuff->descriptorInfo(); }         // binding 0
+    VkDescriptorBufferInfo getPartVelDescInfo()       { return partVelBuff->descriptorInfo(); }         // binding 1
+    VkDescriptorBufferInfo getGridVelAccumDescInfo()  { return gridVelAccumBuff->descriptorInfo(); }    // binding 2
+    VkDescriptorBufferInfo getGridWeightDescInfo()    { return gridWeightBuff->descriptorInfo(); }      // binding 3
+    VkDescriptorBufferInfo getGridFlagsDescInfo()     { return gridFlagsBuff->descriptorInfo(); }       // binding 4
+    VkDescriptorBufferInfo getGridVelDescInfo()       { return gridVelBuff->descriptorInfo(); }         // binding 5
+    VkDescriptorBufferInfo getPrevGridVelDescInfo()   { return prevGridVelBuff->descriptorInfo(); }     // binding 6
+    VkDescriptorBufferInfo getPressureReadDescInfo()  { return pressureReadBuff->descriptorInfo(); }    // binding 7
+    VkDescriptorBufferInfo getPressureWriteDescInfo() { return pressureWriteBuff->descriptorInfo(); }   // binding 8
+    VkDescriptorBufferInfo getColorDescInfo()         { return colorsBuff->descriptorInfo(); }
+    VkDescriptorBufferInfo getDebugInfo() { return debugBuff->descriptorInfo(); }
+  
+    std::unique_ptr<LveBuffer> makeHostVisible(VkDeviceSize elemSize, uint32_t count); 
   void UploadBuffers(const Grid& grid);
   std::vector<glm::vec4> outPositions;
-  std::unique_ptr<LveBuffer> colorsBuff;
   std::unique_ptr<LveBuffer> outputBuffer;
+  std::unique_ptr<LveBuffer> partPosBuff;
+  std::unique_ptr<LveBuffer> colorsBuff;
+  std::unique_ptr<LveBuffer> debugBuff;
+  std::unique_ptr<LveBuffer> debugStaging;
+    
 
  private:
   // Kernel functions
@@ -148,14 +154,14 @@ class WaterPhysics {
   VkQueue computeQueue;
 
   uint32_t particleCount = 0;
-  std::unique_ptr<LveBuffer> cellStart;
-  std::unique_ptr<LveBuffer> cellCount;
-  std::unique_ptr<LveBuffer> cellIndices;
-  std::unique_ptr<LveBuffer> velocitiesBuff;
-  std::unique_ptr<LveBuffer> densitiesBuff;
-  std::unique_ptr<LveBuffer> pressuresBuff;
-  std::unique_ptr<LveBuffer> forcesBuff;
-  std::unique_ptr<LveBuffer> cellCursorBuff;
+  std::unique_ptr<LveBuffer> partVelBuff;     
+  std::unique_ptr<LveBuffer> gridVelAccumBuff;  
+  std::unique_ptr<LveBuffer> gridWeightBuff;     
+  std::unique_ptr<LveBuffer> gridFlagsBuff;      
+  std::unique_ptr<LveBuffer> gridVelBuff;       
+  std::unique_ptr<LveBuffer> prevGridVelBuff;    
+  std::unique_ptr<LveBuffer> pressureReadBuff;   
+  std::unique_ptr<LveBuffer> pressureWriteBuff;  
 
 
   VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;

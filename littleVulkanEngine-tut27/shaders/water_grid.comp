@@ -1,0 +1,439 @@
+#version 450
+layout(local_size_x = 64) in;
+
+
+layout(std140, set = 0, binding = 10) uniform WaterPhysUbo {
+    int uNumParticles;
+    int uNumCells;
+    int pad;
+    int pad2;
+
+    ivec4 uGridDim;
+
+    float uH; 
+    float uH2; 
+    float overRelaxation; 
+    float spikyGradCoeff;
+
+    float viscLapCoeff;
+    float uMass;
+    float uRestDensity;
+    float uMu;
+
+    float uViscosity;
+    float uEps;
+    float uDt;
+    float uCellSize;
+
+    vec4 uBoxMin;
+    vec4 uBoxMax;
+    vec4 uGravity;
+
+    float uDamping;
+    float pad3;
+    float pad4;
+    float pad5;
+} ubo;
+
+layout(push_constant) uniform Push {
+    int uPass;
+    int pad;
+    int pad2;
+    int pad3;
+    float dt;
+} pc;
+
+/* ===== Bindings (set = 0) - union of all buffers used by passes ===== */
+layout(std430, set = 0, binding = 0) buffer PartPos { vec4 p[]; };
+layout(std430, set = 0, binding = 1) buffer PartVel { vec4 v[]; };
+layout(std430, set = 0, binding = 2) buffer GridVelAccum { uint velAccum[]; };
+layout(std430, set = 0, binding = 3) buffer GridWeight { uint weight[]; };
+layout(std430, set = 0, binding = 4) buffer GridFlags { uint flags[]; };
+layout(std430, set = 0, binding = 5) buffer GridVel { vec4 gridVel[]; };
+layout(std430, set = 0, binding = 6) buffer PrevGridVel { vec4 prevGridVel[]; };
+layout(std430, set = 0, binding = 7) buffer PressureRead { float pRead[]; };
+layout(std430, set = 0, binding = 8) buffer PressureWrite { float pWrite[]; };
+layout(std430, set = 0, binding = 9) buffer Colors { vec4 colors[]; };
+layout(std430, set = 0, binding = 11) buffer debug { float debugVals[]; };
+
+const uint CELL_FLUID = 1u;
+const uint CELL_SOLID = 2u;
+
+// atomic add for velAccum (each velAccum element stores float bits as uint)
+uint atomicAddFloatVelAccum(uint idx, float value) {
+    uint oldu = velAccum[idx];
+    for (;;) {
+        float oldf = uintBitsToFloat(oldu);
+        float newf = oldf + value;
+        uint newu = floatBitsToUint(newf);
+        uint prev = atomicCompSwap(velAccum[idx], oldu, newu); // direct buffer l-value
+        if (prev == oldu) return prev; // success, return previous bits
+        oldu = prev;
+    }
+}
+
+// atomic add for weight[] (single float-per-cell stored as uint bits)
+uint atomicAddFloatWeight(uint idx, float value) {
+    uint oldu = weight[idx];
+    for (;;) {
+        float oldf = uintBitsToFloat(oldu);
+        float newf = oldf + value;
+        uint newu = floatBitsToUint(newf);
+        uint prev = atomicCompSwap(weight[idx], oldu, newu); // direct buffer l-value
+        if (prev == oldu) return prev; // success
+        oldu = prev;
+    }
+}
+void pass_grid_init()
+{
+    uint idx = gl_GlobalInvocationID.x;
+        // Zero particle velocities    
+    
+    if (idx >= uint(ubo.uNumCells)) return;
+
+    uint base = idx * 3u;
+
+    velAccum[base + 0] = floatBitsToUint(0.0);
+    velAccum[base + 1] = floatBitsToUint(0.0);
+    velAccum[base + 2] = floatBitsToUint(0.0);
+    weight[idx]        = floatBitsToUint(0.0);
+
+    uint nx = uint(ubo.uGridDim.x);
+    uint ny = uint(ubo.uGridDim.y);
+    uint nz = uint(ubo.uGridDim.z);
+
+    uint gz  = idx / (nx * ny);
+    uint rem = idx - gz * (nx * ny);
+    uint gy  = rem / nx;
+    uint gx  = rem - gy * nx;
+    
+    bool isWall =
+        gx == 0u || gx == nx - 1u ||
+        gy == 0u || gy == ny - 1u ||
+        gz == 0u || gz == nz - 1u;
+
+    flags[idx]       = isWall ? CELL_SOLID : 0u;
+    gridVel[idx] = vec4(0.0);
+}
+
+void pass_p2g()
+{
+    uint pid = gl_GlobalInvocationID.x;
+    if (pid >= uint(ubo.uNumParticles)) return;
+
+    vec3 pos = p[pid].xyz;
+    vec3 pv  = v[pid].xyz;
+    
+    // --- grid space ---
+    vec3 local = (pos - ubo.uBoxMin.xyz) / ubo.uCellSize;
+    ivec3 baseI = ivec3(floor(local));
+
+    // why
+    baseI = clamp(baseI,
+                  ivec3(0),
+                  ivec3(ubo.uGridDim.xyz) - ivec3(2));
+
+    uvec3 base = uvec3(baseI);
+    vec3 frac  = local - vec3(base);
+
+    uvec3 dim = uvec3(ubo.uGridDim.xyz);
+
+    // --- weights ---
+    float wx0 = 1.0 - frac.x;
+    float wx1 = frac.x;
+    float wy0 = 1.0 - frac.y;
+    float wy1 = frac.y;
+    float wz0 = 1.0 - frac.z;
+    float wz1 = frac.z;
+
+    // --- scatter to 8 neighbors ---
+    for (uint iz = 0u; iz <= 1u; ++iz)
+    for (uint iy = 0u; iy <= 1u; ++iy)
+    for (uint ix = 0u; ix <= 1u; ++ix)
+    {
+        float w =
+            (ix == 0u ? wx0 : wx1) *
+            (iy == 0u ? wy0 : wy1) *
+            (iz == 0u ? wz0 : wz1);
+
+        uvec3 cell = base + uvec3(ix, iy, iz);
+
+        uint idx =
+            cell.x +
+            cell.y * dim.x +
+            cell.z * (dim.x * dim.y);
+
+        // skip solids
+        if ((flags[idx] & CELL_SOLID) != 0u)
+            continue;
+
+        atomicOr(flags[idx], CELL_FLUID);
+
+        uint b = idx * 3u;
+
+        atomicAddFloatVelAccum(b + 0u, pv.x * w);
+        atomicAddFloatVelAccum(b + 1u, pv.y * w);
+        atomicAddFloatVelAccum(b + 2u, pv.z * w);
+
+        atomicAddFloatWeight(idx, w);
+    }
+}
+
+
+void pass_grid_finalize() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uint(ubo.uNumCells)) return;
+    
+    float w = uintBitsToFloat(weight[idx]);
+    vec3 vv = vec3(0.0);
+    uint b = idx * 3u;
+    
+    if (w > 0.0 && (flags[idx] & CELL_SOLID) == 0u) {
+        vv.x = uintBitsToFloat(velAccum[b + 0]) / w;
+        vv.y = uintBitsToFloat(velAccum[b + 1]) / w;
+        vv.z = uintBitsToFloat(velAccum[b + 2]) / w;
+        flags[idx] |= CELL_FLUID;
+    }
+    
+    gridVel[idx] = vec4(vv, 0.0);
+        prevGridVel[idx] = gridVel[idx];
+
+    if ((flags[idx] & CELL_SOLID) != 0u) {
+        gridVel[idx] = vec4(0.0);
+        prevGridVel[idx] = vec4(0.0);
+    }
+}
+void pass_pressure_jacobi() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint nx = uint(ubo.uGridDim.x);
+    uint ny = uint(ubo.uGridDim.y);
+    uint nz = uint(ubo.uGridDim.z);
+    uint nCells = nx * ny * nz;
+    if (idx >= nCells) return;
+
+    uint gz = idx / (nx * ny);
+    uint rem = idx - gz * (nx * ny);
+    uint gy = rem / nx;
+    uint gx = rem - gy * nx;
+
+    if ((flags[idx] & CELL_FLUID) == 0u) {
+        pWrite[idx] = 0.0;
+        return;
+    }
+
+    // neighbor indices (clamped to boundaries)
+    uint idxL = uint(max(int(gx) - 1, 0)) + gy * nx + gz * (nx * ny);
+    uint idxR = uint(min(int(gx) + 1, int(nx) - 1)) + gy * nx + gz * (nx * ny);
+    uint idxB = gx + uint(max(int(gy) - 1, 0)) * nx + gz * (nx * ny);
+    uint idxT = gx + uint(min(int(gy) + 1, int(ny) - 1)) * nx + gz * (nx * ny);
+    uint idxBack =  gx + gy * nx + uint(max(int(gz) - 1, 0)) * (nx * ny);
+    uint idxFront = gx + gy * nx + uint(min(int(gz) + 1, int(nz) - 1)) * (nx * ny);
+
+    // Get neighbor velocities (0 if solid)
+    float vxR = ((flags[idxR] & CELL_SOLID) != 0u) ? 0.0 : gridVel[idxR].x;
+    float vxL = ((flags[idxL] & CELL_SOLID) != 0u) ? 0.0 : gridVel[idxL].x;
+    float vyT = ((flags[idxT] & CELL_SOLID) != 0u) ? 0.0 : gridVel[idxT].y;
+    float vyB = ((flags[idxB] & CELL_SOLID) != 0u) ? 0.0 : gridVel[idxB].y;
+    float vzF = ((flags[idxFront] & CELL_SOLID) != 0u) ? 0.0 : gridVel[idxFront].z;
+    float vzBa = ((flags[idxBack] & CELL_SOLID) != 0u) ? 0.0 : gridVel[idxBack].z;
+
+    // Compute face velocities from cell centers (MAC-like)
+    float u_right = 0.5 * (gridVel[idx].x + vxR);
+    float u_left  = 0.5 * (vxL + gridVel[idx].x);
+    float v_top   = 0.5 * (gridVel[idx].y + vyT);
+    float v_bot   = 0.5 * (vyB + gridVel[idx].y);
+    float w_front = 0.5 * (gridVel[idx].z + vzF);
+    float w_back  = 0.5 * (vzBa + gridVel[idx].z);
+
+    // Divergence (matching JS: no division by h)
+    float div = (u_right - u_left) + (v_top - v_bot) + (w_front - w_back);
+
+    // Count fluid neighbors and sum pressures
+    float numFluid = 0.0;
+    float sumP = 0.0;
+    if ((flags[idxL] & CELL_SOLID) == 0u) { sumP += pRead[idxL]; numFluid += 1.0; }
+    if ((flags[idxR] & CELL_SOLID) == 0u) { sumP += pRead[idxR]; numFluid += 1.0; }
+    if ((flags[idxB] & CELL_SOLID) == 0u) { sumP += pRead[idxB]; numFluid += 1.0; }
+    if ((flags[idxT] & CELL_SOLID) == 0u) { sumP += pRead[idxT]; numFluid += 1.0; }
+    if ((flags[idxBack] & CELL_SOLID) == 0u) { sumP += pRead[idxBack]; numFluid += 1.0; }
+    if ((flags[idxFront] & CELL_SOLID) == 0u) { sumP += pRead[idxFront]; numFluid += 1.0; }
+
+    if (numFluid < 0.5) {
+        pWrite[idx] = 0.0;
+        return;
+    }
+
+    // JS-style pressure update
+    float p = -div / numFluid * ubo.overRelaxation;
+    pWrite[idx] = pRead[idx] + p;
+}
+
+void pass_pressure_apply() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uint(ubo.uNumCells)) return;
+    if ((flags[idx] & CELL_FLUID) == 0u) return;
+
+    uint nx = uint(ubo.uGridDim.x);
+    uint ny = uint(ubo.uGridDim.y);
+    uint nz = uint(ubo.uGridDim.z);
+
+    uint gz = idx / (nx * ny);
+    uint rem = idx - gz * (nx * ny);
+    uint gy = rem / nx;
+    uint gx = rem - gy * nx;
+
+    uint idxL = (gx > 0u) ? (gx - 1u) : gx;
+    uint idxR = (gx < nx - 1u) ? (gx + 1u) : gx;
+    uint idxB = (gy > 0u) ? (gy - 1u) : gy;
+    uint idxT = (gy < ny - 1u) ? (gy + 1u) : gy;
+    uint idxBa = (gz > 0u) ? (gz - 1u) : gz;
+    uint idxF = (gz < nz - 1u) ? (gz + 1u) : gz;
+
+    idxL = idxL + gy * nx + gz * (nx * ny);
+    idxR = idxR + gy * nx + gz * (nx * ny);
+    idxB = gx + idxB * nx + gz * (nx * ny);
+    idxT = gx + idxT * nx + gz * (nx * ny);
+    idxBa = gx + gy * nx + idxBa * (nx * ny);
+    idxF = gx + gy * nx + idxF * (nx * ny);
+
+    float pC = pRead[idx];
+    float pL = ((flags[idxL] & CELL_SOLID) == 0u) ? pRead[idxL] : pC;
+    float pR = ((flags[idxR] & CELL_SOLID) == 0u) ? pRead[idxR] : pC;
+    float pB = ((flags[idxB] & CELL_SOLID) == 0u) ? pRead[idxB] : pC;
+    float pT = ((flags[idxT] & CELL_SOLID) == 0u) ? pRead[idxT] : pC;
+    float pBa = ((flags[idxBa] & CELL_SOLID) == 0u) ? pRead[idxBa] : pC;
+    float pF = ((flags[idxF] & CELL_SOLID) == 0u) ? pRead[idxF] : pC;
+
+    // Apply centered gradient (adapted for cell-centered velocities)
+    gridVel[idx].x -= 0.5 * (pR - pL);
+    gridVel[idx].y -= 0.5 * (pT - pB);
+    gridVel[idx].z -= 0.5 * (pF - pBa);
+}
+
+void pass_integrate() {
+    uint pid = gl_GlobalInvocationID.x;
+    if (pid >= uint(ubo.uNumParticles)) return;
+
+    // Then normal integration
+    vec4 pos4 = p[pid];
+    vec3 newVel = v[pid].xyz;  // Corrected: use newVel instead of vel
+
+    // Add gravity
+    newVel += ubo.uGravity.xyz * pc.dt;
+
+    vec3 newPos = pos4.xyz + newVel * pc.dt;
+
+    const float restitution = 0.5;
+    const float friction    = 0.95;
+    const float halfCell    = 0.5 * ubo.uCellSize;
+
+    // --- X axis ---
+    if (newPos.x < ubo.uBoxMin.x + halfCell) {
+        newPos.x = ubo.uBoxMin.x + halfCell;
+        newVel.x = -newVel.x * restitution;
+        newVel.y *= friction;
+        newVel.z *= friction;
+    }
+    if (newPos.x > ubo.uBoxMax.x - halfCell) {
+        newPos.x = ubo.uBoxMax.x - halfCell;
+        newVel.x = -newVel.x * restitution;
+        newVel.y *= friction;
+        newVel.z *= friction;
+    }
+
+    // --- Y axis ---
+    if (newPos.y < ubo.uBoxMin.y + halfCell) {
+        newPos.y = ubo.uBoxMin.y + halfCell;
+        newVel.y = -newVel.y * restitution;
+        newVel.x *= friction;
+        newVel.z *= friction;
+    }
+    if (newPos.y > ubo.uBoxMax.y - halfCell) {
+        newPos.y = ubo.uBoxMax.y - halfCell;
+        newVel.y = -newVel.y * restitution;
+        newVel.x *= friction;
+        newVel.z *= friction;
+    }
+
+    // --- Z axis ---
+    if (newPos.z < ubo.uBoxMin.z + halfCell) {
+        newPos.z = ubo.uBoxMin.z + halfCell;
+        newVel.z = -newVel.z * restitution;
+        newVel.x *= friction;
+        newVel.y *= friction;
+    }
+    if (newPos.z > ubo.uBoxMax.z - halfCell) {
+        newPos.z = ubo.uBoxMax.z - halfCell;
+        newVel.z = -newVel.z * restitution;
+        newVel.x *= friction;
+        newVel.y *= friction;
+    }
+
+    // Write back
+    p[pid] = vec4(newPos, 0.1);
+    v[pid].xyz = newVel;
+
+    // Optional: Debug coloring by speed
+    colors[pid] = vec4(0.0, 0.2, 0.8, 1);
+}
+
+
+void pass_g2p() {
+    uint pid = gl_GlobalInvocationID.x;
+    if (pid >= uint(ubo.uNumParticles)) return;
+
+    vec3 pos = p[pid].xyz;
+    vec3 pv = v[pid].xyz;
+    
+    vec3 local = (pos - ubo.uBoxMin.xyz) / ubo.uCellSize;
+    ivec3 baseI = ivec3(floor(local));
+    baseI = clamp(baseI, ivec3(0), ivec3(ubo.uGridDim.xyz) - ivec3(2));
+    uvec3 base = uvec3(baseI);
+    vec3 frac = local - vec3(base);
+    uvec3 dim = uvec3(ubo.uGridDim.xyz);
+
+    float wx0 = 1.0 - frac.x, wx1 = frac.x;
+    float wy0 = 1.0 - frac.y, wy1 = frac.y;
+    float wz0 = 1.0 - frac.z, wz1 = frac.z;
+
+    vec3 picV = vec3(0.0);
+    vec3 delta = vec3(0.0);
+    float totalWeight = 0.0;
+
+    for (uint iz = 0; iz <= 1; ++iz)
+        for (uint iy = 0; iy <= 1; ++iy)
+            for (uint ix = 0; ix <= 1; ++ix) {
+                float w = (ix == 0 ? wx0 : wx1) * 
+                         (iy == 0 ? wy0 : wy1) * 
+                         (iz == 0 ? wz0 : wz1);
+                uvec3 cell = base + uvec3(ix, iy, iz);
+                uint c = cell.x + cell.y * dim.x + cell.z * (dim.x * dim.y);
+                
+                if ((flags[c] & CELL_SOLID) != 0u) continue;
+                
+                vec3 gv = gridVel[c].xyz;
+                vec3 pgv = prevGridVel[c].xyz;
+                picV += gv * w;
+                delta += (gv - pgv) * w;
+                totalWeight += w;
+            }
+    if (totalWeight < 0.01) {
+        v[pid].xyz = pv;
+        return;
+    }
+   float r = clamp(ubo.uDamping, 0.0, 1.0);
+   vec3 newV = (1.0 - r) * picV + r * (pv + delta);
+   v[pid].xyz = newV;
+
+}
+void main() {
+    int pass = pc.uPass;
+
+    if (pass == 0)  pass_grid_init();                    // cls
+    else if (pass == 1) pass_p2g();                     // cls
+    else if (pass == 2) pass_grid_finalize();           // cls
+    else if (pass == 3) pass_pressure_jacobi(); 
+    else if (pass == 4) pass_pressure_apply();
+    else if (pass == 5) pass_g2p();                     // cls
+    else if (pass == 6) pass_integrate();
+}

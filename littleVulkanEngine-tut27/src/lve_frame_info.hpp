@@ -34,41 +34,36 @@ struct WaterUbo {
   glm::mat4 inverseView{1.f};
 };
 struct alignas(16) WaterPhysUbo {
-  int32_t uNumParticles;
-  int32_t uNumCells;
-  int32_t pad;
-  int32_t pad2;
+  int32_t uNumParticles;  // 4
+  int32_t uNumCells;      // 4
+  int32_t pad0;           // 4
+  int32_t pad1;           // 4  -> first 16 bytes done
 
   glm::ivec4 uGridDim;  // 16 bytes
 
-  // ---- 4-float block ----
-  float uH;
-  float uH2;
-  float poly6Coeff;
-  float spikyGradCoeff;
+  float uH;              // 4
+  float uH2;             // 4
+  float overRelaxation;  // 4
+  float spikyGradCoeff;  // 4
 
-  // ---- 4-float block ----
-  float viscLapCoeff;
-  float uMass;
-  float uRestDensity;
-  float uMu;
+  float viscLapCoeff;  // 4
+  float uMass;         // 4
+  float uRestDensity;  // 4
+  float uMu;           // 4
 
-  // ---- 4-float block ----
-  float uViscosity;
-  float uEps;
-  float uDt;
-  float uCellSize;
+  float uViscosity;  // 4
+  float uEps;        // 4
+  float uDt;         // 4
+  float uCellSize;   // 4
 
-  // ---- vec4s ----
-  glm::vec4 uBoxMin;
-  glm::vec4 uBoxMax;
-  glm::vec4 uGravity;
+  glm::vec4 uBoxMin;   // 16
+  glm::vec4 uBoxMax;   // 16
+  glm::vec4 uGravity;  // 16
 
-  // ---- tail ----
-  float uDamping;
-  float pad3;
-  float pad4;
-  float pad5;
+  float uDamping;  // 4
+  float pad3;      // 4
+  float pad4;      // 4
+  float pad5;      // 4
 };
 
 struct FrameInfo {
@@ -85,7 +80,8 @@ struct WaterFrameInfo {
   VkCommandBuffer commandBuffer;
   LveCamera &camera;
   VkDescriptorSet globalDescriptorSet;
-  VkDescriptorSet computeDescriptorSet;
+  VkDescriptorSet computeDescriptorSetPing;
+  VkDescriptorSet computeDescriptorSetPong;
   LveGameObject::Map &gameObjects;
 };
 }  // namespace lve

@@ -144,7 +144,7 @@ void WaterRenderSystem::renderGameObjects(WaterFrameInfo& frameInfo, WaterPhysic
       nullptr);
 
   // Use compute-written position buffer (outputBuffer) + compute-written color buffer
-  VkBuffer buffers[] = {waterPhys.outputBuffer->getBuffer(), waterPhys.colorsBuff->getBuffer()};
+  VkBuffer buffers[] = {waterPhys.partPosBuff->getBuffer(), waterPhys.colorsBuff->getBuffer()};
   VkDeviceSize offsets[] = {0, 0};
 
   // Bind instance buffers at binding 0 & 1

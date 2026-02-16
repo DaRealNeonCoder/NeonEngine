@@ -30,12 +30,12 @@ WaterApp::WaterApp() {
   int totalSetsNeeded = 2 * numFrames;
 
   globalPool = LveDescriptorPool::Builder(lveDevice)
-                   .setMaxSets(numFrames * 26)
+                   .setMaxSets(numFrames * 28)
                    // UBO: needed in both descriptors per frame => 2 * numFrames
                    .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, totalSetsNeeded)
                    // sampler: only in the 'withShadow' set per frame => numFrames
                    .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, numFrames * 4)
-                   .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, numFrames * 18)
+                   .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, numFrames * 20)
                    .build();
 
   loadGameObjects();
@@ -49,8 +49,8 @@ void WaterApp::run() {
   float fpsTimer = 0.0f;
   int frameCount = 0;
   float fps = 0.0f;
-  std::vector<float> fpsHistory(31, 0.0f);  // fixed size
-  int fpsIndex = 0;                         // circular write index
+  std::vector<float> fpsHistory(31, 0.0f);
+  int fpsIndex = 0;
 
   std::vector<std::unique_ptr<LveBuffer>> uboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
   std::vector<std::unique_ptr<LveBuffer>> phyUboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
@@ -58,20 +58,12 @@ void WaterApp::run() {
   int particleLen = 25;
   int particleCount = particleLen * particleLen * particleLen;
 
-    std::vector<glm::vec4> posTemp(particleCount);
-  colors.assign(particleCount, glm::vec3(0, 0.4f, 0.8f));  
+  std::vector<glm::vec4> posTemp(particleCount);
+  colors.assign(particleCount, glm::vec3(0, 0.4f, 0.8f));
 
   float particleScale = 0.2f;
-  glm::vec4 offset(0, -2.f, 0, 0);
   float particleSpacing = 2.2f * particleScale;
-  for (size_t x = 0; x < particleLen; x++) {
-    for (size_t y = 0; y < particleLen; y++) {
-      for (size_t z = 0; z < particleLen; z++) {
-        posTemp[x + y * particleLen + z * particleLen * particleLen] =
-            glm::vec4(x * particleSpacing, y * particleSpacing, z * particleSpacing, 0.1f);
-      }
-    }
-  }
+
   KeyboardMovementController waterBoxController{};
 
   for (int i = 0; i < (int)uboBuffers.size(); i++) {
@@ -93,16 +85,17 @@ void WaterApp::run() {
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
     phyUboBuffers[i]->map();
   }
+
   auto globalSetLayout =
       LveDescriptorSetLayout::Builder(lveDevice)
-          .addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)  // UBO
-          .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)  // pos
-          .addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)  // col
+          .addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)
+          .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)
+          .addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)
           .build();
 
   auto computeSetLayout =
       LveDescriptorSetLayout::Builder(lveDevice)
-          .addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
@@ -112,48 +105,239 @@ void WaterApp::run() {
           .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
           .addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+          .addBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+
           .build();
 
   std::cout << "Pass 2 \n";
 
   std::vector<VkDescriptorSet> globalDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
-  std::vector<VkDescriptorSet> computeDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
-
-
+  std::vector<VkDescriptorSet> computeDescriptorSetsPong(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
+  std::vector<VkDescriptorSet> computeDescriptorSetsPing(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
   float scleThing = 1.2f;
-  float smoothingRadius = 0.3f;
-  float pressureMult = 300.f;
+  float smoothingRadius = 0.1f;
+  float pressureMult = 0.1f;
 
   WaterPhysUbo phyUbo{};
 
-  phyUbo.uGridDim = glm::ivec4(20, 20, 20, 1);
+  // ============================================================
+  // DEBUG: Print initial configuration
+  // ============================================================
+  std::cout << "\n========================================" << std::endl;
+  std::cout << "INITIAL CONFIGURATION" << std::endl;
+  std::cout << "========================================" << std::endl;
+  std::cout << "Particle count: " << particleCount << std::endl;
+  std::cout << "Smoothing radius: " << smoothingRadius << std::endl;
+  std::cout << "========================================\n" << std::endl;
 
-  phyUbo.uCellSize = 0.3f;
-
-  phyUbo.uH = smoothingRadius;
-  phyUbo.uH2 = smoothingRadius * smoothingRadius;
-  phyUbo.poly6Coeff = 315.0f / (64.0f * glm::pi<float>() * pow(smoothingRadius, 9));
-  phyUbo.spikyGradCoeff = -45.f / (glm::pi<float>() * pow(smoothingRadius, 6));
-  phyUbo.viscLapCoeff = 45.0f / (glm::pi<float>() * pow(smoothingRadius, 6));
-
-  phyUbo.uMass = 8.0f * scleThing;
-  phyUbo.uRestDensity = 1000.f;
-
-  phyUbo.uMu = pressureMult;
-  phyUbo.uViscosity = 0.10f;
-  phyUbo.uEps = 0.01f * smoothingRadius * smoothingRadius;
-  //phyUbo.uDt = 0.002f;
-  //dt in push 
+  // Define simulation box FIRST
   phyUbo.uBoxMin = glm::vec4(-4.928f, -3.08f, -1.848f, 1);
   phyUbo.uBoxMax = glm::vec4(4.928f, 0.55f, 4.928f / 2.f, 1);
-  phyUbo.uGravity = glm::vec4(0.f, 9.81f, 0.f, 0.f);
 
-  phyUbo.uDamping = 0.6;
-  phyUbo.uNumParticles = particleCount ;
-  std::cout << waterParticles.size() << 
-     "\n";
+  // ============================================================
+  // DEBUG: Box dimensions
+  // ============================================================
+  glm::vec3 boxSize = glm::vec3(phyUbo.uBoxMax) - glm::vec3(phyUbo.uBoxMin);
+  std::cout << "========================================" << std::endl;
+  std::cout << "SIMULATION BOX" << std::endl;
+  std::cout << "========================================" << std::endl;
+  std::cout << "Box Min: (" << phyUbo.uBoxMin.x << ", " << phyUbo.uBoxMin.y << ", "
+            << phyUbo.uBoxMin.z << ")" << std::endl;
+  std::cout << "Box Max: (" << phyUbo.uBoxMax.x << ", " << phyUbo.uBoxMax.y << ", "
+            << phyUbo.uBoxMax.z << ")" << std::endl;
+  std::cout << "Box Size: " << boxSize.x << " x " << boxSize.y << " x " << boxSize.z << " units"
+            << std::endl;
+  std::cout << "Box Volume: " << (boxSize.x * boxSize.y * boxSize.z) << " cubic units" << std::endl;
+  std::cout << "========================================\n" << std::endl;
+
+  // ============================================================
+  // FIXED: AUTO-CALCULATE GRID DIMENSIONS
+  // ============================================================
+  float desiredCellSize = 0.3f;
+
+  // Calculate grid dimensions to fully cover the box
+  int gridX = (int)std::ceil(boxSize.x / desiredCellSize);
+  int gridY = (int)std::ceil(boxSize.y / desiredCellSize);
+  int gridZ = (int)std::ceil(boxSize.z / desiredCellSize);
+
+  // Ensure minimum 2 cells per dimension (needed for wall boundaries)
+  gridX = std::max(gridX, 2);
+  gridY = std::max(gridY, 2);
+  gridZ = std::max(gridZ, 2);
+
+  phyUbo.uGridDim = glm::ivec4(gridX, gridY, gridZ, 1);
+  phyUbo.uCellSize = desiredCellSize;
+
+  // ============================================================
+  // DEBUG: Grid configuration and coverage check
+  // ============================================================
+  float gridCoverageX = phyUbo.uGridDim.x * phyUbo.uCellSize;
+  float gridCoverageY = phyUbo.uGridDim.y * phyUbo.uCellSize;
+  float gridCoverageZ = phyUbo.uGridDim.z * phyUbo.uCellSize;
+
+  std::cout << "========================================" << std::endl;
+  std::cout << "GRID CONFIGURATION" << std::endl;
+  std::cout << "========================================" << std::endl;
+  std::cout << "Grid Dimensions: " << phyUbo.uGridDim.x << " x " << phyUbo.uGridDim.y << " x "
+            << phyUbo.uGridDim.z << " cells" << std::endl;
+  std::cout << "Cell Size: " << phyUbo.uCellSize << " units" << std::endl;
+  std::cout << "Grid Coverage: " << gridCoverageX << " x " << gridCoverageY << " x "
+            << gridCoverageZ << " units" << std::endl;
+  std::cout << "----------------------------------------" << std::endl;
+  std::cout << "COVERAGE CHECK:" << std::endl;
+
+  bool coverageOK = true;
+  if (gridCoverageX < boxSize.x) {
+    std::cout << "  X-axis: Grid covers " << gridCoverageX << " but box needs " << boxSize.x
+              << " (SHORT by " << (boxSize.x - gridCoverageX) << ")" << std::endl;
+    coverageOK = false;
+  } else {
+    std::cout << "  X-axis: Grid covers " << gridCoverageX << " >= box " << boxSize.x << std::endl;
+  }
+
+  if (gridCoverageY < boxSize.y) {
+    std::cout << "  Y-axis: Grid covers " << gridCoverageY << " but box needs " << boxSize.y
+              << " (SHORT by " << (boxSize.y - gridCoverageY) << ")" << std::endl;
+    coverageOK = false;
+  } else {
+    std::cout << "  Y-axis: Grid covers " << gridCoverageY << " >= box " << boxSize.y << std::endl;
+  }
+
+  if (gridCoverageZ < boxSize.z) {
+    std::cout << "  Z-axis: Grid covers " << gridCoverageZ << " but box needs " << boxSize.z
+              << " (SHORT by " << (boxSize.z - gridCoverageZ) << ")" << std::endl;
+    coverageOK = false;
+  } else {
+    std::cout << "  Z-axis: Grid covers " << gridCoverageZ << " >= box " << boxSize.z << std::endl;
+  }
+
+  std::cout << "----------------------------------------" << std::endl;
+  if (!coverageOK) {
+    std::cout << " WARNING: GRID DOES NOT FULLY COVER BOX!" << std::endl;
+    std::cout << "Particles outside grid will FREEZE!" << std::endl;
+  } else {
+    std::cout << "Grid fully covers the simulation box" << std::endl;
+  }
+  std::cout << "========================================\n" << std::endl;
+
+  // Rest of UBO setup
+  phyUbo.uH = smoothingRadius;
+  phyUbo.uH2 = smoothingRadius * smoothingRadius;
+  phyUbo.overRelaxation = 1.9f;  // Match JS (was 1.0)
+  phyUbo.spikyGradCoeff = -45.f / (glm::pi<float>() * pow(smoothingRadius, 6));
+  phyUbo.viscLapCoeff = 45.0f / (glm::pi<float>() * pow(smoothingRadius, 6));
+  phyUbo.uMass = 1.f;
+  phyUbo.uRestDensity = 1.0f;  // Much lower (was 1000.0) - JS uses ~1.0 for normalized units
+  phyUbo.uMu = 0.1f;
+  phyUbo.uViscosity = 0.10f;
+  phyUbo.uEps = 0.01f * smoothingRadius * smoothingRadius;
+  phyUbo.uGravity = glm::vec4(0.f, 9.81f, 0.f, 0.f);  // Negative Y for downward gravity
+  phyUbo.uDamping = 1.0f;
+  phyUbo.uNumParticles = particleCount;
+  std::cout << waterParticles.size() << "\n";
   phyUbo.uNumCells = phyUbo.uGridDim.x * phyUbo.uGridDim.y * phyUbo.uGridDim.z;
+
+  // ============================================================
+  // Spawn particles
+  // ============================================================
+  {
+    glm::vec3 boxMin = glm::vec3(phyUbo.uBoxMin) * 0.9f;
+    glm::vec3 boxMax = glm::vec3(phyUbo.uBoxMax) * 0.9f;
+    float margin = (phyUbo.uCellSize > 0.0f) ? phyUbo.uCellSize : (particleScale * 0.5f);
+    glm::vec3 spawnMin = boxMin + glm::vec3(margin);
+    glm::vec3 spawnMax = boxMax - glm::vec3(margin);
+
+    if (spawnMax.x <= spawnMin.x || spawnMax.y <= spawnMin.y || spawnMax.z <= spawnMin.z) {
+      glm::vec3 center = 0.5f * (boxMin + boxMax);
+      float fallbackExtent = glm::min(glm::max(boxMax.x - boxMin.x, 0.1f), 1.0f);
+      spawnMin = center - glm::vec3(fallbackExtent * 0.25f);
+      spawnMax = center + glm::vec3(fallbackExtent * 0.25f);
+    }
+
+    glm::vec3 spawnSize = spawnMax - spawnMin;
+
+    for (size_t x = 0; x < (size_t)particleLen; x++) {
+      for (size_t y = 0; y < (size_t)particleLen; y++) {
+        for (size_t z = 0; z < (size_t)particleLen; z++) {
+          float eps = 0.001f;
+
+          float nx =
+              (particleLen == 1) ? 0.5f : (float(x) + eps) / (float(particleLen - 1) + 2.0f * eps);
+
+          float ny =
+              (particleLen == 1) ? 0.5f : (float(y) + eps) / (float(particleLen - 1) + 2.0f * eps);
+
+          float nz =
+              (particleLen == 1) ? 0.5f : (float(z) + eps) / (float(particleLen - 1) + 2.0f * eps);
+          glm::vec3 pos = spawnMin + glm::vec3(nx, ny, nz) * spawnSize;
+          size_t idx = x + y * particleLen + z * particleLen * particleLen;
+          posTemp[idx] = glm::vec4(pos, 0.1f);
+        }
+      }
+    }
+
+    // ============================================================
+    // DEBUG: Particle spawn verification
+    // ============================================================
+    std::cout << "========================================" << std::endl;
+    std::cout << "PARTICLE SPAWN" << std::endl;
+    std::cout << "========================================" << std::endl;
+    std::cout << "Spawn region Min: (" << spawnMin.x << ", " << spawnMin.y << ", " << spawnMin.z
+              << ")" << std::endl;
+    std::cout << "Spawn region Max: (" << spawnMax.x << ", " << spawnMax.y << ", " << spawnMax.z
+              << ")" << std::endl;
+    std::cout << "Spawn region size: " << spawnSize.x << " x " << spawnSize.y << " x "
+              << spawnSize.z << std::endl;
+    std::cout << "----------------------------------------" << std::endl;
+
+    std::cout << "Sample particle positions:" << std::endl;
+    for (int i = 0; i < std::min(5, particleCount); i++) {
+      std::cout << "  Particle " << i << ": (" << posTemp[i].x << ", " << posTemp[i].y << ", "
+                << posTemp[i].z << ")" << std::endl;
+    }
+    std::cout << "  ..." << std::endl;
+    for (int i = std::max(0, particleCount - 5); i < particleCount; i++) {
+      std::cout << "  Particle " << i << ": (" << posTemp[i].x << ", " << posTemp[i].y << ", "
+                << posTemp[i].z << ")" << std::endl;
+    }
+
+    int particlesOutsideBox = 0;
+    int particlesOutsideGrid = 0;
+    glm::vec3 gridMax =
+        glm::vec3(phyUbo.uBoxMin) + glm::vec3(gridCoverageX, gridCoverageY, gridCoverageZ);
+
+    for (int i = 0; i < particleCount; i++) {
+      glm::vec3 pos = glm::vec3(posTemp[i]);
+
+      if (pos.x < boxMin.x || pos.x > boxMax.x || pos.y < boxMin.y || pos.y > boxMax.y ||
+          pos.z < boxMin.z || pos.z > boxMax.z) {
+        particlesOutsideBox++;
+      }
+
+      if (pos.x < boxMin.x || pos.x > gridMax.x || pos.y < boxMin.y || pos.y > gridMax.y ||
+          pos.z < boxMin.z || pos.z > gridMax.z) {
+        particlesOutsideGrid++;
+      }
+    }
+
+    std::cout << "----------------------------------------" << std::endl;
+    std::cout << "Particles outside box: " << particlesOutsideBox << " / " << particleCount
+              << std::endl;
+    std::cout << "Particles outside grid coverage: " << particlesOutsideGrid << " / "
+              << particleCount << std::endl;
+
+    if (particlesOutsideBox > 0) {
+      std::cout << "  WARNING: " << particlesOutsideBox << " particles spawned outside the box!"
+                << std::endl;
+    }
+    if (particlesOutsideGrid > 0) {
+      std::cout << "  WARNING: " << particlesOutsideGrid
+                << " particles spawned outside grid coverage!" << std::endl;
+      std::cout << "These particles will likely FREEZE!" << std::endl;
+    }
+    std::cout << "========================================\n" << std::endl;
+  }
 
   for (size_t i = 0; i < phyUboBuffers.size(); i++) {
     phyUboBuffers[i]->writeToBuffer(&phyUbo);
@@ -161,55 +345,76 @@ void WaterApp::run() {
   }
 
   WaterPhysics waterPhysics{
-      particleCount, 
+      particleCount,
       posTemp,
       computeSetLayout->getDescriptorSetLayout(),
       phyUbo,
       gameObjects,
-      smoothingRadius,  
-      1000.f,           // rest density (water)
-      0.3f,             // viscosity
-      1000.0f,          // pressure stiffness
+      smoothingRadius,
+      1000.f,
+      0.3f,
+      1000.0f,
       &lveDevice,
   };
 
-  for (int i = 0; i < (int)computeDescriptorSets.size(); i++) {
-    auto cellCountInfo = waterPhysics.getCellCountDescInfo();
-    auto cellIndicesInfo = waterPhysics.getCellIndiciesDescInfo();
-    auto cellStartInfo = waterPhysics.getCellStartDescInfo();
-    auto velocitiesInfo = waterPhysics.getVelocitiesDescInfo();
-    auto densitiesInfo = waterPhysics.getDensitiesDescInfo();
-    auto pressuresInfo = waterPhysics.getPressuresDescInfo();
-    auto forcesInfo = waterPhysics.getForcesDescInfo();
+  for (int i = 0; i < (int)computeDescriptorSetsPing.size(); i++) {
     auto uboInfo = phyUboBuffers[i]->descriptorInfo();
-    auto outputInfo = waterPhysics.getOutputDescInfo();
-    auto cellCursorInfo = waterPhysics.getCellCursorDescInfo();
-    auto colorsInfo = waterPhysics.getColorDescInfo();
+    auto partPosInfo = waterPhysics.getPartPosDescInfo();
+    auto partVelInfo = waterPhysics.getPartVelDescInfo();
+    auto gridVelAccumInfo = waterPhysics.getGridVelAccumDescInfo();
+    auto gridWeightInfo = waterPhysics.getGridWeightDescInfo();
+    auto gridFlagsInfo = waterPhysics.getGridFlagsDescInfo();
+    auto gridVelInfo = waterPhysics.getGridVelDescInfo();
+    auto prevGridVelInfo = waterPhysics.getPrevGridVelDescInfo();
+    auto pressureReadInfo = waterPhysics.getPressureReadDescInfo();
+    auto pressureWriteInfo = waterPhysics.getPressureWriteDescInfo();
+    auto colorWriteInfo = waterPhysics.getColorDescInfo();
+    auto debugInfo = waterPhysics.getDebugInfo();
 
     LveDescriptorWriter(*computeSetLayout, *globalPool)
-        .writeBuffer(0, &uboInfo)         // binding 1: output positions
-        .writeBuffer(1, &outputInfo)      // binding 1: output positions
-        .writeBuffer(2, &velocitiesInfo)  // binding 1: output positions
-        .writeBuffer(3, &densitiesInfo)   // binding 1: output positions
-        .writeBuffer(4, &pressuresInfo)   // binding 1: output positions
-        .writeBuffer(5, &forcesInfo)      // binding 1: output positions
-        .writeBuffer(6, &cellStartInfo)
-        .writeBuffer(7, &cellCountInfo)    // binding 0: input positions
-        .writeBuffer(8, &cellIndicesInfo)  // binding 0: input positions
-        .writeBuffer(9, &cellCursorInfo)  // binding 0: input positions
-        .writeBuffer(10, &colorsInfo)   // binding 0: input positions
-        .build(computeDescriptorSets[i]);
+        .writeBuffer(0, &partPosInfo)
+        .writeBuffer(1, &partVelInfo)
+        .writeBuffer(2, &gridVelAccumInfo)
+        .writeBuffer(3, &gridWeightInfo)
+        .writeBuffer(4, &gridFlagsInfo)
+        .writeBuffer(5, &gridVelInfo)
+        .writeBuffer(6, &prevGridVelInfo)
+        .writeBuffer(7, &pressureReadInfo)
+        .writeBuffer(8, &pressureWriteInfo)
+        .writeBuffer(9, &colorWriteInfo)
+        .writeBuffer(10, &uboInfo)
+        .writeBuffer(11, &debugInfo)
+        .build(computeDescriptorSetsPing[i]);
+
+        LveDescriptorWriter(*computeSetLayout, *globalPool)
+        .writeBuffer(0, &partPosInfo)
+        .writeBuffer(1, &partVelInfo)
+        .writeBuffer(2, &gridVelAccumInfo)
+        .writeBuffer(3, &gridWeightInfo)
+        .writeBuffer(4, &gridFlagsInfo)
+        .writeBuffer(5, &gridVelInfo)
+        .writeBuffer(6, &prevGridVelInfo)
+        .writeBuffer(7, &pressureWriteInfo)
+        .writeBuffer(8, &pressureReadInfo)
+        .writeBuffer(9, &colorWriteInfo)
+        .writeBuffer(10, &uboInfo)
+        .writeBuffer(11, &debugInfo)
+
+        .build(computeDescriptorSetsPong[i]);
   }
+
   std::cout << "Pass 4 \n";
- 
+
   std::shared_ptr<LveModel> model;
   for (auto& kv : gameObjects) {
-      auto& obj = kv.second;
-      if (obj.model == nullptr) continue;
-      model = obj.model;
+    auto& obj = kv.second;
+    if (obj.model == nullptr) continue;
+    model = obj.model;
     break;
   }
+
   std::cout << "Pass 4.1\n";
+
   WaterRenderSystem waterRenderSystem{
       lveDevice,
       lveRenderer.getSwapChainRenderPass(),
@@ -219,10 +424,9 @@ void WaterApp::run() {
   waterRenderSystem.particleVert = model->getVertices().size();
   waterRenderSystem.updateBuffers(posTemp, colors);
 
-  
   for (int i = 0; i < (int)globalDescriptorSets.size(); i++) {
     auto bufferInfo = uboBuffers[i]->descriptorInfo();
-    auto bufferInfo2 = waterPhysics.getOutputDescInfo();
+    auto bufferInfo2 = waterPhysics.getPartPosDescInfo();
     auto bufferInfo3 = waterPhysics.getColorDescInfo();
 
     LveDescriptorWriter(*globalSetLayout, *globalPool)
@@ -231,21 +435,23 @@ void WaterApp::run() {
         .writeBuffer(2, &bufferInfo3)
         .build(globalDescriptorSets[i]);
   }
+
   std::cout << "Pass 4.2\n";
 
-  // ... camera setup ...
   LveCamera camera{};
   auto viewerObject = LveGameObject::createGameObject();
   viewerObject.transform.translation.z = -2.5f;
   KeyboardMovementController cameraController{};
 
   std::cout << "Pass 5 \n";
-
-
-
   std::cout << "Pass 6 \n";
-  std::this_thread::sleep_for(std::chrono::seconds(3));
-  bool hasMoved;
+
+  bool hasMoved = false;
+
+  std::cout << "\n========================================" << std::endl;
+  std::cout << "SETUP COMPLETE - ENTERING MAIN LOOP" << std::endl;
+  std::cout << "========================================\n" << std::endl;
+
   while (!lveWindow.shouldClose()) {
     glfwPollEvents();
 
@@ -276,7 +482,7 @@ void WaterApp::run() {
     }
 
 
-    waterBoxController.editBoxDimensions(lveWindow.getGLFWwindow(), frameTime, boxDim, hasMoved);
+    //waterBoxController.editBoxDimensions(lveWindow.getGLFWwindow(), frameTime, boxDim, hasMoved);
     if (hasMoved) {
       phyUbo.uBoxMin = boxDim * glm::vec4(-4.928f, -3.08f, -1.848f, 1);
       phyUbo.uBoxMax = boxDim * glm::vec4(4.928f, 0.55f, 4.928f / 2.f, 1);
@@ -293,7 +499,8 @@ void WaterApp::run() {
           commandBuffer,
           camera,
           globalDescriptorSets[frameIndex],
-          computeDescriptorSets[0],
+          computeDescriptorSetsPing[0],
+          computeDescriptorSetsPong[0],
           gameObjects};
 
       WaterUbo ubo{};
@@ -316,6 +523,16 @@ void WaterApp::run() {
 
       lveRenderer.endFrame();
 
+      // NOW it's safe to read back (every N frames to avoid stalling)
+      if (frameCount % 1000 == 0) {  // Only readback occasionally
+        vkDeviceWaitIdle(lveDevice.device());
+
+        float* data = (float*)waterPhysics.debugBuff->getMappedMemory();
+        for (int i = 0; i < 8; ++i) {
+            std::cout << "div for " << i << " div:" << data[i] << std::endl;
+        }
+
+      }
     }
   }
 
@@ -349,7 +566,6 @@ void WaterApp::loadGameObjects() {
   
   float spc = 0.1f;  // whatever you actually used when creating the lattice
   float particleVolume = spc * spc * spc;
-  float particleMass = 1000.f * particleVolume;  // gives mass that yields rho ~ restDensity i
   glm::vec3 offset(0, -2.f, 0);
   float particleScale = 0.2f;
 
