@@ -8,6 +8,7 @@
 #include "simple_render_system.hpp"
 #include "water_physics.hpp"
 #include "water_render_system.hpp"
+#include <random>
 
 // libs
 #define GLM_FORCE_RADIANS
@@ -55,7 +56,8 @@ void WaterApp::run() {
   std::vector<std::unique_ptr<LveBuffer>> uboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
   std::vector<std::unique_ptr<LveBuffer>> phyUboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
-  int particleLen = 25;
+  int actualPartLen = 25;
+  int particleLen = actualPartLen;
   int particleCount = particleLen * particleLen * particleLen;
 
   std::vector<glm::vec4> posTemp(particleCount);
@@ -92,23 +94,34 @@ void WaterApp::run() {
           .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)
           .addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL_GRAPHICS)
           .build();
-
+  
   auto computeSetLayout =
-      LveDescriptorSetLayout::Builder(lveDevice)
-          .addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-          .addBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
-
-          .build();
+    LveDescriptorSetLayout::Builder(lveDevice)
+        .addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // partPos
+        .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // partVel
+        .addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridU
+        .addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridV
+        .addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridW
+        .addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // prevGridU
+        .addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // prevGridV
+        .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // prevGridW
+        .addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridFlags
+        .addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // colors
+        .addBinding(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // UBO
+        .addBinding(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // debug
+        .addBinding(12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridDU
+        .addBinding(13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridDV
+        .addBinding(14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridDW
+        .addBinding(15, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridS
+        .addBinding(16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // pressureRead
+        .addBinding(17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // pressureWrite
+        .addBinding(18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridS
+        .addBinding(19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // pressureRead
+        .addBinding(20, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // pressureWrite
+        .addBinding(21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridS
+        .addBinding(22, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // pressureRead
+        .addBinding(23, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // pressureWrite
+        .build();
 
   std::cout << "Pass 2 \n";
 
@@ -154,7 +167,7 @@ void WaterApp::run() {
   // ============================================================
   // FIXED: AUTO-CALCULATE GRID DIMENSIONS
   // ============================================================
-  float desiredCellSize = 0.3f;
+  float desiredCellSize = 0.1f;
 
   // Calculate grid dimensions to fully cover the box
   int gridX = (int)std::ceil(boxSize.x / desiredCellSize);
@@ -222,18 +235,17 @@ void WaterApp::run() {
   std::cout << "========================================\n" << std::endl;
 
   // Rest of UBO setup
+  smoothingRadius = 0.3f;
   phyUbo.uH = smoothingRadius;
   phyUbo.uH2 = smoothingRadius * smoothingRadius;
-  phyUbo.overRelaxation = 1.9f;  // Match JS (was 1.0)
+  phyUbo.overRelaxation = 1.01f;  // Match JS (was 1.0)
   phyUbo.spikyGradCoeff = -45.f / (glm::pi<float>() * pow(smoothingRadius, 6));
   phyUbo.viscLapCoeff = 45.0f / (glm::pi<float>() * pow(smoothingRadius, 6));
-  phyUbo.uMass = 1.f;
-  phyUbo.uRestDensity = 1.0f;  // Much lower (was 1000.0) - JS uses ~1.0 for normalized units
-  phyUbo.uMu = 0.1f;
-  phyUbo.uViscosity = 0.10f;
+  phyUbo.uRestDensity = 1000000.f;  // Much lower (was 1000.0) - JS uses ~1.0 for normalized units
+  //phyUbo.uViscosity = 0.10f;
   phyUbo.uEps = 0.01f * smoothingRadius * smoothingRadius;
   phyUbo.uGravity = glm::vec4(0.f, 9.81f, 0.f, 0.f);  // Negative Y for downward gravity
-  phyUbo.uDamping = 1.0f;
+  phyUbo.uDamping = 0.95f;
   phyUbo.uNumParticles = particleCount;
   std::cout << waterParticles.size() << "\n";
   phyUbo.uNumCells = phyUbo.uGridDim.x * phyUbo.uGridDim.y * phyUbo.uGridDim.z;
@@ -241,9 +253,14 @@ void WaterApp::run() {
   // ============================================================
   // Spawn particles
   // ============================================================
+  // Before the spawn loop:
+  std::mt19937 rng(42);
+  std::uniform_real_distribution<float> jitter(-0.5f, 0.5f);
+  float jitterScale = particleSpacing * 0.9f;  // ~30% of spacing
+ 
   {
-    glm::vec3 boxMin = glm::vec3(phyUbo.uBoxMin) * 0.9f;
-    glm::vec3 boxMax = glm::vec3(phyUbo.uBoxMax) * 0.9f;
+    glm::vec3 boxMin = glm::vec3(phyUbo.uBoxMin) * 0.97f;
+    glm::vec3 boxMax = glm::vec3(phyUbo.uBoxMax) * 0.97f;
     float margin = (phyUbo.uCellSize > 0.0f) ? phyUbo.uCellSize : (particleScale * 0.5f);
     glm::vec3 spawnMin = boxMin + glm::vec3(margin);
     glm::vec3 spawnMax = boxMax - glm::vec3(margin);
@@ -272,6 +289,14 @@ void WaterApp::run() {
               (particleLen == 1) ? 0.5f : (float(z) + eps) / (float(particleLen - 1) + 2.0f * eps);
           glm::vec3 pos = spawnMin + glm::vec3(nx, ny, nz) * spawnSize;
           size_t idx = x + y * particleLen + z * particleLen * particleLen;
+
+
+          pos += glm::vec3(
+              jitter(rng) * jitterScale,
+              jitter(rng) * jitterScale,
+              jitter(rng) * jitterScale);
+
+
           posTemp[idx] = glm::vec4(pos, 0.1f);
         }
       }
@@ -351,55 +376,95 @@ void WaterApp::run() {
       phyUbo,
       gameObjects,
       smoothingRadius,
-      1000.f,
+      1.f,
       0.3f,
-      1000.0f,
+      1.0f,
       &lveDevice,
   };
+  std::cout << "passed smth \n" << std::endl;
 
+  // Descriptor Set Writers
   for (int i = 0; i < (int)computeDescriptorSetsPing.size(); i++) {
     auto uboInfo = phyUboBuffers[i]->descriptorInfo();
     auto partPosInfo = waterPhysics.getPartPosDescInfo();
     auto partVelInfo = waterPhysics.getPartVelDescInfo();
-    auto gridVelAccumInfo = waterPhysics.getGridVelAccumDescInfo();
-    auto gridWeightInfo = waterPhysics.getGridWeightDescInfo();
+    auto gridUInfo = waterPhysics.getGridUDescInfo();
+    auto gridVInfo = waterPhysics.getGridVDescInfo();
+    auto gridWInfo = waterPhysics.getGridWDescInfo();
+    auto prevGridUInfo = waterPhysics.getPrevGridUDescInfo();
+    auto prevGridVInfo = waterPhysics.getPrevGridVDescInfo();
+    auto prevGridWInfo = waterPhysics.getPrevGridWDescInfo();
     auto gridFlagsInfo = waterPhysics.getGridFlagsDescInfo();
-    auto gridVelInfo = waterPhysics.getGridVelDescInfo();
-    auto prevGridVelInfo = waterPhysics.getPrevGridVelDescInfo();
-    auto pressureReadInfo = waterPhysics.getPressureReadDescInfo();
-    auto pressureWriteInfo = waterPhysics.getPressureWriteDescInfo();
     auto colorWriteInfo = waterPhysics.getColorDescInfo();
     auto debugInfo = waterPhysics.getDebugInfo();
+    auto gridDUInfo = waterPhysics.getGridDUDescInfo();
+    auto gridDVInfo = waterPhysics.getGridDVDescInfo();
+    auto gridDWInfo = waterPhysics.getGridDWDescInfo();
+    auto gridSInfo = waterPhysics.getGridSDescInfo();
+    auto pressureReadInfo = waterPhysics.getPressureReadDescInfo();
+    auto pressureWriteInfo = waterPhysics.getPressureWriteDescInfo();
+    auto gridUAccumInfo = waterPhysics.getGridUAccumDescInfo();
+    auto gridVAccumInfo = waterPhysics.getGridVAccumDescInfo();
+    auto gridWAccumInfo = waterPhysics.getGridWAccumDescInfo();
 
+    auto gridUWeightInfo = waterPhysics.getGridUWeightDescInfo();
+    auto gridVWeightInfo = waterPhysics.getGridVWeightDescInfo();
+    auto gridWWeightInfo = waterPhysics.getGridWWeightDescInfo();
+
+    // PING descriptor set
     LveDescriptorWriter(*computeSetLayout, *globalPool)
         .writeBuffer(0, &partPosInfo)
         .writeBuffer(1, &partVelInfo)
-        .writeBuffer(2, &gridVelAccumInfo)
-        .writeBuffer(3, &gridWeightInfo)
-        .writeBuffer(4, &gridFlagsInfo)
-        .writeBuffer(5, &gridVelInfo)
-        .writeBuffer(6, &prevGridVelInfo)
-        .writeBuffer(7, &pressureReadInfo)
-        .writeBuffer(8, &pressureWriteInfo)
+        .writeBuffer(2, &gridUInfo)
+        .writeBuffer(3, &gridVInfo)
+        .writeBuffer(4, &gridWInfo)
+        .writeBuffer(5, &prevGridUInfo)
+        .writeBuffer(6, &prevGridVInfo)
+        .writeBuffer(7, &prevGridWInfo)
+        .writeBuffer(8, &gridFlagsInfo)
         .writeBuffer(9, &colorWriteInfo)
         .writeBuffer(10, &uboInfo)
         .writeBuffer(11, &debugInfo)
+        .writeBuffer(12, &gridDUInfo)
+        .writeBuffer(13, &gridDVInfo)
+        .writeBuffer(14, &gridDWInfo)
+        .writeBuffer(15, &gridSInfo)
+        .writeBuffer(16, &pressureReadInfo)
+        .writeBuffer(17, &pressureWriteInfo)
+        .writeBuffer(18, &gridUAccumInfo)
+        .writeBuffer(19, &gridVAccumInfo)
+        .writeBuffer(20, &gridWAccumInfo)
+        .writeBuffer(21, &gridUWeightInfo)
+        .writeBuffer(22, &gridVWeightInfo)
+        .writeBuffer(23, &gridWWeightInfo)
         .build(computeDescriptorSetsPing[i]);
 
-        LveDescriptorWriter(*computeSetLayout, *globalPool)
+    // PONG descriptor set (swap pressure buffers)
+    LveDescriptorWriter(*computeSetLayout, *globalPool)
         .writeBuffer(0, &partPosInfo)
         .writeBuffer(1, &partVelInfo)
-        .writeBuffer(2, &gridVelAccumInfo)
-        .writeBuffer(3, &gridWeightInfo)
-        .writeBuffer(4, &gridFlagsInfo)
-        .writeBuffer(5, &gridVelInfo)
-        .writeBuffer(6, &prevGridVelInfo)
-        .writeBuffer(7, &pressureWriteInfo)
-        .writeBuffer(8, &pressureReadInfo)
+        .writeBuffer(2, &gridUInfo)
+        .writeBuffer(3, &gridVInfo)
+        .writeBuffer(4, &gridWInfo)
+        .writeBuffer(5, &prevGridUInfo)
+        .writeBuffer(6, &prevGridVInfo)
+        .writeBuffer(7, &prevGridWInfo)
+        .writeBuffer(8, &gridFlagsInfo)
         .writeBuffer(9, &colorWriteInfo)
         .writeBuffer(10, &uboInfo)
         .writeBuffer(11, &debugInfo)
-
+        .writeBuffer(12, &gridDUInfo)
+        .writeBuffer(13, &gridDVInfo)
+        .writeBuffer(14, &gridDWInfo)
+        .writeBuffer(15, &gridSInfo)
+        .writeBuffer(16, &pressureWriteInfo)  // Swapped
+        .writeBuffer(17, &pressureReadInfo)   // Swapped
+        .writeBuffer(18, &gridUAccumInfo)
+        .writeBuffer(19, &gridVAccumInfo)
+        .writeBuffer(20, &gridWAccumInfo)
+        .writeBuffer(21, &gridUWeightInfo)
+        .writeBuffer(22, &gridVWeightInfo)
+        .writeBuffer(23, &gridWWeightInfo)
         .build(computeDescriptorSetsPong[i]);
   }
 
@@ -482,7 +547,7 @@ void WaterApp::run() {
     }
 
 
-    //waterBoxController.editBoxDimensions(lveWindow.getGLFWwindow(), frameTime, boxDim, hasMoved);
+    waterBoxController.editBoxDimensions(lveWindow.getGLFWwindow(), frameTime, boxDim, hasMoved);
     if (hasMoved) {
       phyUbo.uBoxMin = boxDim * glm::vec4(-4.928f, -3.08f, -1.848f, 1);
       phyUbo.uBoxMax = boxDim * glm::vec4(4.928f, 0.55f, 4.928f / 2.f, 1);
@@ -528,8 +593,11 @@ void WaterApp::run() {
         vkDeviceWaitIdle(lveDevice.device());
 
         float* data = (float*)waterPhysics.debugBuff->getMappedMemory();
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < 10; ++i) {
+            
+            if (data[i] != -1) {
             std::cout << "div for " << i << " div:" << data[i] << std::endl;
+          }
         }
 
       }
@@ -564,7 +632,7 @@ void WaterApp::loadGameObjects() {
   int particleLen = 7;
 
   
-  float spc = 0.1f;  // whatever you actually used when creating the lattice
+  float spc = 0.1f;  // we
   float particleVolume = spc * spc * spc;
   glm::vec3 offset(0, -2.f, 0);
   float particleScale = 0.2f;

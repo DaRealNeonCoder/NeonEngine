@@ -64,18 +64,32 @@ class WaterPhysics {
   ~WaterPhysics();
 
   void RunSimulation(float dt, WaterFrameInfo &info);
-    VkDescriptorBufferInfo getPartPosDescInfo()       { return partPosBuff->descriptorInfo(); }         // binding 0
-    VkDescriptorBufferInfo getPartVelDescInfo()       { return partVelBuff->descriptorInfo(); }         // binding 1
-    VkDescriptorBufferInfo getGridVelAccumDescInfo()  { return gridVelAccumBuff->descriptorInfo(); }    // binding 2
-    VkDescriptorBufferInfo getGridWeightDescInfo()    { return gridWeightBuff->descriptorInfo(); }      // binding 3
-    VkDescriptorBufferInfo getGridFlagsDescInfo()     { return gridFlagsBuff->descriptorInfo(); }       // binding 4
-    VkDescriptorBufferInfo getGridVelDescInfo()       { return gridVelBuff->descriptorInfo(); }         // binding 5
-    VkDescriptorBufferInfo getPrevGridVelDescInfo()   { return prevGridVelBuff->descriptorInfo(); }     // binding 6
-    VkDescriptorBufferInfo getPressureReadDescInfo()  { return pressureReadBuff->descriptorInfo(); }    // binding 7
-    VkDescriptorBufferInfo getPressureWriteDescInfo() { return pressureWriteBuff->descriptorInfo(); }   // binding 8
-    VkDescriptorBufferInfo getColorDescInfo()         { return colorsBuff->descriptorInfo(); }
-    VkDescriptorBufferInfo getDebugInfo() { return debugBuff->descriptorInfo(); }
-  
+// Descriptor Info Getters - add these to your header
+VkDescriptorBufferInfo getPartPosDescInfo()      { return partPosBuff->descriptorInfo(); }       // binding 0
+VkDescriptorBufferInfo getPartVelDescInfo()      { return partVelBuff->descriptorInfo(); }       // binding 1
+VkDescriptorBufferInfo getGridUDescInfo()        { return gridUBuff->descriptorInfo(); }         // binding 2
+VkDescriptorBufferInfo getGridVDescInfo()        { return gridVBuff->descriptorInfo(); }         // binding 3
+VkDescriptorBufferInfo getGridWDescInfo()        { return gridWBuff->descriptorInfo(); }         // binding 4
+VkDescriptorBufferInfo getPrevGridUDescInfo()    { return prevGridUBuff->descriptorInfo(); }     // binding 5
+VkDescriptorBufferInfo getPrevGridVDescInfo()    { return prevGridVBuff->descriptorInfo(); }     // binding 6
+VkDescriptorBufferInfo getPrevGridWDescInfo()    { return prevGridWBuff->descriptorInfo(); }     // binding 7
+VkDescriptorBufferInfo getGridFlagsDescInfo()    { return gridFlagsBuff->descriptorInfo(); }     // binding 8
+VkDescriptorBufferInfo getColorDescInfo()        { return colorsBuff->descriptorInfo(); }        // binding 9
+VkDescriptorBufferInfo getDebugInfo()            { return debugBuff->descriptorInfo(); }         // binding 11
+VkDescriptorBufferInfo getGridDUDescInfo()       { return gridDUBuff->descriptorInfo(); }        // binding 12
+VkDescriptorBufferInfo getGridDVDescInfo()       { return gridDVBuff->descriptorInfo(); }        // binding 13
+VkDescriptorBufferInfo getGridDWDescInfo()       { return gridDWBuff->descriptorInfo(); }        // binding 14
+VkDescriptorBufferInfo getGridSDescInfo()        { return gridSBuff->descriptorInfo(); }         // binding 15
+VkDescriptorBufferInfo getPressureReadDescInfo() { return pressureReadBuff->descriptorInfo(); }  // binding 16
+VkDescriptorBufferInfo getPressureWriteDescInfo(){ return pressureWriteBuff->descriptorInfo(); } // binding 17
+VkDescriptorBufferInfo getGridUAccumDescInfo() { return gridUAccumBuff->descriptorInfo(); }  // 18
+VkDescriptorBufferInfo getGridVAccumDescInfo() { return gridVAccumBuff->descriptorInfo(); }  // 19
+VkDescriptorBufferInfo getGridWAccumDescInfo() { return gridWAccumBuff->descriptorInfo(); }  // 20
+
+VkDescriptorBufferInfo getGridUWeightDescInfo() { return gridUWeightBuff->descriptorInfo(); }  // 21
+VkDescriptorBufferInfo getGridVWeightDescInfo() { return gridVWeightBuff->descriptorInfo(); }  // 22
+VkDescriptorBufferInfo getGridWWeightDescInfo() { return gridWWeightBuff->descriptorInfo(); }  // 23
+
     std::unique_ptr<LveBuffer> makeHostVisible(VkDeviceSize elemSize, uint32_t count); 
   void UploadBuffers(const Grid& grid);
   std::vector<glm::vec4> outPositions;
@@ -154,16 +168,41 @@ class WaterPhysics {
   VkQueue computeQueue;
 
   uint32_t particleCount = 0;
-  std::unique_ptr<LveBuffer> partVelBuff;     
-  std::unique_ptr<LveBuffer> gridVelAccumBuff;  
-  std::unique_ptr<LveBuffer> gridWeightBuff;     
-  std::unique_ptr<LveBuffer> gridFlagsBuff;      
-  std::unique_ptr<LveBuffer> gridVelBuff;       
-  std::unique_ptr<LveBuffer> prevGridVelBuff;    
-  std::unique_ptr<LveBuffer> pressureReadBuff;   
-  std::unique_ptr<LveBuffer> pressureWriteBuff;  
+  // Particle buffers
+  std::unique_ptr<LveBuffer> partVelBuff;  // binding 1
 
+  // MAC grid velocity buffers (separate components)
+  std::unique_ptr<LveBuffer> gridUBuff;  // binding 2 - u velocity at vertical faces
+  std::unique_ptr<LveBuffer> gridVBuff;  // binding 3 - v velocity at horizontal faces
+  std::unique_ptr<LveBuffer> gridWBuff;  // binding 4 - w velocity at depth faces
 
+  std::unique_ptr<LveBuffer> prevGridUBuff;  // binding 5 - previous u
+  std::unique_ptr<LveBuffer> prevGridVBuff;  // binding 6 - previous v
+  std::unique_ptr<LveBuffer> prevGridWBuff;  // binding 7 - previous w
+
+  // Grid metadata
+  std::unique_ptr<LveBuffer> gridFlagsBuff;  // binding 8 - cell type flags
+
+  // Weight accumulators for P2G (stored as uint for atomic ops)
+  std::unique_ptr<LveBuffer> gridDUBuff;  // binding 12
+  std::unique_ptr<LveBuffer> gridDVBuff;  // binding 13
+  std::unique_ptr<LveBuffer> gridDWBuff;  // binding 14
+
+  // Solid flags (s array from JS: 0=solid, 1=fluid)
+  std::unique_ptr<LveBuffer> gridSBuff;  // binding 15
+
+  // Pressure buffers (ping-pong)
+  std::unique_ptr<LveBuffer> pressureReadBuff;   // binding 16
+  std::unique_ptr<LveBuffer> pressureWriteBuff;  // binding 17
+
+  std::unique_ptr<LveBuffer> gridUAccumBuff;  // binding 18
+  std::unique_ptr<LveBuffer> gridVAccumBuff;  // binding 19
+  std::unique_ptr<LveBuffer> gridWAccumBuff;  // binding 20
+
+  // Pure weight accumulators
+  std::unique_ptr<LveBuffer> gridUWeightBuff;  // binding 21
+  std::unique_ptr<LveBuffer> gridVWeightBuff;  // binding 22
+  std::unique_ptr<LveBuffer> gridWWeightBuff;  // binding 23
   VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
   VkPipeline computePipeline = VK_NULL_HANDLE;
   VkShaderModule computeShaderModule = VK_NULL_HANDLE;

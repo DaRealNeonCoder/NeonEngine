@@ -101,6 +101,7 @@ WaterPhysics::WaterPhysics(
   std::cout << "cellcount Size  " << ubo.uNumCells << std::endl;
 
   CreateBuffers(mainGrid);
+  std::cout << "cellcount Size  " << ubo.uNumCells << std::endl;
 
   // Temporary upload of particles arranged in a grid
 
@@ -158,6 +159,8 @@ void WaterPhysics::BuildSpatialGrid() {
     spatialGrid[cell].push_back(i);
   }
 }
+
+
 void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
   // Bind pipeline & descriptor set once
   vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
@@ -172,12 +175,7 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       0,
       nullptr);
 
-  // NOTE: shader uses local_size_x = 64 (1D). We'll keep y/z = 1 so 3D dispatch still works for
-  // Jacobi.
   const uint32_t localSizeX = 64;
-  const uint32_t localSizeY = 1;
-  const uint32_t localSizeZ = 1;
-
   uint32_t nParticles = particleCount;
   uint32_t nCells = mainGrid.numCells;
 
@@ -197,28 +195,33 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
     return barrier;
   };
 
-  // --- Buffers (match shader bindings) ---
-  VkBuffer partPosBuf = partPosBuff->getBuffer();  // layout(binding = 0) PartPos { vec4 p[]; }
-  VkBuffer partVelBuf = partVelBuff->getBuffer();  // layout(binding = 1) PartVel { vec4 v[]; }
-  VkBuffer gridVelAccumBuf =
-      gridVelAccumBuff->getBuffer();  // layout(binding = 2) GridVelAccum { uint velAccum[]; }
-  VkBuffer gridWeightBuf =
-      gridWeightBuff->getBuffer();  // layout(binding = 3) GridWeight { uint weight[]; }
-  VkBuffer gridFlagsBuf =
-      gridFlagsBuff->getBuffer();  // layout(binding = 4) GridFlags { uint flags[]; }
-  VkBuffer gridVelBuf =
-      gridVelBuff->getBuffer();  // layout(binding = 5) GridVel { vec4 gridVel[]; }
-  VkBuffer prevGridVelBuf =
-      prevGridVelBuff->getBuffer();  // layout(binding = 6) PrevGridVel { vec4 prevGridVel[]; }
-  VkBuffer pressureReadBuf =
-      pressureReadBuff->getBuffer();  // layout(binding = 7) PressureRead { float pRead[]; }
-  VkBuffer pressureWriteBuf =
-      pressureWriteBuff->getBuffer();  // layout(binding = 8) PressureWrite { float pWrite[]; }
-  VkBuffer colorsBuf = colorsBuff->getBuffer();  // layout(binding = 9) Colors { vec4 colors[]; }
+  // --- MAC Grid Buffers (match shader bindings) ---
+  VkBuffer partPosBuf = partPosBuff->getBuffer();              // binding 0
+  VkBuffer partVelBuf = partVelBuff->getBuffer();              // binding 1
+  VkBuffer gridUBuf = gridUBuff->getBuffer();                  // binding 2
+  VkBuffer gridVBuf = gridVBuff->getBuffer();                  // binding 3
+  VkBuffer gridWBuf = gridWBuff->getBuffer();                  // binding 4
+  VkBuffer prevGridUBuf = prevGridUBuff->getBuffer();          // binding 5
+  VkBuffer prevGridVBuf = prevGridVBuff->getBuffer();          // binding 6
+  VkBuffer prevGridWBuf = prevGridWBuff->getBuffer();          // binding 7
+  VkBuffer gridFlagsBuf = gridFlagsBuff->getBuffer();          // binding 8
+  VkBuffer colorsBuf = colorsBuff->getBuffer();                // binding 9
+  VkBuffer gridDUBuf = gridDUBuff->getBuffer();                // binding 12
+  VkBuffer gridDVBuf = gridDVBuff->getBuffer();                // binding 13
+  VkBuffer gridDWBuf = gridDWBuff->getBuffer();                // binding 14
+  VkBuffer gridSBuf = gridSBuff->getBuffer();                  // binding 15
+  VkBuffer pressureReadBuf = pressureReadBuff->getBuffer();    // binding 16
+  VkBuffer pressureWriteBuf = pressureWriteBuff->getBuffer();  // binding 17
+  VkBuffer uAccumBuf = gridUAccumBuff->getBuffer();            // binding 18
+  VkBuffer vAccumBuf = gridVAccumBuff->getBuffer();            // binding 19
+  VkBuffer wAccumBuf = gridWAccumBuff->getBuffer();            // binding 20
+  VkBuffer uWAccumBuf = gridUWeightBuff->getBuffer();          // binding 21
+  VkBuffer vWAccumBuf = gridVWeightBuff->getBuffer();          // binding 22
+  VkBuffer wWAccumBuf = gridWWeightBuff->getBuffer();          // binding 23
+  VkBuffer debugBuf = debugBuff->getBuffer();                  // binding 11
 
-  // --------------- HOST -> COMPUTE barrier for any buffers the host wrote ---------------
+  // --------------- HOST -> COMPUTE barrier ---------------
   std::vector<VkBufferMemoryBarrier> hostToComputeBarriers;
-  // If you uploaded positions/velocities/pressures etc from host earlier this frame, include them:
   hostToComputeBarriers.push_back(makeBufferBarrier(
       partPosBuf,
       VK_ACCESS_HOST_WRITE_BIT,
@@ -227,7 +230,6 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       partVelBuf,
       VK_ACCESS_HOST_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  // If you uploaded pressure initial guesses:
   hostToComputeBarriers.push_back(makeBufferBarrier(
       pressureReadBuf,
       VK_ACCESS_HOST_WRITE_BIT,
@@ -251,9 +253,11 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
         nullptr);
   }
 
-  // ---------------- PASS 0: Grid init (shader pass 0) ----------------
+  // ---------------- PASS 0: Grid init ----------------
   pc.uPass = 0;
-  pc.dt = frameInfo.frameTime;
+  //pc.dt = frameInfo.frameTime;
+  pc.dt = 1.0f/500.0f;
+  
   vkCmdPushConstants(
       frameInfo.commandBuffer,
       pipelineLayout,
@@ -262,18 +266,45 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       sizeof(WaterPushConstants),
       &pc);
 
-  // Dispatch 1D over cells. Because shader's local_size_x = 64, we dispatch groups in X:
   uint32_t groupsX_cells = (nCells + localSizeX - 1) / localSizeX;
   vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);
 
-  // Barrier: pass0 writes -> pass1 reads (velAccum, weight, flags, gridVel, prevGridVel)
+  // Barrier: pass0 writes -> pass1 reads
   std::vector<VkBufferMemoryBarrier> pass0Barriers;
   pass0Barriers.push_back(makeBufferBarrier(
-      gridVelAccumBuf,
+      gridUBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
   pass0Barriers.push_back(makeBufferBarrier(
-      gridWeightBuf,
+      gridVBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      gridWBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      prevGridUBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      prevGridVBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      prevGridWBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      gridDUBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      gridDVBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      gridDWBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
   pass0Barriers.push_back(makeBufferBarrier(
@@ -281,11 +312,31 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
   pass0Barriers.push_back(makeBufferBarrier(
-      gridVelBuf,
+      gridSBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
   pass0Barriers.push_back(makeBufferBarrier(
-      prevGridVelBuf,
+      uAccumBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      vAccumBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      wAccumBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      uWAccumBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      vWAccumBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass0Barriers.push_back(makeBufferBarrier(
+      wWAccumBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
 
@@ -317,17 +368,34 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
   // Barrier: pass1 writes -> pass2 reads
   std::vector<VkBufferMemoryBarrier> pass1Barriers;
   pass1Barriers.push_back(makeBufferBarrier(
-      gridVelAccumBuf,
+      uAccumBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
   pass1Barriers.push_back(makeBufferBarrier(
-      gridWeightBuf,
+      vAccumBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass1Barriers.push_back(makeBufferBarrier(
+      wAccumBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass1Barriers.push_back(makeBufferBarrier(
+      uWAccumBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass1Barriers.push_back(makeBufferBarrier(
+      vWAccumBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass1Barriers.push_back(makeBufferBarrier(
+      wWAccumBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
   pass1Barriers.push_back(makeBufferBarrier(
       gridFlagsBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+
   vkCmdPipelineBarrier(
       frameInfo.commandBuffer,
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -350,25 +418,36 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       sizeof(WaterPushConstants),
       &pc);
 
-  // Dispatch over cells again:
   vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);
 
-  // Barrier: pass2 writes -> pass3 reads (gridVel, prevGridVel, flags, weight)
+  // Barrier: pass2 writes -> pass3 reads
   std::vector<VkBufferMemoryBarrier> pass2Barriers;
   pass2Barriers.push_back(makeBufferBarrier(
-      gridVelBuf,
+      gridUBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
   pass2Barriers.push_back(makeBufferBarrier(
-      prevGridVelBuf,
+      gridVBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass2Barriers.push_back(makeBufferBarrier(
+      gridWBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass2Barriers.push_back(makeBufferBarrier(
+      prevGridUBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass2Barriers.push_back(makeBufferBarrier(
+      prevGridVBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  pass2Barriers.push_back(makeBufferBarrier(
+      prevGridWBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
   pass2Barriers.push_back(makeBufferBarrier(
       gridFlagsBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass2Barriers.push_back(makeBufferBarrier(
-      gridWeightBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
 
@@ -384,14 +463,11 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
       0,
       nullptr);
 
-  // ---------------- PASS 3: Pressure Jacobi (3D dispatch) ----------------
-  // In RunAndReadback(), replace the single pass 3 dispatch with:
-  VkDescriptorSet currentSet = frameInfo.computeDescriptorSetPing;
-
   // ---------------- PASS 3: Pressure Jacobi (iterate multiple times) ----------------
-  const int numJacobiIterations = 50;  // adjust as needed (10-50 typical)
+  VkDescriptorSet currentSet = frameInfo.computeDescriptorSetPing;
+  const int numJacobiIterations = 50;
+
   for (int iter = 0; iter < numJacobiIterations; ++iter) {
-    // bind descriptor set for THIS iteration
     vkCmdBindDescriptorSets(
         frameInfo.commandBuffer,
         VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -412,43 +488,43 @@ void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
         &pc);
 
     vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);
-    // after vkCmdDispatch(...)
-VkBufferMemoryBarrier barrierA =
-    makeBufferBarrier(pressureReadBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-VkBufferMemoryBarrier barrierB =
-    makeBufferBarrier(pressureWriteBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
 
-VkBufferMemoryBarrier both[] = { barrierA, barrierB };
+    // Barrier for ping-pong pressure buffers
+    VkBufferMemoryBarrier barrierA =
+        makeBufferBarrier(pressureReadBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    VkBufferMemoryBarrier barrierB =
+        makeBufferBarrier(pressureWriteBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    VkBufferMemoryBarrier both[] = {barrierA, barrierB};
 
-vkCmdPipelineBarrier(
-    frameInfo.commandBuffer,
-    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-    0,
-    0,
-    nullptr,
-    2,
-    both,
-    0,
-    nullptr);
+    vkCmdPipelineBarrier(
+        frameInfo.commandBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        0,
+        nullptr,
+        2,
+        both,
+        0,
+        nullptr);
 
-    // swap descriptor sets for next iteration
+    // Swap descriptor sets for next iteration
     currentSet = (currentSet == frameInfo.computeDescriptorSetPing)
                      ? frameInfo.computeDescriptorSetPong
                      : frameInfo.computeDescriptorSetPing;
   }
 
-  // ---------------- PASS 4: Pressure apply (GRID only) ----------------
-
+  // ---------------- PASS 4: Pressure apply ----------------
   vkCmdBindDescriptorSets(
       frameInfo.commandBuffer,
       VK_PIPELINE_BIND_POINT_COMPUTE,
       pipelineLayout,
       0,
       1,
-      &currentSet,  
+      &currentSet,
       0,
       nullptr);
+
   pc.uPass = 4;
   vkCmdPushConstants(
       frameInfo.commandBuffer,
@@ -458,20 +534,19 @@ vkCmdPipelineBarrier(
       sizeof(WaterPushConstants),
       &pc);
 
-  // Dispatch over cells (only grid pressure update)
   vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);
 
-  // Barrier: pass4 writes gridVel -> pass5 (g2p) reads gridVel & prevGridVel
-  std::vector<VkBufferMemoryBarrier> pass4Barriers;
-  pass4Barriers.push_back(makeBufferBarrier(
-      gridVelBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  // prevGridVel is read by g2p as previous state (ensure it's visible)
-  pass4Barriers.push_back(makeBufferBarrier(
-      prevGridVelBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  // Barrier: pass4 writes (du/dv/dw) -> pass7 reads
+  std::vector<VkBufferMemoryBarrier> pass4ToPass7Barriers;
+  pass4ToPass7Barriers.push_back(makeBufferBarrier(
+      gridDUBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,   // pass 4 wrote to du
+      VK_ACCESS_SHADER_READ_BIT));  // pass 7 reads from du
+  pass4ToPass7Barriers.push_back(
+      makeBufferBarrier(gridDVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+  pass4ToPass7Barriers.push_back(
+      makeBufferBarrier(gridDWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+
   vkCmdPipelineBarrier(
       frameInfo.commandBuffer,
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -479,12 +554,56 @@ vkCmdPipelineBarrier(
       0,
       0,
       nullptr,
-      static_cast<uint32_t>(pass4Barriers.size()),
-      pass4Barriers.data(),
+      static_cast<uint32_t>(pass4ToPass7Barriers.size()),
+      pass4ToPass7Barriers.data(),
       0,
       nullptr);
 
-  // ---------------- PASS 5: G2P (PARTICLES only) ----------------
+  // ---------------- PASS 7: Apply du/dv/dw to grid ----------------
+  pc.uPass = 7;
+  vkCmdPushConstants(
+      frameInfo.commandBuffer,
+      pipelineLayout,
+      VK_SHADER_STAGE_COMPUTE_BIT,
+      0,
+      sizeof(WaterPushConstants),
+      &pc);
+
+  vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);  // Note: per cell, not per particle!
+
+  // Barrier: pass7 writes (u/v/w) -> pass5 reads
+  std::vector<VkBufferMemoryBarrier> pass7ToPass5Barriers;
+  pass7ToPass5Barriers.push_back(makeBufferBarrier(
+      gridUBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,   // pass 7 wrote to u
+      VK_ACCESS_SHADER_READ_BIT));  // pass 5 reads from u
+  pass7ToPass5Barriers.push_back(
+      makeBufferBarrier(gridVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+  pass7ToPass5Barriers.push_back(
+      makeBufferBarrier(gridWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+  // Also ensure du/dv/dw are visible for potential reuse (though they're cleared in pass7)
+  pass7ToPass5Barriers.push_back(makeBufferBarrier(
+      gridDUBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,  // pass 7 cleared du
+      VK_ACCESS_SHADER_READ_BIT));
+  pass7ToPass5Barriers.push_back(
+      makeBufferBarrier(gridDVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+  pass7ToPass5Barriers.push_back(
+      makeBufferBarrier(gridDWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+
+  vkCmdPipelineBarrier(
+      frameInfo.commandBuffer,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      0,
+      0,
+      nullptr,
+      static_cast<uint32_t>(pass7ToPass5Barriers.size()),
+      pass7ToPass5Barriers.data(),
+      0,
+      nullptr);
+
+  // ---------------- PASS 5: G2P ----------------
   pc.uPass = 5;
   vkCmdPushConstants(
       frameInfo.commandBuffer,
@@ -494,19 +613,25 @@ vkCmdPipelineBarrier(
       sizeof(WaterPushConstants),
       &pc);
 
-  // Dispatch over particles: this writes partVelBuf and colorsBuf
   vkCmdDispatch(frameInfo.commandBuffer, groupsX_particles, 1, 1);
 
-  // Barrier: pass5 writes partVel (and colors) -> pass6 (integrate) reads partVel and partPos
+  // Barrier: pass5 writes partVel -> pass6 reads partVel and partPos
   std::vector<VkBufferMemoryBarrier> pass5Barriers;
   pass5Barriers.push_back(makeBufferBarrier(
       partVelBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+  // Also ensure prevU/V/W are visible for next frame's G2P
   pass5Barriers.push_back(makeBufferBarrier(
-      colorsBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
+      prevGridUBuf,
+      VK_ACCESS_SHADER_WRITE_BIT,   // These were written in pass2
+      VK_ACCESS_SHADER_READ_BIT));  // But pass5 also reads them? Actually pass5 only reads u/v/w
+                                    // and prevU/V/W
+  pass5Barriers.push_back(
+      makeBufferBarrier(prevGridVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+  pass5Barriers.push_back(
+      makeBufferBarrier(prevGridWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+
   vkCmdPipelineBarrier(
       frameInfo.commandBuffer,
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -519,8 +644,7 @@ vkCmdPipelineBarrier(
       0,
       nullptr);
 
-  // ---------------- PASS 6: Integrate particles (update positions, preserve radius)
-  // ----------------
+  // ---------------- PASS 6: Integrate particles ----------------
   pc.uPass = 6;
   vkCmdPushConstants(
       frameInfo.commandBuffer,
@@ -530,29 +654,23 @@ vkCmdPipelineBarrier(
       sizeof(WaterPushConstants),
       &pc);
 
-  uint32_t groupsX_integrate = (nParticles + localSizeX - 1) / localSizeX;
-  vkCmdDispatch(frameInfo.commandBuffer, groupsX_integrate, 1, 1);
+  vkCmdDispatch(frameInfo.commandBuffer, groupsX_particles, 1, 1);
 
-  // --- Make compute writes visible to the vertex input (so the renderer can read positions/colors)
+  // --- Make compute writes visible to vertex input ---------------
   std::vector<VkBufferMemoryBarrier> computeToVertexBarriers;
   computeToVertexBarriers.push_back(makeBufferBarrier(
       partPosBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT));
   computeToVertexBarriers.push_back(makeBufferBarrier(
-      partVelBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT));
-  computeToVertexBarriers.push_back(makeBufferBarrier(
       colorsBuf,
       VK_ACCESS_SHADER_WRITE_BIT,
       VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT));
-  // If you render using gridVel or other buffers, add them here too.
 
   vkCmdPipelineBarrier(
       frameInfo.commandBuffer,
       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,  // allow vertex input to consume these buffers
+      VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
       0,
       0,
       nullptr,
@@ -567,15 +685,20 @@ vkCmdPipelineBarrier(
       makeBufferBarrier(partPosBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
   finalBarriers.push_back(
       makeBufferBarrier(partVelBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
-  // If you need to read pressures/grid state on host:
   finalBarriers.push_back(
       makeBufferBarrier(pressureReadBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
   finalBarriers.push_back(
       makeBufferBarrier(pressureWriteBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
   finalBarriers.push_back(
-      makeBufferBarrier(gridVelBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
+      makeBufferBarrier(gridUBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
+  finalBarriers.push_back(
+      makeBufferBarrier(gridVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
+  finalBarriers.push_back(
+      makeBufferBarrier(gridWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
   finalBarriers.push_back(
       makeBufferBarrier(gridFlagsBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
+  finalBarriers.push_back(
+      makeBufferBarrier(debugBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
 
   vkCmdPipelineBarrier(
       frameInfo.commandBuffer,
@@ -588,9 +711,6 @@ vkCmdPipelineBarrier(
       finalBarriers.data(),
       0,
       nullptr);
-
-
-
 }
 
 
@@ -603,7 +723,7 @@ std::unique_ptr<LveBuffer> WaterPhysics::makeHostVisible(VkDeviceSize elemSize, 
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   buf->map();
   return buf;
-};
+};// CreateBuffers - MAC grid version
 void WaterPhysics::CreateBuffers(Grid& grid) {
   auto makeDeviceLocal = [&](VkDeviceSize elemSize, uint32_t count) {
     return std::make_unique<LveBuffer>(
@@ -613,7 +733,14 @@ void WaterPhysics::CreateBuffers(Grid& grid) {
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   };
-
+  auto makeDeviceLocal2 = [&](VkDeviceSize elemSize, uint32_t count) {
+    return std::make_unique<LveBuffer>(
+        device,
+        elemSize,
+        count,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  };
   auto makeDeviceLocal_Output = [&](VkDeviceSize elemSize, uint32_t count) {
     return std::make_unique<LveBuffer>(
         device,
@@ -624,63 +751,130 @@ void WaterPhysics::CreateBuffers(Grid& grid) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   };
 
+  auto makeHostVisible = [&](VkDeviceSize elemSize, uint32_t count) {
+    return std::make_unique<LveBuffer>(
+        device,
+        elemSize,
+        count,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  };
+
   // =====================================================
   // PARTICLE BUFFERS
   // =====================================================
   partPosBuff = makeDeviceLocal_Output(sizeof(glm::vec4), particleCount);  // binding 0
-  colorsBuff = makeDeviceLocal_Output(sizeof(glm::vec4), particleCount);  // binding 0
+  partVelBuff = makeDeviceLocal_Output(sizeof(glm::vec4), particleCount);  // binding 1
+  colorsBuff = makeDeviceLocal_Output(sizeof(glm::vec4), particleCount);   // binding 9
+
   debugBuff = std::make_unique<LveBuffer>(
       device,
       sizeof(float),
       particleCount,
       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  debugBuff->map();  // Keep it mapped permanently
-
-  partVelBuff = makeDeviceLocal_Output(sizeof(glm::vec4), particleCount);  // binding 1
+  debugBuff->map();  // binding 11
 
   // =====================================================
-  // GRID BUFFERS
+  // MAC GRID VELOCITY BUFFERS (separate u, v, w)
   // =====================================================
-  gridVelAccumBuff = makeDeviceLocal(sizeof(uint32_t), grid.numCells * 3);  // binding 2
-  gridWeightBuff = makeDeviceLocal(sizeof(uint32_t), grid.numCells);    // binding 3
-  gridFlagsBuff = makeDeviceLocal(sizeof(uint32_t), grid.numCells);     // binding 4
-  gridVelBuff = makeDeviceLocal(sizeof(glm::vec4), grid.numCells);      // binding 5
-  prevGridVelBuff = makeDeviceLocal(sizeof(glm::vec4), grid.numCells);  // binding 6
+  gridUBuff = makeDeviceLocal(sizeof(float), grid.numCells);  // binding 2
+  gridVBuff = makeDeviceLocal(sizeof(float), grid.numCells);  // binding 3
+  gridWBuff = makeDeviceLocal(sizeof(float), grid.numCells);  // binding 4
+
+  prevGridUBuff = makeDeviceLocal(sizeof(float), grid.numCells);  // binding 5
+  prevGridVBuff = makeDeviceLocal(sizeof(float), grid.numCells);  // binding 6
+  prevGridWBuff = makeDeviceLocal(sizeof(float), grid.numCells);  // binding 7
+
+  // =====================================================
+  // GRID METADATA BUFFERS
+  // =====================================================
+  gridFlagsBuff = makeDeviceLocal(sizeof(uint32_t), grid.numCells);  // binding 8
+
+  // Weight accumulators for P2G (stored as uint for atomic operations)
+  gridDUBuff = makeDeviceLocal(sizeof(uint32_t), grid.numCells);  // binding 12
+  gridDVBuff = makeDeviceLocal(sizeof(uint32_t), grid.numCells);  // binding 13
+  gridDWBuff = makeDeviceLocal(sizeof(uint32_t), grid.numCells);  // binding 14
+
+  // Solid flags (s array from JS)
+  gridSBuff = makeDeviceLocal(sizeof(float), grid.numCells);  // binding 15
 
   // =====================================================
   // PRESSURE BUFFERS (PING-PONG)
   // =====================================================
-  pressureReadBuff = makeDeviceLocal_Output(sizeof(float), grid.numCells);  // binding 7
-  pressureWriteBuff = makeDeviceLocal_Output(sizeof(float), grid.numCells);  // binding 8
+  pressureReadBuff = makeDeviceLocal_Output(sizeof(float), grid.numCells);   // binding 16
+  pressureWriteBuff = makeDeviceLocal_Output(sizeof(float), grid.numCells);  // binding 17
 
-  
+  // =====================================================
+  // INITIALIZE BUFFERS
+  // =====================================================
+
+  // Zero particle velocities
   std::vector<glm::vec4> zeroVelocities(particleCount, glm::vec4(0.0f));
   std::unique_ptr<LveBuffer> velStaging = makeHostVisible(sizeof(glm::vec4), particleCount);
+  velStaging->map();  // MUST MAP BEFORE WRITING
   velStaging->writeToBuffer(zeroVelocities.data());
   velStaging->flush();
   device.copyBuffer(
       velStaging->getBuffer(),
       partVelBuff->getBuffer(),
       sizeof(glm::vec4) * particleCount);
-  std::vector<float> zeroVelocities2(grid.numCells, 0.f);
-  std::unique_ptr<LveBuffer> pressureRead = makeHostVisible(sizeof(float), grid.numCells);
-  pressureRead->writeToBuffer(zeroVelocities2.data());
-  pressureRead->flush();
+
+  // Zero pressure buffers - create separate staging buffers
+  std::vector<float> zeroPressure(grid.numCells, 0.0f);
+
+  // First pressure buffer
+  std::unique_ptr<LveBuffer> pressureStaging1 = makeHostVisible(sizeof(float), grid.numCells);
+  pressureStaging1->map();  // MUST MAP BEFORE WRITING
+  pressureStaging1->writeToBuffer(zeroPressure.data());
+  pressureStaging1->flush();
   device.copyBuffer(
-      pressureRead->getBuffer(),
+      pressureStaging1->getBuffer(),
       pressureReadBuff->getBuffer(),
       sizeof(float) * grid.numCells);
 
-  std::unique_ptr<LveBuffer> pressureWrite = makeHostVisible(sizeof(float), grid.numCells);
-  pressureWrite->writeToBuffer(zeroVelocities2.data());
-  pressureWrite->flush();
+  // Second pressure buffer (separate staging buffer)
+  std::unique_ptr<LveBuffer> pressureStaging2 = makeHostVisible(sizeof(float), grid.numCells);
+  pressureStaging2->map();  // MUST MAP BEFORE WRITING
+  pressureStaging2->writeToBuffer(zeroPressure.data());
+  pressureStaging2->flush();
   device.copyBuffer(
-      pressureWrite->getBuffer(),
+      pressureStaging2->getBuffer(),
       pressureWriteBuff->getBuffer(),
       sizeof(float) * grid.numCells);
-}
 
+
+  // sum(pvel * weight)
+  gridUAccumBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 18
+  gridVAccumBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 19
+  gridWAccumBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 20
+
+  // sum(weight)
+  gridUWeightBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 21
+  gridVWeightBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 22
+  gridWWeightBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 23
+
+
+  std::vector<uint32_t> zeroUint(grid.numCells, 0u);
+
+  auto zeroUintBuffer = [&](std::unique_ptr<LveBuffer>& target) {
+    auto staging = makeHostVisible(sizeof(uint32_t), grid.numCells);
+    staging->map();
+    staging->writeToBuffer(zeroUint.data());
+    staging->flush();
+
+    device.copyBuffer(staging->getBuffer(), target->getBuffer(), sizeof(uint32_t) * grid.numCells);
+  };
+
+  // Zero all 6
+  zeroUintBuffer(gridUAccumBuff);
+  zeroUintBuffer(gridVAccumBuff);
+  zeroUintBuffer(gridWAccumBuff);
+
+  zeroUintBuffer(gridUWeightBuff);
+  zeroUintBuffer(gridVWeightBuff);
+  zeroUintBuffer(gridWWeightBuff);
+}
 void WaterPhysics::CreateComputePipelineLayout(VkDescriptorSetLayout setLayout) {
   VkPushConstantRange pushConstantRange{};
   pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
