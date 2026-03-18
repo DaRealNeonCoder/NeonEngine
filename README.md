@@ -7,7 +7,7 @@ Implemented physically accurate light simulation with support for multiple mater
 - Diffuse (matte surfaces)  
 - Glossy (rough reflections)  
 
-![Path Tracer 1](gitImages/ray0.png)  
+![Path Tracer 1](NeonEngine/gitImages/ray0.png)  
 ![Path Tracer 2](./gitImages/ray1.png)  
 ![Path Tracer 3](./gitImages/ray2.png)  
 ![Path Tracer 4](./gitImages/ray3.png)
