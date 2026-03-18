@@ -7,10 +7,10 @@ Implemented physically accurate light simulation with support for multiple mater
 - Diffuse (matte surfaces)  
 - Glossy (rough reflections)  
 
-![Path Tracer 1](NeonEngine/gitImages/ray0.png)  
-![Path Tracer 2](./gitImages/ray1.png)  
-![Path Tracer 3](./gitImages/ray2.png)  
-![Path Tracer 4](./gitImages/ray3.png)
+<img src="NeonEngine/gitImages/ray0.png" width="300"/>
+<img src="NeonEngine/gitImages/ray1.png" width="300"/>
+<img src="NeonEngine/gitImages/ray2.png" width="300"/>
+<img src="NeonEngine/gitImages/ray3.png" width="300"/>
 
 ---
 
@@ -20,7 +20,7 @@ Developed a custom graphics pipeline for real-time rendering:
 - Texture mapping  
 - Shadow rendering  
 
-![Rasterizer](./gitImages/rast.png)
+<img src="NeonEngine/gitImages/rast.png" width="400"/>
 
 ---
 
@@ -32,4 +32,4 @@ Currently developing a hybrid Euler–Lagrangian water simulation:
 - Surface generated via ray marching  
 - Rendered through ray tracing  
 
-![Water Simulation](./gitImages/wat.png)
+<img src="NeonEngine/gitImages/wat.png" width="400"/>
