@@ -56,7 +56,7 @@ void main()
     float tmin = 0.001;
     float tmax = 10000.0;
     vec3 sum = vec3(0);
-    const int SPP = 16;  // Use 1 SPP per frame for progressive accumulation
+    const int SPP = 6;  // Use 1 SPP per frame for progressive accumulation
     
     // Vary seed per frame to get different samples
     uint baseSeed = uint(pixelCoord.x * 1973 + pixelCoord.y * 9277 + pc.frameID.x * 26699) | 1u;

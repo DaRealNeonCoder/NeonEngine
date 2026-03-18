@@ -362,17 +362,33 @@ void RayTracingSystem::createBottomLevelAccelerationStructure() {
   indexCount = static_cast<uint32_t>(indices.size());
   const uint32_t numTriangles = indexCount / 3;  // one triangle
 
-  // Create GPU-visible buffers for vertex, index and transform
+  auto stagingBuffer = std::make_unique<LveBuffer>(
+      vulkanDevice,
+      sizeof(RayTracingVertex),                // or sizeof(uint32_t) / sizeof(VkTransformMatrixKHR)
+      static_cast<uint32_t>(vertices.size()),  // or indices.size() / 1
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  stagingBuffer->map();
+  stagingBuffer->writeToBuffer(vertices.data());  // your data here
+
+  // Create device local buffer
   vertexBuffer = std::make_unique<LveBuffer>(
       vulkanDevice,
       sizeof(RayTracingVertex),
       static_cast<uint32_t>(vertices.size()),
-      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
           VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  vertexBuffer->map();
-  vertexBuffer->writeToBuffer(vertices.data());
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+  // Copy via command buffer
+  VkCommandBuffer cmd2 = vulkanDevice.beginSingleTimeCommands();
+
+  VkBufferCopy copyRegion{};
+  copyRegion.size = sizeof(RayTracingVertex) * vertices.size();
+  vkCmdCopyBuffer(cmd2, stagingBuffer->getBuffer(), vertexBuffer->getBuffer(), 1, &copyRegion);
+
+  vulkanDevice.endSingleTimeCommands(cmd2);
 
   indexBuffer = std::make_unique<LveBuffer>(
       vulkanDevice,
@@ -769,41 +785,40 @@ void RayTracingSystem::createAccelerationStructureBuffer(
   vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &accelerationStructure.memory);
   vkBindBufferMemory(device, accelerationStructure.buffer, accelerationStructure.memory, 0);
 }
-
 void RayTracingSystem::createRayTracingPipeline(VkDescriptorSetLayout globalSetLayout) {
-  PipelineConfigInfo config{};
-  LvePipeline::defaultPipelineConfigInfo(config);
+  // Destroy old layout/pipeline if recreating
+  if (pipeline != VK_NULL_HANDLE) {
+    vkDestroyPipeline(device, pipeline, nullptr);
+    pipeline = VK_NULL_HANDLE;
+  }
+  if (pipelineLayout != VK_NULL_HANDLE) {
+    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+    pipelineLayout = VK_NULL_HANDLE;
+  }
 
-  // Use the ray tracing pipeline layout you have
-  config.pipelineLayout = pipelineLayout;
-
-  // Input assembly for ray tracing is basically ignored, but set default
-  config.inputAssemblyInfo.flags = 0;
-
-  // Disable color blending; output goes to storage image
-  config.colorBlendInfo.attachmentCount = 0;
-  config.colorBlendInfo.flags = 0;
-
-  // Depth setup (optional; ray tracing usually writes to storage images)
-  config.depthStencilInfo.depthTestEnable = VK_FALSE;
-  config.depthStencilInfo.depthWriteEnable = VK_FALSE;
-
-  // Rasterization doesn't apply, but set defaults
-  config.rasterizationInfo.cullMode = VK_CULL_MODE_NONE;
-  config.rasterizationInfo.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  config.rasterizationInfo.polygonMode = VK_POLYGON_MODE_FILL;
-  config.rasterizationInfo.depthBiasEnable = VK_FALSE;
-
-  // Build shader stages (raygen, miss, closest hit)
-  std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
+  // Create pipeline layout FIRST
+  VkPushConstantRange pushConstantRange{};
+  pushConstantRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+  pushConstantRange.offset = 0;
+  pushConstantRange.size = sizeof(PushData);
 
   VkPipelineLayoutCreateInfo pipelineLayoutCI{};
   pipelineLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
   pipelineLayoutCI.setLayoutCount = 1;
   pipelineLayoutCI.pSetLayouts = &globalSetLayout;
-  vkCreatePipelineLayout(device, &pipelineLayoutCI, nullptr, &pipelineLayout);
-  // Raygen
+  pipelineLayoutCI.pushConstantRangeCount = 1;
+  pipelineLayoutCI.pPushConstantRanges = &pushConstantRange;
 
+  if (vkCreatePipelineLayout(device, &pipelineLayoutCI, nullptr, &pipelineLayout) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create ray tracing pipeline layout!");
+  }
+
+  // Clear shader groups in case of recreation
+  shaderGroups.clear();
+
+  std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
+
+  // Raygen
   shaderStages.push_back(LvePipeline::loadShaderCreateInfo(
       "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
       "tut27\\shaders\\raygen.rgen.spv",
@@ -876,6 +891,7 @@ void RayTracingSystem::createRayTracingPipeline(VkDescriptorSetLayout globalSetL
     throw std::runtime_error("Failed to create ray tracing pipeline!");
   }
 }
+
 void RayTracingSystem::createShaderBindingTable() {
   if (shaderGroups.empty()) {
     throw std::runtime_error("Shader groups are empty! Pipeline may have failed to create.");

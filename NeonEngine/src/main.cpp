@@ -10,9 +10,8 @@
 
 int main() {
    // lve::FirstApp app{};
-   // lve::RayTracingApp app{};
-   
-   lve::WaterApp app{};
+    lve::RayTracingApp app{};
+   //lve::WaterApp app{};
 
 
   try {

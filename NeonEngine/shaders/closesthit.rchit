@@ -2,7 +2,7 @@
 #extension GL_EXT_ray_tracing : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
-const int MAX_DEPTH = 16; // Add this at top of closest hit shader
+const int MAX_DEPTH = 6; // Add this at top of closest hit shader
 
 
 
@@ -183,9 +183,7 @@ void main() {
             if (length(newDirection) < 0.001) {
                 newDirection = reflect(incoming, normal);
             }
-
         }
-
     }
         traceRayEXT(
         topLevelAS,

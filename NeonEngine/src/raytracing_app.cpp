@@ -42,6 +42,15 @@ loadGameObjects();
 RayTracingApp::~RayTracingApp() {}
 void RayTracingApp::run() {
 std::cout << "Pass 1 \n";
+
+auto currentTime = std::chrono::high_resolution_clock::now();
+char title[128];
+float fpsTimer = 0.0f;
+int frameCount = 0;
+float fps = 0.0f;
+std::vector<float> fpsHistory(31, 0.0f);
+int fpsIndex = 0;
+
 std::vector<std::unique_ptr<LveBuffer>> uboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
 for (int i = 0; i < (int)uboBuffers.size(); i++) {
@@ -56,18 +65,15 @@ for (int i = 0; i < (int)uboBuffers.size(); i++) {
 
 auto rayTracingSetLayout =
     lve::LveDescriptorSetLayout::Builder(lveDevice)
-        // TLAS
         .addBinding(
             0,
             VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
             VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
                 VK_SHADER_STAGE_MISS_BIT_KHR)
-
         .addBinding(
             1,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
-
         .addBinding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_ALL)
         .addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
         .addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
@@ -78,41 +84,30 @@ std::cout << "Pass 2 \n";
 std::vector<RayTracingVertex> vertices;
 std::vector<uint32_t> indices;
 
-// Iterate through all game objects and collect their geometry
 for (auto& kv : gameObjects) {
   auto& obj = kv.second;
-
-  // Skip objects without models
   if (!obj.model) continue;
 
-  // Get the current offset for indices (before adding new vertices)
   uint32_t vertexOffset = static_cast<uint32_t>(vertices.size());
 
-  // Get vertices and indices from the model
   const auto& modelVertices = obj.model->getVertices();
   const auto& modelIndices = obj.model->getIndices();
 
-  // Transform vertices by the game object's transform matrix
   for (const auto& vertex : modelVertices) {
     RayTracingVertex rtVertex;
-
-    // Transform position by object's model matrix
     glm::vec4 transformedPos = obj.transform.mat4() * glm::vec4(vertex.position, 1.0f);
     rtVertex.pos = transformedPos;
     rtVertex.materialIndex = obj.getId();
-    // Transform normal (use inverse transpose for normals)
     glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(obj.transform.mat4())));
     rtVertex.normal = glm::vec4(glm::normalize(normalMatrix * vertex.normal), 1);
-
-
     vertices.push_back(rtVertex);
   }
 
-  // Add indices with offset applied
   for (const auto& index : modelIndices) {
     indices.push_back(index + vertexOffset);
   }
 }
+
 RayTracingSystem rayTracingSystem{
     lveDevice,
     lveRenderer.getSwapChainImageFormat(),
@@ -126,12 +121,9 @@ std::vector<VkDescriptorSet> globalDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FL
 for (int i = 0; i < LveSwapChain::MAX_FRAMES_IN_FLIGHT; i++) {
   auto uboInfo = uboBuffers[i]->descriptorInfo();
 
-  // FIXED: Get the storage image descriptor for THIS frame
   VkDescriptorImageInfo storageImageInfo = rayTracingSystem.getStorageImageDescriptor(i);
-
   VkAccelerationStructureKHR tlas = rayTracingSystem.getTLAS();
 
-  // --- Acceleration structure write ---
   VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
   asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
   asInfo.accelerationStructureCount = 1;
@@ -139,28 +131,25 @@ for (int i = 0; i < LveSwapChain::MAX_FRAMES_IN_FLIGHT; i++) {
 
   LveDescriptorWriter writer(*rayTracingSetLayout, *globalPool);
 
-    auto materialBufferInfo = rayTracingSystem.getMaterialBufferDescriptor();
+  auto materialBufferInfo = rayTracingSystem.getMaterialBufferDescriptor();
   auto vertexBufferInfo = rayTracingSystem.getVertexBufferDescriptor();
-    auto indexBufferInfo = rayTracingSystem.getIndexBufferDescriptor();
+  auto indexBufferInfo = rayTracingSystem.getIndexBufferDescriptor();
 
   writer.writeAccelerationStructure(0, &asInfo, globalDescriptorSets[i])
       .writeImage(1, &storageImageInfo)
       .writeBuffer(2, &uboInfo)
-        .writeBuffer(3, &materialBufferInfo)
-        .writeBuffer(4, &vertexBufferInfo)
-        .writeBuffer(5, &indexBufferInfo)
-
+      .writeBuffer(3, &materialBufferInfo)
+      .writeBuffer(4, &vertexBufferInfo)
+      .writeBuffer(5, &indexBufferInfo)
       .build(globalDescriptorSets[i]);
 }
 std::cout << "Pass 4 \n";
 
-// ... camera setup ...
 LveCamera camera{};
 auto viewerObject = LveGameObject::createGameObject();
 viewerObject.transform.translation.z = -2.5f;
 KeyboardMovementController cameraController{};
 
-auto currentTime = std::chrono::high_resolution_clock::now();
 std::cout << "Pass 5 \n";
 
 while (!lveWindow.shouldClose()) {
@@ -170,6 +159,23 @@ while (!lveWindow.shouldClose()) {
   float frameTime =
       std::chrono::duration<float, std::chrono::seconds::period>(newTime - currentTime).count();
   currentTime = newTime;
+
+  fpsTimer += frameTime;
+  frameCount++;
+
+  if (fpsTimer >= 1.0f) {
+    fps = frameCount / fpsTimer;
+
+    fpsHistory[fpsIndex] = glm::round(fps * 10.f) / 10.f;
+    fpsIndex = (fpsIndex + 1) % fpsHistory.size();
+
+    snprintf(title, sizeof(title), "Ray Tracer | FPS: %.1f (%.2f ms)", fps, 1000.0f / fps);
+    glfwSetWindowTitle(lveWindow.getGLFWwindow(), title);
+
+    fpsTimer = 0.0f;
+    frameCount = 0;
+  }
+
   bool hasMoved = false;
   cameraController.moveInPlaneXZ(lveWindow.getGLFWwindow(), frameTime, viewerObject, hasMoved);
   camera.setViewYXZ(viewerObject.transform.translation, viewerObject.transform.rotation);
@@ -177,17 +183,15 @@ while (!lveWindow.shouldClose()) {
   float aspect = lveRenderer.getAspectRatio();
   camera.setPerspectiveProjection(glm::radians(50.f), aspect, 0.1f, 100.f);
 
-if (auto commandBuffer = lveRenderer.beginFrame([&]() {
+  if (auto commandBuffer = lveRenderer.beginFrame([&]() {
         rayTracingSystem.handleResize(
             lveRenderer.getSwapChainExtents().width,
             lveRenderer.getSwapChainExtents().height,
             globalDescriptorSets);
-
         rayTracingSystem.resetFrameId();
       })) {
-    
-int frameIndex = lveRenderer.getFrameIndex();
-    
+    int frameIndex = lveRenderer.getFrameIndex();
+
     FrameInfo frameInfo{
         frameIndex,
         frameTime,
@@ -196,7 +200,6 @@ int frameIndex = lveRenderer.getFrameIndex();
         globalDescriptorSets[frameIndex],
         gameObjects};
 
-    // Update UBO
     GlobalUbo ubo{};
     ubo.projection = camera.getProjection();
     ubo.inverseProjection = camera.getInverseProjection();
@@ -206,45 +209,32 @@ int frameIndex = lveRenderer.getFrameIndex();
 
     uboBuffers[frameIndex]->writeToBuffer(&ubo);
     uboBuffers[frameIndex]->flush();
-    std::cout << "  UBO updated\n";
 
     if (hasMoved) {
       rayTracingSystem.resetFrameId();
     }
-    std::cout << "  Calling rayTracingSystem.render()...\n";
     rayTracingSystem.render(frameInfo);
-    std::cout << "  rayTracingSystem.render() completed\n";
-
-    std::cout << "  Copying to swap chain...\n";
-    // FIXED: Pass frameIndex to copyStorageImageToSwapChain
 
     rayTracingSystem.copyStorageImageToSwapChain(
         commandBuffer,
         lveRenderer.getCurrentSwapChainImage(),
         lveRenderer.getSwapChainExtents().width,
         lveRenderer.getSwapChainExtents().height,
-        frameIndex);  // ADDED frameIndex parameter
+        frameIndex);
 
-    std::cout << "  Calling endFrame()...\n";
-     lveRenderer.endFrame([&]() {
-        rayTracingSystem.handleResize(
-            lveRenderer.getSwapChainExtents().width,
-            lveRenderer.getSwapChainExtents().height,
-            globalDescriptorSets);
-
-        rayTracingSystem.resetFrameId();
-      });
-
-    // Check device status after submit
-
-    std::cout << "=== Frame completed ===\n";
-  } 
+    lveRenderer.endFrame([&]() {
+      rayTracingSystem.handleResize(
+          lveRenderer.getSwapChainExtents().width,
+          lveRenderer.getSwapChainExtents().height,
+          globalDescriptorSets);
+      rayTracingSystem.resetFrameId();
+    });
+  }
 }
 
-  //should do this via deconstructors, but whatever.
-
-  vkDeviceWaitIdle(lveDevice.device());
+vkDeviceWaitIdle(lveDevice.device());
 }
+
 
 void RayTracingApp::loadGameObjects() {
   /*
