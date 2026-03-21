@@ -186,6 +186,7 @@ void LveDevice::createLogicalDevice() {
   deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
   deviceFeatures2.features.samplerAnisotropy = VK_TRUE;
   deviceFeatures2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+  deviceFeatures2.features.shaderStorageImageReadWithoutFormat = VK_TRUE;  
   deviceFeatures2.pNext = &accelerationStructureFeatures;
 
   VkDeviceCreateInfo createInfo{};

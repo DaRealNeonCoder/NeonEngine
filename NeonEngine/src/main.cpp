@@ -9,7 +9,11 @@
 #include <stdexcept>
 
 int main() {
-   // lve::FirstApp app{};
+    // TODO: first app is broken. I think its a sampler/descriptor set mismatch or smth, 
+    // cuz we moved from three frames in flight to one.
+
+
+    // lve::FirstApp app{};
     lve::RayTracingApp app{};
    //lve::WaterApp app{};
 

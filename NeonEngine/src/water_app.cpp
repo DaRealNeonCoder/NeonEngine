@@ -31,12 +31,12 @@ WaterApp::WaterApp() {
   int totalSetsNeeded = 2 * numFrames;
 
   globalPool = LveDescriptorPool::Builder(lveDevice)
-                   .setMaxSets(numFrames * 28)
+                   .setMaxSets(numFrames * 30)
                    // UBO: needed in both descriptors per frame => 2 * numFrames
                    .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, totalSetsNeeded)
                    // sampler: only in the 'withShadow' set per frame => numFrames
                    .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, numFrames * 4)
-                   .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, numFrames * 20)
+                   .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, numFrames * 21)
                    .build();
 
   loadGameObjects();
@@ -56,7 +56,7 @@ void WaterApp::run() {
   std::vector<std::unique_ptr<LveBuffer>> uboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
   std::vector<std::unique_ptr<LveBuffer>> phyUboBuffers(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
-  int actualPartLen = 25;
+  int actualPartLen = 20;
   int particleLen = actualPartLen;
   int particleCount = particleLen * particleLen * particleLen;
 
@@ -121,6 +121,8 @@ void WaterApp::run() {
         .addBinding(21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // gridS
         .addBinding(22, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // pressureRead
         .addBinding(23, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // pressureWrite
+        .addBinding(24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)  // particleDensity
+
         .build();
 
   std::cout << "Pass 2 \n";
@@ -145,8 +147,8 @@ void WaterApp::run() {
   std::cout << "========================================\n" << std::endl;
 
   // Define simulation box FIRST
-  phyUbo.uBoxMin = glm::vec4(-4.928f, -3.08f, -1.848f, 1);
-  phyUbo.uBoxMax = glm::vec4(4.928f, 0.55f, 4.928f / 2.f, 1);
+  phyUbo.uBoxMin = glm::vec4(-4.928f, -3.08f, -1.848f, 1) * 1.f;
+  phyUbo.uBoxMax = glm::vec4(4.928f, 0.55f, 4.928f / 2.f, 1) * 1.f;
 
   // ============================================================
   // DEBUG: Box dimensions
@@ -236,16 +238,17 @@ void WaterApp::run() {
 
   // Rest of UBO setup
   smoothingRadius = 0.3f;
-  phyUbo.uH = smoothingRadius;
-  phyUbo.uH2 = smoothingRadius * smoothingRadius;
-  phyUbo.overRelaxation = 1.01f;  // Match JS (was 1.0)
-  phyUbo.spikyGradCoeff = -45.f / (glm::pi<float>() * pow(smoothingRadius, 6));
-  phyUbo.viscLapCoeff = 45.0f / (glm::pi<float>() * pow(smoothingRadius, 6));
-  phyUbo.uRestDensity = 1000000.f;  // Much lower (was 1000.0) - JS uses ~1.0 for normalized units
+  //phyUbo.uH = smoothingRadius;
+  //phyUbo.uH2 = smoothingRadius * smoothingRadius;
+  phyUbo.overRelaxation = 1.03f;  // Match JS (was 1.9)
+ // phyUbo.spikyGradCoeff = -45.f / (glm::pi<float>() * pow(smoothingRadius, 6));
+  //phyUbo.viscLapCoeff = 45.0f / (glm::pi<float>() * pow(sfmoothingRadius, 6));
+  phyUbo.uRestDensity = 1.0f;  // Much lower (was 1000.0) - JS uses ~1.0 for normalized units
   //phyUbo.uViscosity = 0.10f;
-  phyUbo.uEps = 0.01f * smoothingRadius * smoothingRadius;
-  phyUbo.uGravity = glm::vec4(0.f, 9.81f, 0.f, 0.f);  // Negative Y for downward gravity
-  phyUbo.uDamping = 0.95f;
+  //phyUbo.uEps = 0.01f * smoothingRadius * smoothingRadius;
+  phyUbo.uGravity = glm::vec4(0.f, 9.81f*10.0f , 0.f, 0.f);  // Negative Y for downward gravity
+  phyUbo.uDamping = 0.0f;
+  phyUbo.uMass = 20.f;
   phyUbo.uNumParticles = particleCount;
   std::cout << waterParticles.size() << "\n";
   phyUbo.uNumCells = phyUbo.uGridDim.x * phyUbo.uGridDim.y * phyUbo.uGridDim.z;
@@ -259,8 +262,8 @@ void WaterApp::run() {
   float jitterScale = particleSpacing * 0.9f;  // ~30% of spacing
  
   {
-    glm::vec3 boxMin = glm::vec3(phyUbo.uBoxMin) * 0.97f;
-    glm::vec3 boxMax = glm::vec3(phyUbo.uBoxMax) * 0.97f;
+    glm::vec3 boxMin = glm::vec3(phyUbo.uBoxMin) * 0.9f;
+    glm::vec3 boxMax = glm::vec3(phyUbo.uBoxMax) * 0.9f;
     float margin = (phyUbo.uCellSize > 0.0f) ? phyUbo.uCellSize : (particleScale * 0.5f);
     glm::vec3 spawnMin = boxMin + glm::vec3(margin);
     glm::vec3 spawnMax = boxMax - glm::vec3(margin);
@@ -411,6 +414,8 @@ void WaterApp::run() {
     auto gridVWeightInfo = waterPhysics.getGridVWeightDescInfo();
     auto gridWWeightInfo = waterPhysics.getGridWWeightDescInfo();
 
+    auto gridDensityInfo = waterPhysics.getGridDensityDescInfo();
+
     // PING descriptor set
     LveDescriptorWriter(*computeSetLayout, *globalPool)
         .writeBuffer(0, &partPosInfo)
@@ -437,6 +442,8 @@ void WaterApp::run() {
         .writeBuffer(21, &gridUWeightInfo)
         .writeBuffer(22, &gridVWeightInfo)
         .writeBuffer(23, &gridWWeightInfo)
+        .writeBuffer(24, &gridDensityInfo)
+
         .build(computeDescriptorSetsPing[i]);
 
     // PONG descriptor set (swap pressure buffers)
@@ -465,6 +472,8 @@ void WaterApp::run() {
         .writeBuffer(21, &gridUWeightInfo)
         .writeBuffer(22, &gridVWeightInfo)
         .writeBuffer(23, &gridWWeightInfo)
+        .writeBuffer(24, &gridDensityInfo)
+
         .build(computeDescriptorSetsPong[i]);
   }
 
@@ -593,7 +602,7 @@ void WaterApp::run() {
         vkDeviceWaitIdle(lveDevice.device());
 
         float* data = (float*)waterPhysics.debugBuff->getMappedMemory();
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; i < 20; ++i) {
             
             if (data[i] != -1) {
             std::cout << "div for " << i << " div:" << data[i] << std::endl;
@@ -615,8 +624,7 @@ void WaterApp::run() {
 void WaterApp::loadGameObjects() {
   std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\models\\WaterTank.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\WaterTank.obj");
 
   auto flatVase = LveGameObject::createGameObject();
   flatVase.model = lveModel;
@@ -627,8 +635,7 @@ void WaterApp::loadGameObjects() {
 
   std::shared_ptr<LveModel> cubeModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\models\\quad.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\quad.obj");
   int particleLen = 7;
 
   

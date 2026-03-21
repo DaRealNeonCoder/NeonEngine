@@ -113,10 +113,8 @@ void WaterRenderSystem::createPipeline(VkRenderPass renderPass) {
 
   lvePipeline = std::make_unique<LvePipeline>(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\shaders\\water_shader.vert.spv",
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\shaders\\water_shader.frag.spv",
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\water_shader.vert.spv",
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\water_shader.frag.spv",
       pipelineConfig);
 }
 void WaterRenderSystem::createBuffers(

@@ -161,556 +161,278 @@ void WaterPhysics::BuildSpatialGrid() {
 }
 
 
+
 void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
-  // Bind pipeline & descriptor set once
-  vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
 
-  vkCmdBindDescriptorSets(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_BIND_POINT_COMPUTE,
-      pipelineLayout,
-      0,
-      1,
-      &frameInfo.computeDescriptorSetPing,
-      0,
-      nullptr);
+    vkCmdBindPipeline(frameInfo.commandBuffer,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        computePipeline);
 
-  const uint32_t localSizeX = 64;
-  uint32_t nParticles = particleCount;
-  uint32_t nCells = mainGrid.numCells;
-
-  WaterPushConstants pc;
-
-  // Helper for barriers
-  auto makeBufferBarrier = [&](VkBuffer buf, VkAccessFlags srcAccess, VkAccessFlags dstAccess) {
-    VkBufferMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    barrier.srcAccessMask = srcAccess;
-    barrier.dstAccessMask = dstAccess;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.buffer = buf;
-    barrier.offset = 0;
-    barrier.size = VK_WHOLE_SIZE;
-    return barrier;
-  };
-
-  // --- MAC Grid Buffers (match shader bindings) ---
-  VkBuffer partPosBuf = partPosBuff->getBuffer();              // binding 0
-  VkBuffer partVelBuf = partVelBuff->getBuffer();              // binding 1
-  VkBuffer gridUBuf = gridUBuff->getBuffer();                  // binding 2
-  VkBuffer gridVBuf = gridVBuff->getBuffer();                  // binding 3
-  VkBuffer gridWBuf = gridWBuff->getBuffer();                  // binding 4
-  VkBuffer prevGridUBuf = prevGridUBuff->getBuffer();          // binding 5
-  VkBuffer prevGridVBuf = prevGridVBuff->getBuffer();          // binding 6
-  VkBuffer prevGridWBuf = prevGridWBuff->getBuffer();          // binding 7
-  VkBuffer gridFlagsBuf = gridFlagsBuff->getBuffer();          // binding 8
-  VkBuffer colorsBuf = colorsBuff->getBuffer();                // binding 9
-  VkBuffer gridDUBuf = gridDUBuff->getBuffer();                // binding 12
-  VkBuffer gridDVBuf = gridDVBuff->getBuffer();                // binding 13
-  VkBuffer gridDWBuf = gridDWBuff->getBuffer();                // binding 14
-  VkBuffer gridSBuf = gridSBuff->getBuffer();                  // binding 15
-  VkBuffer pressureReadBuf = pressureReadBuff->getBuffer();    // binding 16
-  VkBuffer pressureWriteBuf = pressureWriteBuff->getBuffer();  // binding 17
-  VkBuffer uAccumBuf = gridUAccumBuff->getBuffer();            // binding 18
-  VkBuffer vAccumBuf = gridVAccumBuff->getBuffer();            // binding 19
-  VkBuffer wAccumBuf = gridWAccumBuff->getBuffer();            // binding 20
-  VkBuffer uWAccumBuf = gridUWeightBuff->getBuffer();          // binding 21
-  VkBuffer vWAccumBuf = gridVWeightBuff->getBuffer();          // binding 22
-  VkBuffer wWAccumBuf = gridWWeightBuff->getBuffer();          // binding 23
-  VkBuffer debugBuf = debugBuff->getBuffer();                  // binding 11
-
-  // --------------- HOST -> COMPUTE barrier ---------------
-  std::vector<VkBufferMemoryBarrier> hostToComputeBarriers;
-  hostToComputeBarriers.push_back(makeBufferBarrier(
-      partPosBuf,
-      VK_ACCESS_HOST_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  hostToComputeBarriers.push_back(makeBufferBarrier(
-      partVelBuf,
-      VK_ACCESS_HOST_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  hostToComputeBarriers.push_back(makeBufferBarrier(
-      pressureReadBuf,
-      VK_ACCESS_HOST_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  hostToComputeBarriers.push_back(makeBufferBarrier(
-      pressureWriteBuf,
-      VK_ACCESS_HOST_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-
-  if (!hostToComputeBarriers.empty()) {
-    vkCmdPipelineBarrier(
-        frameInfo.commandBuffer,
-        VK_PIPELINE_STAGE_HOST_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0,
-        0,
-        nullptr,
-        static_cast<uint32_t>(hostToComputeBarriers.size()),
-        hostToComputeBarriers.data(),
-        0,
-        nullptr);
-  }
-
-  // ---------------- PASS 0: Grid init ----------------
-  pc.uPass = 0;
-  //pc.dt = frameInfo.frameTime;
-  pc.dt = 1.0f/500.0f;
-  
-  vkCmdPushConstants(
-      frameInfo.commandBuffer,
-      pipelineLayout,
-      VK_SHADER_STAGE_COMPUTE_BIT,
-      0,
-      sizeof(WaterPushConstants),
-      &pc);
-
-  uint32_t groupsX_cells = (nCells + localSizeX - 1) / localSizeX;
-  vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);
-
-  // Barrier: pass0 writes -> pass1 reads
-  std::vector<VkBufferMemoryBarrier> pass0Barriers;
-  pass0Barriers.push_back(makeBufferBarrier(
-      gridUBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      gridVBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      gridWBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      prevGridUBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      prevGridVBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      prevGridWBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      gridDUBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      gridDVBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      gridDWBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      gridFlagsBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      gridSBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      uAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      vAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      wAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      uWAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      vWAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass0Barriers.push_back(makeBufferBarrier(
-      wWAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-
-  vkCmdPipelineBarrier(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      0,
-      nullptr,
-      static_cast<uint32_t>(pass0Barriers.size()),
-      pass0Barriers.data(),
-      0,
-      nullptr);
-
-  // ---------------- PASS 1: P2G (particles -> grid) ----------------
-  pc.uPass = 1;
-  vkCmdPushConstants(
-      frameInfo.commandBuffer,
-      pipelineLayout,
-      VK_SHADER_STAGE_COMPUTE_BIT,
-      0,
-      sizeof(WaterPushConstants),
-      &pc);
-
-  uint32_t groupsX_particles = (nParticles + localSizeX - 1) / localSizeX;
-  vkCmdDispatch(frameInfo.commandBuffer, groupsX_particles, 1, 1);
-
-  // Barrier: pass1 writes -> pass2 reads
-  std::vector<VkBufferMemoryBarrier> pass1Barriers;
-  pass1Barriers.push_back(makeBufferBarrier(
-      uAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass1Barriers.push_back(makeBufferBarrier(
-      vAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass1Barriers.push_back(makeBufferBarrier(
-      wAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass1Barriers.push_back(makeBufferBarrier(
-      uWAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass1Barriers.push_back(makeBufferBarrier(
-      vWAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass1Barriers.push_back(makeBufferBarrier(
-      wWAccumBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass1Barriers.push_back(makeBufferBarrier(
-      gridFlagsBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-
-  vkCmdPipelineBarrier(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      0,
-      nullptr,
-      static_cast<uint32_t>(pass1Barriers.size()),
-      pass1Barriers.data(),
-      0,
-      nullptr);
-
-  // ---------------- PASS 2: Grid finalize ----------------
-  pc.uPass = 2;
-  vkCmdPushConstants(
-      frameInfo.commandBuffer,
-      pipelineLayout,
-      VK_SHADER_STAGE_COMPUTE_BIT,
-      0,
-      sizeof(WaterPushConstants),
-      &pc);
-
-  vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);
-
-  // Barrier: pass2 writes -> pass3 reads
-  std::vector<VkBufferMemoryBarrier> pass2Barriers;
-  pass2Barriers.push_back(makeBufferBarrier(
-      gridUBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass2Barriers.push_back(makeBufferBarrier(
-      gridVBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass2Barriers.push_back(makeBufferBarrier(
-      gridWBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass2Barriers.push_back(makeBufferBarrier(
-      prevGridUBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass2Barriers.push_back(makeBufferBarrier(
-      prevGridVBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass2Barriers.push_back(makeBufferBarrier(
-      prevGridWBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  pass2Barriers.push_back(makeBufferBarrier(
-      gridFlagsBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-
-  vkCmdPipelineBarrier(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      0,
-      nullptr,
-      static_cast<uint32_t>(pass2Barriers.size()),
-      pass2Barriers.data(),
-      0,
-      nullptr);
-
-  // ---------------- PASS 3: Pressure Jacobi (iterate multiple times) ----------------
-  VkDescriptorSet currentSet = frameInfo.computeDescriptorSetPing;
-  const int numJacobiIterations = 50;
-
-  for (int iter = 0; iter < numJacobiIterations; ++iter) {
     vkCmdBindDescriptorSets(
         frameInfo.commandBuffer,
         VK_PIPELINE_BIND_POINT_COMPUTE,
         pipelineLayout,
         0,
         1,
-        &currentSet,
+        &frameInfo.computeDescriptorSetPing,
         0,
         nullptr);
 
-    pc.uPass = 3;
+    const uint32_t localSizeX = 64;
+    uint32_t nParticles = particleCount;
+    uint32_t nCells = mainGrid.numCells;
+
+    WaterPushConstants pc;
+
+    auto makeBufferBarrier = [&](VkBuffer buf,
+        VkAccessFlags src,
+        VkAccessFlags dst)
+    {
+        VkBufferMemoryBarrier b{};
+        b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        b.srcAccessMask = src;
+        b.dstAccessMask = dst;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.buffer = buf;
+        b.offset = 0;
+        b.size = VK_WHOLE_SIZE;
+        return b;
+    };
+
+    uint32_t groupsX_cells =
+        (nCells + localSizeX - 1) / localSizeX;
+
+    uint32_t groupsX_particles =
+        (nParticles + localSizeX - 1) / localSizeX;
+
+
+
+    // =====================================================
+    // PASS 0 — Grid init
+    // =====================================================
+
+    pc.uPass = 0;
+    pc.dt = 1 / 500.f;
+
     vkCmdPushConstants(
         frameInfo.commandBuffer,
         pipelineLayout,
         VK_SHADER_STAGE_COMPUTE_BIT,
         0,
-        sizeof(WaterPushConstants),
+        sizeof(pc),
         &pc);
 
-    vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);
-
-    // Barrier for ping-pong pressure buffers
-    VkBufferMemoryBarrier barrierA =
-        makeBufferBarrier(pressureReadBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-    VkBufferMemoryBarrier barrierB =
-        makeBufferBarrier(pressureWriteBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-    VkBufferMemoryBarrier both[] = {barrierA, barrierB};
-
-    vkCmdPipelineBarrier(
+    vkCmdDispatch(
         frameInfo.commandBuffer,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        groupsX_cells,
+        1,
+        1);
+
+
+
+    // =====================================================
+    // PASS 1 — Collisions (substeps)
+    // =====================================================
+
+    const int numCollisionSubsteps = 4;
+
+    for (int i = 0; i < numCollisionSubsteps; i++)
+    {
+        pc.uPass = 1;
+
+        vkCmdPushConstants(
+            frameInfo.commandBuffer,
+            pipelineLayout,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(pc),
+            &pc);
+
+        vkCmdDispatch(
+            frameInfo.commandBuffer,
+            groupsX_particles,
+            1,
+            1);
+    }
+
+
+
+    // =====================================================
+    // PASS 2 — P2G
+    // =====================================================
+
+    pc.uPass = 2;
+
+    vkCmdPushConstants(
+        frameInfo.commandBuffer,
+        pipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
         0,
+        sizeof(pc),
+        &pc);
+
+    vkCmdDispatch(
+        frameInfo.commandBuffer,
+        groupsX_particles,
+        1,
+        1);
+
+
+
+    // =====================================================
+    // PASS 3 — Grid finalize
+    // =====================================================
+
+    pc.uPass = 3;
+
+    vkCmdPushConstants(
+        frameInfo.commandBuffer,
+        pipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
         0,
-        nullptr,
-        2,
-        both,
+        sizeof(pc),
+        &pc);
+
+    vkCmdDispatch(
+        frameInfo.commandBuffer,
+        groupsX_cells,
+        1,
+        1);
+
+
+
+    // =====================================================
+    // PASS 4 — Density
+    // =====================================================
+
+    pc.uPass = 4;
+
+    vkCmdPushConstants(
+        frameInfo.commandBuffer,
+        pipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
         0,
-        nullptr);
+        sizeof(pc),
+        &pc);
 
-    // Swap descriptor sets for next iteration
-    currentSet = (currentSet == frameInfo.computeDescriptorSetPing)
-                     ? frameInfo.computeDescriptorSetPong
-                     : frameInfo.computeDescriptorSetPing;
-  }
+    vkCmdDispatch(
+        frameInfo.commandBuffer,
+        groupsX_particles,
+        1,
+        1);
 
-  // ---------------- PASS 4: Pressure apply ----------------
-  vkCmdBindDescriptorSets(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_BIND_POINT_COMPUTE,
-      pipelineLayout,
-      0,
-      1,
-      &currentSet,
-      0,
-      nullptr);
 
-  pc.uPass = 4;
-  vkCmdPushConstants(
-      frameInfo.commandBuffer,
-      pipelineLayout,
-      VK_SHADER_STAGE_COMPUTE_BIT,
-      0,
-      sizeof(WaterPushConstants),
-      &pc);
 
-  vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);
+    // =====================================================
+    // PASS 5 — Pressure Jacobi
+    // =====================================================
 
-  // Barrier: pass4 writes (du/dv/dw) -> pass7 reads
-  std::vector<VkBufferMemoryBarrier> pass4ToPass7Barriers;
-  pass4ToPass7Barriers.push_back(makeBufferBarrier(
-      gridDUBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,   // pass 4 wrote to du
-      VK_ACCESS_SHADER_READ_BIT));  // pass 7 reads from du
-  pass4ToPass7Barriers.push_back(
-      makeBufferBarrier(gridDVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
-  pass4ToPass7Barriers.push_back(
-      makeBufferBarrier(gridDWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+    VkDescriptorSet currentSet =
+        frameInfo.computeDescriptorSetPing;
 
-  vkCmdPipelineBarrier(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      0,
-      nullptr,
-      static_cast<uint32_t>(pass4ToPass7Barriers.size()),
-      pass4ToPass7Barriers.data(),
-      0,
-      nullptr);
+    const int numJacobiIterations = 50;
 
-  // ---------------- PASS 7: Apply du/dv/dw to grid ----------------
-  pc.uPass = 7;
-  vkCmdPushConstants(
-      frameInfo.commandBuffer,
-      pipelineLayout,
-      VK_SHADER_STAGE_COMPUTE_BIT,
-      0,
-      sizeof(WaterPushConstants),
-      &pc);
+    for (int i = 0; i < numJacobiIterations; i++)
+    {
+        vkCmdBindDescriptorSets(
+            frameInfo.commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipelineLayout,
+            0,
+            1,
+            &currentSet,
+            0,
+            nullptr);
 
-  vkCmdDispatch(frameInfo.commandBuffer, groupsX_cells, 1, 1);  // Note: per cell, not per particle!
+        pc.uPass = 5;
 
-  // Barrier: pass7 writes (u/v/w) -> pass5 reads
-  std::vector<VkBufferMemoryBarrier> pass7ToPass5Barriers;
-  pass7ToPass5Barriers.push_back(makeBufferBarrier(
-      gridUBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,   // pass 7 wrote to u
-      VK_ACCESS_SHADER_READ_BIT));  // pass 5 reads from u
-  pass7ToPass5Barriers.push_back(
-      makeBufferBarrier(gridVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
-  pass7ToPass5Barriers.push_back(
-      makeBufferBarrier(gridWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
-  // Also ensure du/dv/dw are visible for potential reuse (though they're cleared in pass7)
-  pass7ToPass5Barriers.push_back(makeBufferBarrier(
-      gridDUBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,  // pass 7 cleared du
-      VK_ACCESS_SHADER_READ_BIT));
-  pass7ToPass5Barriers.push_back(
-      makeBufferBarrier(gridDVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
-  pass7ToPass5Barriers.push_back(
-      makeBufferBarrier(gridDWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+        vkCmdPushConstants(
+            frameInfo.commandBuffer,
+            pipelineLayout,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(pc),
+            &pc);
 
-  vkCmdPipelineBarrier(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      0,
-      nullptr,
-      static_cast<uint32_t>(pass7ToPass5Barriers.size()),
-      pass7ToPass5Barriers.data(),
-      0,
-      nullptr);
+        vkCmdDispatch(
+            frameInfo.commandBuffer,
+            groupsX_cells,
+            1,
+            1);
 
-  // ---------------- PASS 5: G2P ----------------
-  pc.uPass = 5;
-  vkCmdPushConstants(
-      frameInfo.commandBuffer,
-      pipelineLayout,
-      VK_SHADER_STAGE_COMPUTE_BIT,
-      0,
-      sizeof(WaterPushConstants),
-      &pc);
+        currentSet =
+            (currentSet ==
+                frameInfo.computeDescriptorSetPing)
+            ? frameInfo.computeDescriptorSetPong
+            : frameInfo.computeDescriptorSetPing;
+    }
 
-  vkCmdDispatch(frameInfo.commandBuffer, groupsX_particles, 1, 1);
 
-  // Barrier: pass5 writes partVel -> pass6 reads partVel and partPos
-  std::vector<VkBufferMemoryBarrier> pass5Barriers;
-  pass5Barriers.push_back(makeBufferBarrier(
-      partVelBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT));
-  // Also ensure prevU/V/W are visible for next frame's G2P
-  pass5Barriers.push_back(makeBufferBarrier(
-      prevGridUBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,   // These were written in pass2
-      VK_ACCESS_SHADER_READ_BIT));  // But pass5 also reads them? Actually pass5 only reads u/v/w
-                                    // and prevU/V/W
-  pass5Barriers.push_back(
-      makeBufferBarrier(prevGridVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
-  pass5Barriers.push_back(
-      makeBufferBarrier(prevGridWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
 
-  vkCmdPipelineBarrier(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      0,
-      0,
-      nullptr,
-      static_cast<uint32_t>(pass5Barriers.size()),
-      pass5Barriers.data(),
-      0,
-      nullptr);
+    // =====================================================
+    // PASS 6 — Pressure apply
+    // =====================================================
 
-  // ---------------- PASS 6: Integrate particles ----------------
-  pc.uPass = 6;
-  vkCmdPushConstants(
-      frameInfo.commandBuffer,
-      pipelineLayout,
-      VK_SHADER_STAGE_COMPUTE_BIT,
-      0,
-      sizeof(WaterPushConstants),
-      &pc);
+    pc.uPass = 6;
 
-  vkCmdDispatch(frameInfo.commandBuffer, groupsX_particles, 1, 1);
+    vkCmdPushConstants(
+        frameInfo.commandBuffer,
+        pipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        0,
+        sizeof(pc),
+        &pc);
 
-  // --- Make compute writes visible to vertex input ---------------
-  std::vector<VkBufferMemoryBarrier> computeToVertexBarriers;
-  computeToVertexBarriers.push_back(makeBufferBarrier(
-      partPosBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT));
-  computeToVertexBarriers.push_back(makeBufferBarrier(
-      colorsBuf,
-      VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT));
+    vkCmdDispatch(
+        frameInfo.commandBuffer,
+        groupsX_cells,
+        1,
+        1);
 
-  vkCmdPipelineBarrier(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-      0,
-      0,
-      nullptr,
-      static_cast<uint32_t>(computeToVertexBarriers.size()),
-      computeToVertexBarriers.data(),
-      0,
-      nullptr);
 
-  // --------------- FINAL: Compute -> Host barrier for readback ---------------
-  std::vector<VkBufferMemoryBarrier> finalBarriers;
-  finalBarriers.push_back(
-      makeBufferBarrier(partPosBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
-  finalBarriers.push_back(
-      makeBufferBarrier(partVelBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
-  finalBarriers.push_back(
-      makeBufferBarrier(pressureReadBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
-  finalBarriers.push_back(
-      makeBufferBarrier(pressureWriteBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
-  finalBarriers.push_back(
-      makeBufferBarrier(gridUBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
-  finalBarriers.push_back(
-      makeBufferBarrier(gridVBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
-  finalBarriers.push_back(
-      makeBufferBarrier(gridWBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
-  finalBarriers.push_back(
-      makeBufferBarrier(gridFlagsBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
-  finalBarriers.push_back(
-      makeBufferBarrier(debugBuf, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT));
 
-  vkCmdPipelineBarrier(
-      frameInfo.commandBuffer,
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      VK_PIPELINE_STAGE_HOST_BIT,
-      0,
-      0,
-      nullptr,
-      static_cast<uint32_t>(finalBarriers.size()),
-      finalBarriers.data(),
-      0,
-      nullptr);
+    // =====================================================
+    // PASS 7 — G2P
+    // =====================================================
+
+    pc.uPass = 7;
+
+    vkCmdPushConstants(
+        frameInfo.commandBuffer,
+        pipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        0,
+        sizeof(pc),
+        &pc);
+
+    vkCmdDispatch(
+        frameInfo.commandBuffer,
+        groupsX_particles,
+        1,
+        1);
+
+
+
+    // =====================================================
+    // PASS 8 — Integrate
+    // =====================================================
+
+    pc.uPass = 8;
+
+    vkCmdPushConstants(
+        frameInfo.commandBuffer,
+        pipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        0,
+        sizeof(pc),
+        &pc);
+
+    vkCmdDispatch(
+        frameInfo.commandBuffer,
+        groupsX_particles,
+        1,
+        1);
 }
 
 
@@ -853,6 +575,7 @@ void WaterPhysics::CreateBuffers(Grid& grid) {
   gridUWeightBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 21
   gridVWeightBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 22
   gridWWeightBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 23
+  gridDensityBuff = makeDeviceLocal2(sizeof(uint32_t), grid.numCells);  // 23
 
 
   std::vector<uint32_t> zeroUint(grid.numCells, 0u);
@@ -866,7 +589,7 @@ void WaterPhysics::CreateBuffers(Grid& grid) {
     device.copyBuffer(staging->getBuffer(), target->getBuffer(), sizeof(uint32_t) * grid.numCells);
   };
 
-  // Zero all 6
+  // Zero all
   zeroUintBuffer(gridUAccumBuff);
   zeroUintBuffer(gridVAccumBuff);
   zeroUintBuffer(gridWAccumBuff);
@@ -874,6 +597,9 @@ void WaterPhysics::CreateBuffers(Grid& grid) {
   zeroUintBuffer(gridUWeightBuff);
   zeroUintBuffer(gridVWeightBuff);
   zeroUintBuffer(gridWWeightBuff);
+
+  zeroUintBuffer(gridDensityBuff);
+
 }
 void WaterPhysics::CreateComputePipelineLayout(VkDescriptorSetLayout setLayout) {
   VkPushConstantRange pushConstantRange{};
@@ -898,8 +624,7 @@ void WaterPhysics::CreateComputePipelineLayout(VkDescriptorSetLayout setLayout) 
 void WaterPhysics::CreateComputePipeline() {
   // Create shader module
   computeShaderModule = LvePipeline::loadShaderModule(
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\shaders\\water_grid.comp.spv",
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\water_grid.comp.spv",
       device.device());
 
   VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};

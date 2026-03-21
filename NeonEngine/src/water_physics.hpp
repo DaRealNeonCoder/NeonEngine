@@ -89,6 +89,7 @@ VkDescriptorBufferInfo getGridWAccumDescInfo() { return gridWAccumBuff->descript
 VkDescriptorBufferInfo getGridUWeightDescInfo() { return gridUWeightBuff->descriptorInfo(); }  // 21
 VkDescriptorBufferInfo getGridVWeightDescInfo() { return gridVWeightBuff->descriptorInfo(); }  // 22
 VkDescriptorBufferInfo getGridWWeightDescInfo() { return gridWWeightBuff->descriptorInfo(); }  // 23
+VkDescriptorBufferInfo getGridDensityDescInfo() { return gridDensityBuff->descriptorInfo(); }  // 23
 
     std::unique_ptr<LveBuffer> makeHostVisible(VkDeviceSize elemSize, uint32_t count); 
   void UploadBuffers(const Grid& grid);
@@ -203,6 +204,8 @@ VkDescriptorBufferInfo getGridWWeightDescInfo() { return gridWWeightBuff->descri
   std::unique_ptr<LveBuffer> gridUWeightBuff;  // binding 21
   std::unique_ptr<LveBuffer> gridVWeightBuff;  // binding 22
   std::unique_ptr<LveBuffer> gridWWeightBuff;  // binding 23
+  std::unique_ptr<LveBuffer> gridDensityBuff;  // binding 23
+
   VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
   VkPipeline computePipeline = VK_NULL_HANDLE;
   VkShaderModule computeShaderModule = VK_NULL_HANDLE;

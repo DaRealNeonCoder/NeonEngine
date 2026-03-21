@@ -280,8 +280,7 @@ void ShadowSystem::createPipeline() {
 
   shadowPipeline = std::make_unique<LvePipeline>(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\shaders\\shadow_depth.vert.spv",
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\shadow_depth.vert.spv",
       "",
       config);
 }

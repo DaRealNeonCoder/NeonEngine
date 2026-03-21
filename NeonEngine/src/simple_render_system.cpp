@@ -59,8 +59,8 @@ void SimpleRenderSystem::createPipeline(VkRenderPass renderPass) {
   pipelineConfig.pipelineLayout = pipelineLayout;
   lvePipeline = std::make_unique<LvePipeline>(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\shaders\\simple_shader.vert.spv",
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\shaders\\simple_shader.frag.spv",
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\simple_shader.vert.spv",
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\simple_shader.frag.spv",
       pipelineConfig);
 }
 

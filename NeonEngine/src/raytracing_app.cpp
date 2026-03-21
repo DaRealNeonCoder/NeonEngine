@@ -147,7 +147,10 @@ std::cout << "Pass 4 \n";
 
 LveCamera camera{};
 auto viewerObject = LveGameObject::createGameObject();
-viewerObject.transform.translation.z = -2.5f;
+viewerObject.transform.translation.z = -1.19782f;
+viewerObject.transform.translation.y = -0.704093f;
+viewerObject.transform.translation.x = 0.0444035f;
+
 KeyboardMovementController cameraController{};
 
 std::cout << "Pass 5 \n";
@@ -230,9 +233,13 @@ while (!lveWindow.shouldClose()) {
       rayTracingSystem.resetFrameId();
     });
   }
-}
 
+}
 vkDeviceWaitIdle(lveDevice.device());
+
+std::cout << viewerObject.transform.translation.x << " " << viewerObject.transform.translation.y << "  " << viewerObject.transform.translation.z<< std::endl;
+
+
 }
 
 
@@ -240,7 +247,7 @@ void RayTracingApp::loadGameObjects() {
   /*
   std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\models\\Dragon_lowPoly.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\Dragon_lowPoly.obj");
   auto obj = LveGameObject::createGameObject();
   obj.model = lveModel;
   obj.transform.translation = {0.07f, -0.4f, 0.f};
@@ -251,8 +258,7 @@ void RayTracingApp::loadGameObjects() {
   /*
   std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\models\\Knight.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\Knight.obj");
   auto obj = LveGameObject::createGameObject();
   obj.model = lveModel;
   obj.transform.translation = {0.f, -0.55f, 0.f};
@@ -262,8 +268,7 @@ void RayTracingApp::loadGameObjects() {
   */
   std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\models\\car.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\car.obj");
   auto obj = LveGameObject::createGameObject();
   obj.model = lveModel;
   obj.transform.translation = {0.f, -0.55f, 0.f};
@@ -272,8 +277,7 @@ void RayTracingApp::loadGameObjects() {
   gameObjects.emplace(obj.getId(), std::move(obj));
  lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\models\\cube.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
   
     
     //ceiling

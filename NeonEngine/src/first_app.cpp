@@ -183,8 +183,7 @@ void FirstApp::loadGameObjects() {
   
     std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-"
-      "tut27\\models\\cube.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
 
     auto flatVase = LveGameObject::createGameObject();
     flatVase.model = lveModel;
@@ -193,7 +192,7 @@ void FirstApp::loadGameObjects() {
     gameObjects.emplace(flatVase.getId(), std::move(flatVase));
   lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\models\\smooth_vase.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\smooth_vase.obj");
   auto smoothVase = LveGameObject::createGameObject();
   smoothVase.model = lveModel;
   smoothVase.transform.translation = {-3.f, -3.f, -3.f};
@@ -201,7 +200,7 @@ void FirstApp::loadGameObjects() {
 
   lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\littleVulkanEngine-tut27\\littleVulkanEngine-tut27\\models\\quad.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\quad.obj");
   auto floor = LveGameObject::createGameObject();
   floor.model = lveModel;
   floor.transform.translation = {0.f, 0.f, 0.f};

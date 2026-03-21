@@ -9,7 +9,7 @@ layout(std140, set = 0, binding = 10) uniform WaterPhysUbo {
 
     ivec4 uGridDim;
 
-    float pH; 
+    float uH; 
     float uH2; 
     float overRelaxation; 
     float spikyGradCoeff;
@@ -72,6 +72,9 @@ layout(std430, set = 0, binding = 20) buffer GridWAccum { uint wAccum[]; };
 layout(std430, set = 0, binding = 21) buffer GridUWeight { uint uW[]; };
 layout(std430, set = 0, binding = 22) buffer GridVWeight { uint vW[]; };
 layout(std430, set = 0, binding = 23) buffer GridWWeight { uint wW[]; };
+
+layout(std430, set = 0, binding = 24) buffer ParticleDensity { uint density[]; };
+
 
 const uint CELL_FLUID = 1u;
 const uint CELL_SOLID = 2u;
@@ -185,6 +188,18 @@ void atomicAddFloatDW(uint idx, float value) {
     }
 }
 
+
+void atomicAddFloatDensity(uint idx, float value) {
+    uint oldDensity = density[idx];
+    for (;;) {
+        float oldf = uintBitsToFloat(oldDensity);
+        float newf = oldf + value;
+        uint newDen = floatBitsToUint(newf);
+        uint prev = atomicCompSwap(density[idx], oldDensity, newDen);
+        if (prev == oldDensity) return;
+        oldDensity = prev;
+    }
+}
 void atomicAddFloatU(uint idx, float value) {
     uint oldu = u[idx];
     for (;;) {
@@ -262,6 +277,9 @@ void pass_grid_init() {
     dv[idx] = floatBitsToUint(0.0);
     dw[idx] = floatBitsToUint(0.0);
 
+    density[idx] = floatBitsToUint(0.0);
+
+
     pRead[idx]  = 0.0;
     pWrite[idx] = 0.0;
 }
@@ -272,7 +290,7 @@ void pass_p2g() {
     if (pid >= uint(ubo.uNumParticles)) return;
 
     vec3 pos  = p[pid].xyz;
-    vec3 pvel = v[pid].xyz;
+    vec3 pvel = v[pid].xyz ;  
 
     vec3 local = (pos - ubo.uBoxMin.xyz) / ubo.uCellSize;
     uvec3 dim  = uvec3(ubo.uGridDim.xyz);
@@ -298,6 +316,7 @@ void pass_p2g() {
                 (ix == 0 ? (1.0 - fracU.x) : fracU.x) *
                 (iy == 0 ? (1.0 - fracU.y) : fracU.y) *
                 (iz == 0 ? (1.0 - fracU.z) : fracU.z);
+
             uvec3 cellU = uvec3(baseU) + uvec3(ix, iy, iz);
             uint  cidxU = cellU.x + cellU.y * dim.x + cellU.z * (dim.x * dim.y);
             if ((flags[cidxU] & CELL_SOLID) == 0u) {
@@ -313,6 +332,7 @@ void pass_p2g() {
                 (iz == 0 ? (1.0 - fracV.z) : fracV.z);
             uvec3 cellV = uvec3(baseV) + uvec3(ix, iy, iz);
             uint  cidxV = cellV.x + cellV.y * dim.x + cellV.z * (dim.x * dim.y);
+
             if ((flags[cidxV] & CELL_SOLID) == 0u) {
                 atomicAddFloatVAccum(cidxV, pvel.y * wv);
                 atomicAddFloatVWeight(cidxV, wv);
@@ -413,7 +433,16 @@ void pass_pressure_jacobi() {
 
     float div = ((u_right - u_center)
            + (v_top   - v_center)
-           + (w_front - w_center)) / ubo.uCellSize;
+           + (w_front - w_center));
+    
+        float particleDen = uintBitsToFloat(density[idx]);
+    if (ubo.uRestDensity > 0.0 && particleDen > 0.0) {
+        float compression = particleDen - ubo.uRestDensity;
+        if (compression > 0.0)
+            div -= compression;  // k = 1.0, same as JS reference
+    }
+
+
 
     float dt_safe          = max(pc.dt, 1e-6);
     float cellSize_safe    = max(ubo.uCellSize, 1e-6);
@@ -424,11 +453,36 @@ float cp = restDensity_safe * cellSize_safe * cellSize_safe / dt_safe;
     float pNew = (sumNeighborP - cp * div_safe) / max(sSum, 1e-6);
 
     if (idx == 5000u) {
-        debugVals[0] = cp;
-        debugVals[1] = dt_safe;
-        debugVals[2] = cellSize_safe;
-        debugVals[3] = restDensity_safe;
-        debugVals[4] = 9;
+
+        debugVals[0] = float(idx);
+
+        debugVals[1] = pc.dt;
+        debugVals[2] = ubo.uCellSize;
+        debugVals[3] = ubo.uRestDensity;
+
+        debugVals[4] = cp;
+        debugVals[5] = div;
+        debugVals[6] = sSum;
+
+        debugVals[7] = u_center;
+        debugVals[8] = u_right;
+
+        debugVals[9]  = v_center;
+        debugVals[10] = v_top;
+
+        debugVals[11] = w_center;
+        debugVals[12] = w_front;
+
+        debugVals[13] = pRead[idx];
+        debugVals[14] = sumNeighborP;
+
+        debugVals[15] = particleDen;
+
+        debugVals[16] = float(flags[idx]);
+
+        debugVals[17] = uintBitsToFloat(density[idx]);
+
+        debugVals[18] = pNew;
     }
 
     pWrite[idx] = pRead[idx] + ubo.overRelaxation * (pNew - pRead[idx]);
@@ -615,8 +669,8 @@ void pass_integrate() {
     if (pid >= uint(ubo.uNumParticles)) return;
 
     vec3 newVel = v[pid].xyz;
-    newVel += ubo.uGravity.xyz * pc.dt;
-    vec3 newPos = p[pid].xyz + newVel * pc.dt;
+    newVel += ubo.uGravity.xyz * pc.dt;          // accelerate
+    vec3 newPos = p[pid].xyz + newVel * pc.dt ;
 
     const float restitution = 0.3;
     const float friction     = 0.9;
@@ -638,15 +692,68 @@ void pass_integrate() {
     colors[pid] = vec4(0.0, 0.2, 0.8, 1.0);
 }
 
+void pass_update_density() {
+    uint pid = gl_GlobalInvocationID.x;
+    if (pid >= uint(ubo.uNumParticles)) return;
+
+    vec3 pos   = p[pid].xyz;
+    vec3 local = (pos - ubo.uBoxMin.xyz) / ubo.uCellSize;
+    uvec3 dim  = uvec3(ubo.uGridDim.xyz);
+
+    // cell-centered, so offset by 0.5 in all directions
+    vec3 localC = local - vec3(0.5, 0.5, 0.5);
+    ivec3 base  = clamp(ivec3(floor(localC)), ivec3(0), ivec3(dim) - ivec3(2));
+    vec3 frac   = localC - vec3(base);
+
+    for (uint iz = 0; iz <= 1; ++iz)
+    for (uint iy = 0; iy <= 1; ++iy)
+    for (uint ix = 0; ix <= 1; ++ix) {
+        float w =
+            (ix == 0 ? (1.0 - frac.x) : frac.x) *
+            (iy == 0 ? (1.0 - frac.y) : frac.y) *
+            (iz == 0 ? (1.0 - frac.z) : frac.z);
+
+        uvec3 cell = uvec3(base) + uvec3(ix, iy, iz);
+        uint cidx  = cell.x + cell.y * dim.x + cell.z * (dim.x * dim.y);
+
+        if ((flags[cidx] & CELL_SOLID) == 0u)
+            atomicAddFloatDensity(cidx, w * ubo.uMass);  // same CAS pattern as your other atomics
+    }
+}
+void pass_handle_collisions()
+{
+    uint pid = gl_GlobalInvocationID.x;
+    if (pid >= uint(ubo.uNumParticles)) return;
+    
+    vec3 pos  = p[pid].xyz;
+    vec3 pvel = v[pid].xyz;
+    
+        float minDist  = ubo.uCellSize * 1.5f;
+    float minDist2 = minDist * minDist;
+   
+
+    for (uint j = 0; j < uint(ubo.uNumParticles); j++) {
+        if (j == pid) continue;
+        vec3 diff = pos - p[j].xyz;
+        float d2  = dot(diff, diff);
+        if (d2 >= minDist2 || d2 == 0.0) continue;
+        float d = sqrt(d2);
+        pos += diff * (0.5 * (minDist - d) / d);
+    }
+    
+    p[pid].xyz = pos;
+}
+
 void main() {
     int pass = pc.uPass;
 
-    if      (pass == 0) pass_grid_init();
-    else if (pass == 1) pass_p2g();
-    else if (pass == 2) pass_grid_finalize();
-    else if (pass == 3) pass_pressure_jacobi();
-    else if (pass == 4) pass_pressure_apply();
-    //else if (pass == 7) pass_apply_du_to_grid();
-    else if (pass == 5) pass_g2p();
-    else if (pass == 6) pass_integrate();
+    if      (pass == 0) pass_grid_init();           // cls
+    else if (pass == 1) pass_handle_collisions();   // cls
+    else if (pass == 2) pass_p2g();                 // cls
+    else if (pass == 3) pass_grid_finalize();       // cls
+    else if (pass == 4) pass_update_density();      // cls
+    else if (pass == 5) pass_pressure_jacobi();     // 
+    else if (pass == 6) pass_pressure_apply();
+    else if (pass == 7) pass_g2p();
+    else if (pass == 8) pass_integrate();
 }
