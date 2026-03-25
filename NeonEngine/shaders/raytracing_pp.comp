@@ -1,0 +1,165 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D positionTex;
+layout(set = 0, binding = 1) uniform sampler2D normalTex;
+layout(set = 0, binding = 2) uniform sampler2D baryTex;
+layout(set = 0, binding = 3) uniform sampler2D motionTex;
+layout(set = 0, binding = 4, rgba8)   uniform image2D inputImage;
+layout(set = 0, binding = 5, rgba16f) uniform image2D historyColourImage;
+layout(set = 0, binding = 6, rgba16f) uniform image2D historyDataImage;
+layout(set = 0, binding = 7, rgba16f) uniform image2D historyColourImage2; // IGNORE THIS THEN
+
+// historyDataImage layout:
+//   r = historyLength
+//   g = moment1 (avg luminance)
+//   b = moment2 (avg luminance^2)
+//   a = variance
+
+float CalculateLuminance(vec3 colour)
+{
+    return 0.2126 * colour.r + 0.7152 * colour.g + 0.0722 * colour.b;
+}
+bool LoadPreviousData(ivec2 pixel, ivec2 size,
+                      out vec3 prevColour,
+                      out float historyLength,
+                      out vec2 prevMoments)
+{
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+
+    // Make sure motion is nearest sampled if possible
+    vec2 motion = texture(motionTex, uv).xy;
+
+    // If motion is stored in pixels, convert it:
+    // motion /= vec2(size);
+
+    vec2 prevUV = uv - motion; // or + motion depending on your convention
+    ivec2 prevPixel = ivec2(prevUV * vec2(size));
+
+    if (prevPixel.x < 0 || prevPixel.y < 0 ||
+        prevPixel.x >= size.x || prevPixel.y >= size.y)
+    {
+        prevColour = vec3(0.0);
+        historyLength = 0.0;
+        prevMoments = vec2(0.0);
+        return false;
+    }
+
+    // Optional but strongly recommended:
+    vec3 currPos = texture(positionTex, uv).xyz;
+        vec2 prevUV2 = (vec2(prevPixel) + 0.5) / vec2(size);
+    vec3 prevPos = texture(positionTex, prevUV2).xyz;
+
+    if (distance(currPos, prevPos) > 0.01)
+    {
+        prevColour = vec3(0.0);
+        historyLength = 0.0;
+        prevMoments = vec2(0.0);
+        return false;
+    }
+
+    prevColour = imageLoad(historyColourImage, prevPixel).rgb;
+    vec4 prevData = imageLoad(historyDataImage, prevPixel);
+    historyLength = prevData.r;
+    prevMoments = prevData.gb;
+
+    if (historyLength < 0.5)
+    {
+        prevColour = vec3(0.0);
+        historyLength = 0.0;
+        prevMoments = vec2(0.0);
+        return false;
+    }
+
+    return true;
+}
+
+void main()
+{
+    int mode = 5;
+
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(inputImage);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    vec2 uv            = (vec2(pixel) + 0.5) / vec2(size);
+    vec3 currentColour = imageLoad(inputImage, pixel).rgb;
+
+    vec3  prevColour;
+    float historyLength;
+    vec2  prevMoments;
+    bool couldLoad = LoadPreviousData(pixel, size, prevColour, historyLength, prevMoments);
+
+    float alpha;
+    if (couldLoad)
+    {
+        historyLength = historyLength + 1.0;
+        alpha         = 1.0 / historyLength;
+    }
+    else
+    {
+        alpha         = 1.0;
+        historyLength = 1.0;
+    }
+
+    // Accumulate colour
+    vec3 newColour = mix(prevColour, currentColour, alpha * 0.7);
+
+    // Accumulate moments
+    vec2 moments;
+    moments.x = CalculateLuminance(currentColour);
+    moments.y = moments.x * moments.x;
+    moments   = mix(prevMoments, moments, alpha);
+
+    // Derive variance
+    float variance = max(0.0, moments.y - moments.x * moments.x);
+
+    // Write history
+    imageStore(historyColourImage2, pixel, vec4(newColour, 1.0));
+    imageStore(historyDataImage,   pixel, vec4(historyLength, moments.x, moments.y, variance));
+
+    // Debug visualisation
+    vec4 result = vec4(0.0, 0.0, 0.0, 1.0);
+    if (mode == 0)
+    {
+        result.rgb = fract(texture(positionTex, uv).xyz * 0.1);
+    }
+    else if (mode == 1)
+    {
+        result.rgb = texture(normalTex, uv).xyz * 0.5 + 0.5;
+    }
+    else if (mode == 2)
+    {
+        result.rgb = texture(baryTex, uv).rgb;
+    }
+    else if (mode == 3)
+    {
+        float mag  = length(texture(motionTex, uv).xy) * 10.0;
+        result.rgb = vec3(mag, mag * 0.3, 0.0);
+    }
+    else if (mode == 4)
+    {
+        result.rgb = vec3(texture(motionTex, uv).xy * 0.5 + 0.5, 0.0);
+    }
+    else if (mode == 5)
+    {
+        result.rgb = newColour;
+    }
+    else if (mode == 6)
+    {
+        result.rgb = vec3(variance * 10.0);
+    }
+    else if (mode == 7)
+    {
+        result.rgb = vec3(moments.x);
+    }
+    else if (mode == 8)
+    {
+        result.rgb = vec3(historyLength / 3.0); // scaled for visibility
+    }
+    else if (mode == 9)
+    {
+        result.rgb = vec3(texture(motionTex, uv).xy * 0.5 + 0.5, 0.0);
+    }
+    imageStore(inputImage, pixel, result);
+}

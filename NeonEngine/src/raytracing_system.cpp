@@ -173,8 +173,6 @@ void RayTracingSystem::handleResize(
     vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
   }
 }
-
-// Updated copyStorageImageToSwapChain function
 void RayTracingSystem::copyStorageImageToSwapChain(
     VkCommandBuffer commandBuffer,
     VkImage swapChainImage,
@@ -182,107 +180,89 @@ void RayTracingSystem::copyStorageImageToSwapChain(
     uint32_t height,
     uint32_t frameIndex) {
 
-  VkImageMemoryBarrier storageBarrier{};
-  storageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  storageBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-  storageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  storageBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  storageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-  storageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  storageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  storageBarrier.image = storageImage.image;
-  storageBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    // Wait for COMPUTE (not ray tracing) to finish writing
+    VkImageMemoryBarrier storageBarrier{};
+    storageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    storageBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    storageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    storageBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    storageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    storageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    storageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    storageBarrier.image = storageImage.image;
+    storageBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-  vkCmdPipelineBarrier(
-      commandBuffer,
-      VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-      VK_PIPELINE_STAGE_TRANSFER_BIT,
-      0,
-      0,
-      nullptr,
-      0,
-      nullptr,
-      1,
-      &storageBarrier);
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,  
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 0, nullptr,
+        1, &storageBarrier);
 
-  VkImageMemoryBarrier swapChainBarrierBefore{};
-  swapChainBarrierBefore.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  swapChainBarrierBefore.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  swapChainBarrierBefore.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  swapChainBarrierBefore.srcAccessMask = 0;
-  swapChainBarrierBefore.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  swapChainBarrierBefore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  swapChainBarrierBefore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  swapChainBarrierBefore.image = swapChainImage;
-  swapChainBarrierBefore.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    // Transition swapchain image to transfer dst
+    VkImageMemoryBarrier swapChainBarrierBefore{};
+    swapChainBarrierBefore.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    swapChainBarrierBefore.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    swapChainBarrierBefore.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swapChainBarrierBefore.srcAccessMask = 0;
+    swapChainBarrierBefore.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    swapChainBarrierBefore.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapChainBarrierBefore.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapChainBarrierBefore.image = swapChainImage;
+    swapChainBarrierBefore.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-  vkCmdPipelineBarrier(
-      commandBuffer,
-      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-      VK_PIPELINE_STAGE_TRANSFER_BIT,
-      0,
-      0,
-      nullptr,
-      0,
-      nullptr,
-      1,
-      &swapChainBarrierBefore);
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 0, nullptr,
+        1, &swapChainBarrierBefore);
 
-  VkImageCopy copyRegion{};
-  copyRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  copyRegion.srcOffset = {0, 0, 0};
-  copyRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  copyRegion.dstOffset = {0, 0, 0};
-  copyRegion.extent = {width, height, 1};
+    // Copy
+    VkImageCopy copyRegion{};
+    copyRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    copyRegion.srcOffset = { 0, 0, 0 };
+    copyRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    copyRegion.dstOffset = { 0, 0, 0 };
+    copyRegion.extent = { width, height, 1 };
 
-  vkCmdCopyImage(
-      commandBuffer,
-      storageImage.image,
-      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-      swapChainImage,
-      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-      1,
-      &copyRegion);
+    vkCmdCopyImage(
+        commandBuffer,
+        storageImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        swapChainImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &copyRegion);
 
-  storageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  storageBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-  storageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-  storageBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    // Restore storage image to GENERAL for next frame's ray tracing write
+    storageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    storageBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    storageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    storageBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 
-  vkCmdPipelineBarrier(
-      commandBuffer,
-      VK_PIPELINE_STAGE_TRANSFER_BIT,
-      VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-      0,
-      0,
-      nullptr,
-      0,
-      nullptr,
-      1,
-      &storageBarrier);
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, // next frame writes via RT
+        0, 0, nullptr, 0, nullptr,
+        1, &storageBarrier);
 
-  VkImageMemoryBarrier swapChainBarrierAfter{};
-  swapChainBarrierAfter.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-  swapChainBarrierAfter.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  swapChainBarrierAfter.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-  swapChainBarrierAfter.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  swapChainBarrierAfter.dstAccessMask = 0;
-  swapChainBarrierAfter.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  swapChainBarrierAfter.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  swapChainBarrierAfter.image = swapChainImage;
-  swapChainBarrierAfter.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    // Transition swapchain to present
+    VkImageMemoryBarrier swapChainBarrierAfter{};
+    swapChainBarrierAfter.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    swapChainBarrierAfter.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swapChainBarrierAfter.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    swapChainBarrierAfter.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    swapChainBarrierAfter.dstAccessMask = 0;
+    swapChainBarrierAfter.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapChainBarrierAfter.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapChainBarrierAfter.image = swapChainImage;
+    swapChainBarrierAfter.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-  vkCmdPipelineBarrier(
-      commandBuffer,
-      VK_PIPELINE_STAGE_TRANSFER_BIT,
-      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-      0,
-      0,
-      nullptr,
-      0,
-      nullptr,
-      1,
-      &swapChainBarrierAfter);
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0, 0, nullptr, 0, nullptr,
+        1, &swapChainBarrierAfter);
 }
 
 void RayTracingSystem::updateUniforms(

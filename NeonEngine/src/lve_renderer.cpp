@@ -74,6 +74,8 @@ VkCommandBuffer LveRenderer::beginFrame(std::function<void()> onRecreate) {
 
   if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
     throw std::runtime_error("failed to acquire swap chain image!");
+    if (onRecreate) onRecreate();
+
   }
 
   isFrameStarted = true;
@@ -154,5 +156,56 @@ void LveRenderer::endSwapChainRenderPass(VkCommandBuffer commandBuffer) {
       "Can't end render pass on command buffer from a different frame");
   vkCmdEndRenderPass(commandBuffer);
 }
+
+
+//only for rasterization pass in ray, but should work with more future stuff.
+void LveRenderer::beginRenderPass(VkCommandBuffer commandBuffer, VkRenderPass& renderpass, VkFramebuffer& frameBuffer, VkExtent2D extents) {
+    assert(isFrameStarted && "Can't call beginSwapChainRenderPass if frame is not in progress");
+    assert(
+        commandBuffer == getCurrentCommandBuffer() &&
+        "Can't begin render pass on command buffer from a different frame");
+
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = renderpass;
+    renderPassInfo.framebuffer = frameBuffer;
+
+    renderPassInfo.renderArea.offset = { 0, 0 };
+    renderPassInfo.renderArea.extent = extents; // should use same extents
+
+    std::array<VkClearValue, 8> clearValues{};
+    clearValues[0].color = { 0.0f, 0.0f, 0.0f, 0.0f };  // swapchain color
+    clearValues[1].color = { 0.0f, 0.0f, 0.0f, 0.0f,};             // depth
+    clearValues[2].color = { 0.0f, 0.0f, 0.0f, 0.0f };    
+    clearValues[3].color = { 0.0f, 0.0f, 0.0f, 0.0f };
+    clearValues[4].color = { 0.0f, 0.0f, 0.0f, 0.0f };
+    clearValues[5].color = { 0.0f, 0.0f, 0.0f, 0.0f };
+    clearValues[6].color = { 0.0f, 0.0f, 0.0f, 0.0f };
+    clearValues[7].depthStencil = { 1.0f, 0};
+    renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+    renderPassInfo.pClearValues = clearValues.data();
+
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(extents.width);
+    viewport.height = static_cast<float>(extents.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    VkRect2D scissor{ {0, 0}, extents };
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+}
+
+void LveRenderer::endRenderPass(VkCommandBuffer commandBuffer) {
+    assert(isFrameStarted && "Can't call endSwapChainRenderPass if frame is not in progress");
+    assert(
+        commandBuffer == getCurrentCommandBuffer() &&
+        "Can't end render pass on command buffer from a different frame");
+    vkCmdEndRenderPass(commandBuffer);
+}
+
 
 }  // namespace lve

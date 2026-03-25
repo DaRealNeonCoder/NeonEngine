@@ -44,6 +44,8 @@ class LveRenderer {
   void beginSwapChainRenderPass(VkCommandBuffer commandBuffer);
   void endSwapChainRenderPass(VkCommandBuffer commandBuffer);
 
+  void beginRenderPass(VkCommandBuffer commandBuffer, VkRenderPass& renderpass, VkFramebuffer& frameBuffer, VkExtent2D extents);
+  void endRenderPass(VkCommandBuffer commandBuffer);
  private:
   void createCommandBuffers();
   void freeCommandBuffers();

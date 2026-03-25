@@ -1,5 +1,5 @@
 #pragma once
-
+#include "raytracing_rast.hpp" // contains GBufferRenderTargets
 #include "lve_descriptors.hpp"
 #include "lve_device.hpp"
 #include "lve_game_object.hpp"
@@ -23,7 +23,8 @@ class RayTracingApp {
   RayTracingApp &operator=(const RayTracingApp &) = delete;
 
   void run();
-
+  void recreateGBuffer(VkRenderPass gBufferRenderPass, GBufferRenderTargets& gBuffers, VkFramebuffer& frameBuffer, RayTracingRast& rayTracingRast, VkExtent2D extents);
+  void transitionHistoryToGeneral(VkCommandBuffer cmd, VkImage image);
  private:
   void loadGameObjects();
 
@@ -34,5 +35,6 @@ class RayTracingApp {
   // note: order of declarations matters
   std::unique_ptr<LveDescriptorPool> globalPool{};
   LveGameObject::Map gameObjects;
+
 };
 }  // namespace lve

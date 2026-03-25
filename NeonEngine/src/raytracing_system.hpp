@@ -75,7 +75,7 @@ class RayTracingSystem {
       uint32_t width,
       uint32_t height,
       uint32_t frameIndex);
-
+  VkImage& getStorageImage() { return storageImage.image; };
   VkDescriptorImageInfo getStorageImageDescriptor(uint32_t frameIndex) const;
   VkAccelerationStructureKHR getTLAS() const;
   VkDescriptorBufferInfo getMaterialBufferDescriptor() const {

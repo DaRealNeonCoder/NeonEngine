@@ -66,6 +66,17 @@ struct alignas(16) WaterPhysUbo {
   float pad5;      // 4
 };
 
+
+struct RayUbo {
+	glm::mat4 projection{1.f};
+	glm::mat4 view{1.f};
+	glm::mat4 inverseProjection{1.f};
+	glm::mat4 inverseView{1.f};
+
+	glm::mat4 prevView{1.f};
+};
+
+
 struct FrameInfo {
   int frameIndex;
   float frameTime;
@@ -73,6 +84,15 @@ struct FrameInfo {
   LveCamera &camera;
   VkDescriptorSet globalDescriptorSet;
   LveGameObject::Map &gameObjects;
+};
+
+struct RayFrameInfo {
+	int frameIndex;
+	float frameTime;
+	VkCommandBuffer commandBuffer;
+	LveCamera& camera;
+	VkDescriptorSet globalDescriptorSet;
+	LveGameObject::Map& gameObjects;
 };
 
 struct WaterFrameInfo {

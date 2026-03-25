@@ -161,7 +161,7 @@ void WaterPhysics::BuildSpatialGrid() {
 }
 
 
-
+// no barriers?
 void WaterPhysics::RunAndReadback(WaterFrameInfo& frameInfo) {
 
     vkCmdBindPipeline(frameInfo.commandBuffer,

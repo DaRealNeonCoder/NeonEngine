@@ -20,20 +20,15 @@ layout(push_constant) uniform PushConstants {
     vec4 frameID;  
 } pc;
 
-
+//I should really be using separate ubos
 layout(set = 0, binding = 2, std140) uniform GlobalUbo {
     mat4 projection;
-    mat4 inverseProjection;
     mat4 view;
+    mat4 inverseProjection;
     mat4 inverseView;
 
-    vec4 ambientLightColor;
+    mat4 prevView;
 
-    PointLight pointLights[1];
-    vec4 numLights;
-
-    mat4 lightSpaceMatrix;
-    vec4 lightDir;
 } ubo;
 
 layout(location = 0) rayPayloadEXT RayPayload payload;
@@ -82,15 +77,5 @@ void main()
     }
     sum /= float(SPP);
     
-    vec3 finalColor;
-    if (pc.frameID.x == 0) {
-        finalColor = sum;
-     } 
-     else {
-        vec3 history = imageLoad(image, pixelCoord).xyz;
-        float alpha = 1.0 / (pc.frameID.x + 1.0);  // Weight for new sample
-        finalColor = mix(history, sum, alpha);
-    }
-    
-    imageStore(image, pixelCoord, vec4(finalColor, 1.0));
+    imageStore(image, pixelCoord, vec4(sum, 1.0));
 }

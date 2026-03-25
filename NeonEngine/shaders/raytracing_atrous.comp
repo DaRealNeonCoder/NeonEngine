@@ -1,0 +1,156 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D positionTex;
+layout(set = 0, binding = 1) uniform sampler2D normalTex;
+layout(set = 0, binding = 2) uniform sampler2D baryTex;
+layout(set = 0, binding = 3) uniform sampler2D motionTex;
+
+layout(set = 0, binding = 4, rgba8)   uniform image2D inputImage;          // FINAL OUTPUT
+layout(set = 0, binding = 5, rgba16f) uniform image2D historyColourImage;  // unused here
+layout(set = 0, binding = 6, rgba16f) uniform image2D historyDataImage;
+layout(set = 0, binding = 7, rgba16f) uniform image2D historyColourImage2; // SOURCE
+
+layout(push_constant) uniform Push {
+    uint iteration;
+} push;
+
+
+const float PHI_COLOR  = 4.0;
+const float PHI_NORMAL = 128.0;
+const float SIGMA_LUMA = 1.0;
+const float EPS = 1e-6;
+
+
+float luminance(vec3 c)
+{
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+
+float kernelWeight(int x, int y)
+{
+    int ax = abs(x);
+    int ay = abs(y);
+
+    float wx = (ax == 0) ? 6.0 :
+               (ax == 1) ? 4.0 :
+               (ax == 2) ? 1.0 : 0.0;
+
+    float wy = (ay == 0) ? 6.0 :
+               (ay == 1) ? 4.0 :
+               (ay == 2) ? 1.0 : 0.0;
+
+    return (wx * wy) / 256.0;
+}
+
+
+ivec2 clampPixel(ivec2 p, ivec2 size)
+{
+    return clamp(p, ivec2(0), size - 1);
+}
+
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size  = imageSize(historyColourImage2);
+
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+
+    int step = 1 << int(push.iteration);
+
+
+    vec3 centerColor = imageLoad(historyColourImage, pixel).rgb;
+    vec3 centerPos   = texelFetch(positionTex, pixel, 0).xyz;
+    vec3 centerNrm   = normalize(texelFetch(normalTex, pixel, 0).xyz);
+
+    vec4 centerData  = imageLoad(historyDataImage, pixel);
+
+    float centerLum = centerData.g;
+    float centerVar = max(centerData.a, 0.0);
+
+
+    vec3 sumColor = vec3(0.0);
+    float sumW = 0.0;
+
+    float sumVar = 0.0;
+    float sumWVar = 0.0;
+
+
+    for (int yy = -2; yy <= 2; yy++)
+    {
+        for (int xx = -2; xx <= 2; xx++)
+        {
+            ivec2 q = pixel + ivec2(xx, yy) * step;
+            q = clampPixel(q, size);
+
+
+            vec3 sampleColor = imageLoad(historyColourImage2, q).rgb;
+            vec3 samplePos   = texelFetch(positionTex, q, 0).xyz;
+            vec3 sampleNrm   = normalize(texelFetch(normalTex, q, 0).xyz);
+
+            vec4 sampleData  = imageLoad(historyDataImage, q);
+
+            float sampleLum = sampleData.g;
+            float sampleVar = max(sampleData.a, 0.0);
+
+
+            float wKernel = kernelWeight(xx, yy);
+
+
+            // normal weight
+            float wNormal =
+                pow(max(dot(centerNrm, sampleNrm), 0.0), PHI_NORMAL);
+
+
+            // depth weight
+            float dz = abs(centerPos.z - samplePos.z);
+            float denomZ = max(abs(centerPos.z), EPS) * float(step);
+
+            float wDepth = exp(-dz / denomZ);
+
+
+            // luminance weight
+            float denomL =
+                max(SIGMA_LUMA * sqrt(max(centerVar, 1e-10)), EPS);
+
+            float wLuma =
+                exp(-abs(centerLum - sampleLum) / denomL);
+
+
+            float w = wKernel * wNormal * wDepth * wLuma;
+
+
+            sumColor += sampleColor * w;
+            sumW += w;
+
+
+            float w2 = w * w;
+
+            sumVar += sampleVar * w2;
+            sumWVar += w2;
+        }
+    }
+
+
+    vec3 filteredColor = sumColor / max(sumW, EPS);
+    float filteredVar  = sumVar / max(sumWVar, EPS);
+
+
+    vec4 outData = vec4(
+        centerData.r,
+        centerData.g,
+        centerData.b,
+        filteredVar
+    );
+
+
+    imageStore(inputImage, pixel, vec4(filteredColor, 1.0));
+
+    // update variance for next iteration
+    imageStore(historyDataImage, pixel, outData);
+}
