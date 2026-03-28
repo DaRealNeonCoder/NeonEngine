@@ -48,8 +48,10 @@ struct RayTracingVertex {
 struct Material {
   glm::vec4 emission;
   glm::vec4 albedo;
-  glm::vec4 misc;//x = roughness, y = IOR(only for glass), z = material type (0 = normal, 67 = reflective), w = empty
+  glm::vec4 position;
+  glm::vec4 misc;//x = roughness, y = IOR(only for glass), z = material type (0 = normal, 67 = reflective), w = precomputed area for lights (NEE)
 };
+
 class RayTracingSystem {
  public:
   explicit RayTracingSystem(
@@ -87,6 +89,9 @@ class RayTracingSystem {
   VkDescriptorBufferInfo getIndexBufferDescriptor() const {
     return indexBuffer->descriptorInfo();
   }
+  VkDescriptorBufferInfo getLightBufferDescriptor() const {
+      return lightBuffer->descriptorInfo();
+  }
   void resetFrameId() { frameID = 0; }
  private:
   LveDevice& vulkanDevice;
@@ -118,6 +123,7 @@ class RayTracingSystem {
 
   std::unique_ptr<LveBuffer> vertexBuffer;
   std::unique_ptr<LveBuffer> indexBuffer;
+  std::unique_ptr<LveBuffer> lightBuffer;
   std::unique_ptr<LveBuffer> instanceBuffer;
 
   uint32_t indexCount{0};

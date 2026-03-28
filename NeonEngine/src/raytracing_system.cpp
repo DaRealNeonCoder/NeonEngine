@@ -113,7 +113,7 @@ void RayTracingSystem::render(FrameInfo& frameInfo) {
   VkStridedDeviceAddressRegionKHR miss{};
   miss.deviceAddress = getBufferDeviceAddress(missShaderBindingTable->getBuffer());
   miss.stride = handleSizeAligned;
-  miss.size = handleSizeAligned;
+  miss.size = handleSizeAligned * 2;
 
   VkStridedDeviceAddressRegionKHR hit{};
   hit.deviceAddress = getBufferDeviceAddress(hitShaderBindingTable->getBuffer());
@@ -173,6 +173,7 @@ void RayTracingSystem::handleResize(
     vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
   }
 }
+
 void RayTracingSystem::copyStorageImageToSwapChain(
     VkCommandBuffer commandBuffer,
     VkImage swapChainImage,
@@ -296,6 +297,7 @@ void RayTracingSystem::loadFunctionPointers() {
   vkCreateRayTracingPipelinesKHR = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(
       vkGetDeviceProcAddr(device, "vkCreateRayTracingPipelinesKHR"));
 }
+
 RayTracingScratchBuffer RayTracingSystem::createScratchBuffer(VkDeviceSize size) {
   RayTracingScratchBuffer scratch{};
 
@@ -490,6 +492,9 @@ void RayTracingSystem::createBottomLevelAccelerationStructure() {
   // Cleanup scratch
   deleteScratchBuffer(scratchBuffer);
 }
+
+
+
 void RayTracingSystem::createStorageImage(
     StorageImage& storageImage, uint32_t width, uint32_t height) {
   storageImage.width = width;
@@ -561,6 +566,8 @@ void RayTracingSystem::createStorageImage(
   vulkanDevice.endSingleTimeCommands(cmd);
 }
 
+
+
 /// New helper function to destroy a single storage image
 void RayTracingSystem::destroyStorageImage(StorageImage& storageImage) {
   vkDestroyImageView(device, storageImage.view, nullptr);
@@ -600,7 +607,8 @@ void RayTracingSystem::createMaterialBuffer() {
   dragonMat.misc.x = 1;
 
   Material notRoughMat{};
-  notRoughMat.emission = glm::vec4{2};
+  notRoughMat.emission = glm::vec4{100,100,100,0.4 * 0.4 * 3.1415927 * 4 };
+  notRoughMat.position = glm::vec4{0,-5.0f,0,0.4f};
   notRoughMat.albedo = glm::vec4{1};
   notRoughMat.misc.x = 1.f;
 
@@ -622,7 +630,6 @@ void RayTracingSystem::createMaterialBuffer() {
       roughMat2,
       roughMat,
   };
-
 
   materialBuffer = std::make_unique<LveBuffer>(
       vulkanDevice,
@@ -830,6 +837,22 @@ void RayTracingSystem::createRayTracingPipeline(VkDescriptorSetLayout globalSetL
     shaderGroups.push_back(group);
   }
 
+  // Shadow miss - index 2
+  shaderStages.push_back(LvePipeline::loadShaderCreateInfo(
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\shadow.rmiss.spv",
+      VK_SHADER_STAGE_MISS_BIT_KHR,
+      device));
+  {
+      VkRayTracingShaderGroupCreateInfoKHR group{};
+      group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+      group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+      group.generalShader = static_cast<uint32_t>(shaderStages.size() - 1);
+      group.closestHitShader = VK_SHADER_UNUSED_KHR;
+      group.anyHitShader = VK_SHADER_UNUSED_KHR;
+      group.intersectionShader = VK_SHADER_UNUSED_KHR;
+      shaderGroups.push_back(group);
+  }
+
   // Closest hit
   shaderStages.push_back(LvePipeline::loadShaderCreateInfo(
       "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\closesthit.rchit.spv",
@@ -909,11 +932,12 @@ void RayTracingSystem::createShaderBindingTable() {
   missShaderBindingTable = std::make_unique<LveBuffer>(
       vulkanDevice,
       handleSizeAligned,
-      1,
+      2,                  // <-- was 1
       VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   missShaderBindingTable->map();
 
+  
   hitShaderBindingTable = std::make_unique<LveBuffer>(
       vulkanDevice,
       handleSizeAligned,
@@ -922,16 +946,16 @@ void RayTracingSystem::createShaderBindingTable() {
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   hitShaderBindingTable->map();
 
-  // Offsets (in the packed shaderHandleStorage array)
+ // Offsets shift because hit group is now index 3
   const size_t raygenOffset = 0;
   const size_t missOffset = handleSizeAligned * 1;
-  const size_t hitOffset = handleSizeAligned * 2;
+  const size_t shadowOffset = handleSizeAligned * 2;
+  const size_t hitOffset = handleSizeAligned * 3;
 
-  // Write only the actual handle bytes (handleSize) into each aligned buffer region.
   // If your LveBuffer::writeToBuffer supports (data, size, offset) then prefer that.
   // Otherwise use distinct buffers like here.
   raygenShaderBindingTable->writeToBuffer(shaderHandleStorage.data() + raygenOffset, handleSize);
-  missShaderBindingTable->writeToBuffer(shaderHandleStorage.data() + missOffset, handleSize);
+  missShaderBindingTable->writeToBuffer(shaderHandleStorage.data() + missOffset, handleSize * 2);
   hitShaderBindingTable->writeToBuffer(shaderHandleStorage.data() + hitOffset, handleSize);
 
   // Optional sanity checks (print addresses)

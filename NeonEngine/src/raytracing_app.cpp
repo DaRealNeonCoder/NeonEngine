@@ -603,7 +603,7 @@ void RayTracingApp::run() {
         // pingPong is already flipped by renderCompute, so we know which set was
         // last used — the OPPOSITE set is the one whose binding 4 = storageImage.
         // We just feed them in the same alternating order so ATrous continues the chain.
-        constexpr uint32_t kAtrousIterations = 5;
+        constexpr uint32_t kAtrousIterations = 3;
         rayTracingRast.renderAtrous(
             commandBuffer,
             computeDescriptorSets[frameIndex],   // setA — binding 4 = storageImage
@@ -772,7 +772,7 @@ void RayTracingApp::loadGameObjects() {
   */
   std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
       lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\car.obj");
+      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
   auto obj = LveGameObject::createGameObject();
   obj.model = lveModel;
   obj.transform.translation = {0.f, -0.557f, 0.f};
@@ -783,13 +783,18 @@ void RayTracingApp::loadGameObjects() {
       lveDevice,
       "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
   
-    
+ std::shared_ptr<LveModel> lveModel2 = LveModel::createModelFromFile(
+     lveDevice,
+     "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\sphere.obj");
+ auto cube = LveGameObject::createGameObject();
+
     //ceiling
-    auto cube = LveGameObject::createGameObject();
-  cube.model = lveModel;
-  cube.transform.translation = {0.f, -1.5f, 0.f};
-  cube.transform.scale = {0.58f, 0.04f, 0.5f};
-  gameObjects.emplace(cube.getId(), std::move(cube));
+ cube.model = lveModel2;
+ cube.transform.translation = {0.f, -1.5f, 0.f};
+ cube.transform.scale = {0.4, 0.4, 0.4};
+    //gameObjects.emplace(cube.getId(), std::move(cube));
+  
+  
   //floor
   cube = LveGameObject::createGameObject();
   cube.model = lveModel;
