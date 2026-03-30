@@ -622,12 +622,13 @@ void RayTracingSystem::createMaterialBuffer() {
   roughMat2.albedo = glm::vec4{1, 0, 0, 1};
   roughMat2.misc.x = 1.f;
 
-  Material materials[6] = {
+  Material materials[7] = {
       dragonMat,
       notRoughMat,
       roughMat,
       roughMat1,
       roughMat2,
+      roughMat,
       roughMat,
   };
 

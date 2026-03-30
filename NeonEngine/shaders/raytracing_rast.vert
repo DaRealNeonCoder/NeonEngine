@@ -10,6 +10,8 @@ layout(location = 1) out vec3 fragPosWorld;
 layout(location = 2) out vec3 fragNormalWorld;
 layout(location = 3) out vec3 fragBarycentric;
 layout(location = 4) out vec2 fragUV;
+layout(location = 5) out vec4 fragClipPos;
+
 // Push constants for per-object transform
 layout(push_constant) uniform Push {
     mat4 modelMatrix;
@@ -40,4 +42,6 @@ void main() {
     fragBarycentric = barycentrics[gl_VertexIndex % 3];
 
     gl_Position = ubo.projection * ubo.view * worldPos;
+    fragClipPos = gl_Position;
+
 }

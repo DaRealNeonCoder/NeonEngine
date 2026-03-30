@@ -74,6 +74,9 @@ struct RayUbo {
 	glm::mat4 inverseView{1.f};
 
 	glm::mat4 prevView{1.f};
+
+	uint32_t width;
+	uint32_t height;
 };
 
 

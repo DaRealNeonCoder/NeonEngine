@@ -61,14 +61,14 @@ namespace lve {
         pipelineConfig.pipelineLayout = pipelineLayout;
 
         // 6 colour attachments: position, normal, barycentric, motion, historyColour, historyLength
-        static VkPipelineColorBlendAttachmentState blendAttachments[7];
-        for (int i = 0; i < 7; i++) {
+        static VkPipelineColorBlendAttachmentState blendAttachments[4];
+        for (int i = 0; i < 4; i++) {
             blendAttachments[i].colorWriteMask =
                 VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
             blendAttachments[i].blendEnable = VK_FALSE;
         }
-        pipelineConfig.colorBlendInfo.attachmentCount = 7;
+        pipelineConfig.colorBlendInfo.attachmentCount = 4;
         pipelineConfig.colorBlendInfo.pAttachments = blendAttachments;
 
         lvePipeline = std::make_unique<LvePipeline>(
@@ -119,9 +119,9 @@ namespace lve {
     VK_FORMAT_R32G32B32A32_SFLOAT, // position
     VK_FORMAT_R32G32B32A32_SFLOAT, // normal
     VK_FORMAT_R32G32B32A32_SFLOAT, // barycentric
-    VK_FORMAT_R16G16_SFLOAT,       // motion
+    VK_FORMAT_R32G32B32A32_SFLOAT, // motion
     VK_FORMAT_R16G16B16A16_SFLOAT, // historyColour
-    VK_FORMAT_R16G16B16A16_SFLOAT, // historyLength
+    VK_FORMAT_R32G32B32A32_SFLOAT, // historyLength
     VK_FORMAT_R16G16B16A16_SFLOAT, // historyColourImage2
         };
 
@@ -315,7 +315,6 @@ namespace lve {
 
 
 
-    bool pingPong = false;  
     void RayTracingRast::renderCompute(
         VkCommandBuffer commandBuffer,
         VkDescriptorSet descriptorSet,
@@ -350,6 +349,13 @@ namespace lve {
         uint32_t         numIterations)
     {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, atrousPipeline);
+
+        if (!pingPong)
+        {
+            VkDescriptorSet setC = setA;
+            setA = setB;
+            setB = setC;
+        }
 
         for (uint32_t i = 0; i < numIterations; ++i) {
             uint32_t stepLevel = i;
@@ -401,6 +407,17 @@ namespace lve {
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
         }
+        uint32_t copyStep = 98u;
+        vkCmdBindDescriptorSets(commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            atrousPipelineLayout,
+            0, 1, &setA,
+            0, nullptr);
+        vkCmdPushConstants(commandBuffer,
+            atrousPipelineLayout,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0, sizeof(uint32_t), &copyStep);
+        vkCmdDispatch(commandBuffer, groupsX, groupsY, 1);
     }
 
     void RayTracingRast::barrierStorageToCompute(VkCommandBuffer cmd, VkImage& storageImage) {

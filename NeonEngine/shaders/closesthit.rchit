@@ -2,7 +2,7 @@
 #extension GL_EXT_ray_tracing : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
-const int MAX_DEPTH = 6;
+const int MAX_DEPTH = 3;
 
 struct RayPayload {
     vec4 color;

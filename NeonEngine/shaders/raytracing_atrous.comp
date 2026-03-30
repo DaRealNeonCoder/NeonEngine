@@ -9,7 +9,7 @@ layout(set = 0, binding = 3) uniform sampler2D motionTex;
 
 layout(set = 0, binding = 4, rgba8)   uniform image2D inputImage;          // FINAL OUTPUT
 layout(set = 0, binding = 5, rgba16f) uniform image2D historyColourImage;  // unused
-layout(set = 0, binding = 6, rgba16f) uniform image2D historyDataImage;
+layout(set = 0, binding = 6, rgba32f) uniform image2D historyDataImage;
 layout(set = 0, binding = 7, rgba16f) uniform image2D historyColourImage2; // SOURCE
 
 layout(push_constant) uniform Push {
@@ -59,10 +59,16 @@ float normalWeightFast(vec3 n0, vec3 n1)
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size  = imageSize(historyColourImage2);
+    ivec2 size  = imageSize(historyColourImage);
 
     if (pixel.x >= size.x || pixel.y >= size.y)
         return;
+    
+    if (push.iteration == 98u) {
+        vec4 src = imageLoad(inputImage, pixel);
+        imageStore(historyColourImage2, pixel, src);
+        return;
+    }
 
     int step = 1 << int(push.iteration);
     float stepF = float(step);
@@ -108,7 +114,7 @@ void main()
 
             vec3 samplePos = texelFetch(positionTex, q, 0).xyz;
             vec4 sampleData = imageLoad(historyDataImage, q);
-            vec3 sampleColor = imageLoad(historyColourImage2, q).rgb;
+            vec3 sampleColor = imageLoad(historyColourImage, q).rgb;
 
             float sampleLum = sampleData.g;
             float sampleVar = max(sampleData.a, 0.0);
@@ -144,5 +150,7 @@ void main()
     );
 
     imageStore(inputImage, pixel, vec4(filteredColor, 1.0));
+
     imageStore(historyDataImage, pixel, outData);
+
 }

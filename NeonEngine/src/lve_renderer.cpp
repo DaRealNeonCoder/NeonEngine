@@ -173,15 +173,13 @@ void LveRenderer::beginRenderPass(VkCommandBuffer commandBuffer, VkRenderPass& r
     renderPassInfo.renderArea.offset = { 0, 0 };
     renderPassInfo.renderArea.extent = extents; // should use same extents
 
-    std::array<VkClearValue, 8> clearValues{};
-    clearValues[0].color = { 0.0f, 0.0f, 0.0f, 0.0f };  // swapchain color
-    clearValues[1].color = { 0.0f, 0.0f, 0.0f, 0.0f,};             // depth
-    clearValues[2].color = { 0.0f, 0.0f, 0.0f, 0.0f };    
-    clearValues[3].color = { 0.0f, 0.0f, 0.0f, 0.0f };
-    clearValues[4].color = { 0.0f, 0.0f, 0.0f, 0.0f };
-    clearValues[5].color = { 0.0f, 0.0f, 0.0f, 0.0f };
-    clearValues[6].color = { 0.0f, 0.0f, 0.0f, 0.0f };
-    clearValues[7].depthStencil = { 1.0f, 0};
+    std::array<VkClearValue, 5> clearValues{};
+    clearValues[0].color = { 0.0f, 0.0f, 0.0f, 0.0f }; // position
+    clearValues[1].color = { 0.0f, 0.0f, 0.0f, 0.0f }; // normal
+    clearValues[2].color = { 0.0f, 0.0f, 0.0f, 0.0f }; // barycentric
+    clearValues[3].color = { 0.0f, 0.0f, 0.0f, 0.0f }; // motion
+    clearValues[4].depthStencil = { 1.0f, 0 };                 // depth
+
     renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
     renderPassInfo.pClearValues = clearValues.data();
 

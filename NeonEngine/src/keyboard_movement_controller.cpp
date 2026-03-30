@@ -77,7 +77,68 @@ void KeyboardMovementController::moveInPlaneXZ(
   }
 }
 
+void KeyboardMovementController::moveWithMouseLook(
+    GLFWwindow* window, float dt, LveGameObject& gameObject,
+     bool& hasMoved) {
 
+    // --- Mouse look (only while right mouse button is held, like Unity) ---
+    if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+        double mouseX, mouseY;
+        glfwGetCursorPos(window, &mouseX, &mouseY);
+
+        if (firstMouse) {
+            lastMouseX = mouseX;
+            lastMouseY = mouseY;
+            firstMouse = false;
+        }
+
+        float deltaX = static_cast<float>(mouseX - lastMouseX);
+        float deltaY = static_cast<float>(mouseY - lastMouseY);
+        lastMouseX = mouseX;
+        lastMouseY = mouseY;
+
+        // mouseSpeed controls how sensitive mouse look feels
+        const float mouseSpeed = 0.002f;
+
+        if (std::abs(deltaX) > std::numeric_limits<float>::epsilon() ||
+            std::abs(deltaY) > std::numeric_limits<float>::epsilon()) {
+            gameObject.transform.rotation.y += deltaX * mouseSpeed;
+            gameObject.transform.rotation.x += -deltaY * mouseSpeed;  // not negated = standard (non-inverted)
+            hasMoved = true;
+        }
+    }
+    else {
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        firstMouse = true;  // reset so there's no jump when RMB is re-pressed
+    }
+
+    // Clamp pitch, wrap yaw — same as your existing code
+    gameObject.transform.rotation.x =
+        glm::clamp(gameObject.transform.rotation.x, -1.5f, 1.5f);
+    gameObject.transform.rotation.y =
+        glm::mod(gameObject.transform.rotation.y, glm::two_pi<float>());
+
+    // --- Keyboard movement (identical to your existing logic) ---
+    float yaw = gameObject.transform.rotation.y;
+    const glm::vec3 forwardDir{sin(yaw), 0.f, cos(yaw)};
+    const glm::vec3 rightDir{forwardDir.z, 0.f, -forwardDir.x};
+    const glm::vec3 upDir{0.f, -1.f, 0.f};
+
+    glm::vec3 moveDir{0.f};
+    if (glfwGetKey(window, keys.moveForward) == GLFW_PRESS) moveDir += forwardDir;
+    if (glfwGetKey(window, keys.moveBackward) == GLFW_PRESS) moveDir -= forwardDir;
+    if (glfwGetKey(window, keys.moveRight) == GLFW_PRESS) moveDir += rightDir;
+    if (glfwGetKey(window, keys.moveLeft) == GLFW_PRESS) moveDir -= rightDir;
+    if (glfwGetKey(window, keys.moveUp) == GLFW_PRESS) moveDir += upDir;
+    if (glfwGetKey(window, keys.moveDown) == GLFW_PRESS) moveDir -= upDir;
+
+    if (glm::dot(moveDir, moveDir) > std::numeric_limits<float>::epsilon()) {
+        gameObject.transform.translation += moveSpeed * dt * glm::normalize(moveDir);
+        hasMoved = true;
+    }
+}
 void KeyboardMovementController::editBoxDimensions(
     GLFWwindow* window, float dt, glm::vec4& boxDims, bool& hasMoved) {
   const float editSpeed = 2.0f;  // units per second

@@ -6,6 +6,7 @@ layout(location = 1) in vec3 fragPosWorld;
 layout(location = 2) in vec3 fragNormalWorld;
 layout(location = 3) in vec3 fragBarycentric;
 layout(location = 4) in vec2 fragUV;
+layout(location = 5) in vec4 fragClipPos;
 
 // Outputs (4 MRTs)
 layout(location = 0) out vec4 outPosition;    // xyz = world pos, w = triangle ID
@@ -28,7 +29,7 @@ void main() {
 
     vec4 currClip = ubo.projection * ubo.view * vec4(fragPosWorld, 1.0);
     vec2 currNDC  = currClip.xy / currClip.w;
-    vec2 currUV   = currNDC * 0.5 + 0.5;
+    vec2 currUV  = currNDC * 0.5 + 0.5;
 
     vec4 prevClip = ubo.projection * ubo.prevView * vec4(fragPosWorld, 1.0);
     vec2 prevNDC  = prevClip.xy / prevClip.w;

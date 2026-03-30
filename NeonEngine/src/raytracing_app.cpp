@@ -6,6 +6,7 @@
 #include "lve_frame_info.hpp"
 #include "raytracing_system.hpp"
 #include "raytracing_rast.hpp"
+#include <thread>
 
 // libs
 #define GLM_FORCE_RADIANS
@@ -147,23 +148,18 @@ void RayTracingApp::run() {
     }
     // ---- Create G-buffer render pass (6 MRTs + depth) ----
     VkRenderPass gBufferRenderPass{ VK_NULL_HANDLE };
-
+    // ---- Create G-buffer render pass (4 MRTs + depth) ----
     {
-        // 6 color + 1 depth = 7 total attachments
-        VkAttachmentDescription allAttachments[8]{};
+        VkAttachmentDescription allAttachments[5]{};
 
-        VkFormat gBufferFormats[7] = {
+        VkFormat gBufferFormats[4] = {
             VK_FORMAT_R32G32B32A32_SFLOAT, // position
             VK_FORMAT_R32G32B32A32_SFLOAT, // normal
             VK_FORMAT_R32G32B32A32_SFLOAT, // barycentric
-            VK_FORMAT_R16G16_SFLOAT,       // motion
-            VK_FORMAT_R16G16B16A16_SFLOAT, // historyColour
-            VK_FORMAT_R16G16B16A16_SFLOAT,          // historyLength
-            VK_FORMAT_R16G16B16A16_SFLOAT, // historyColour
+            VK_FORMAT_R32G32B32A32_SFLOAT,       // motion
         };
 
-        // Color attachments [0..5]
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 4; i++) {
             allAttachments[i].format = gBufferFormats[i];
             allAttachments[i].samples = VK_SAMPLE_COUNT_1_BIT;
             allAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -174,48 +170,33 @@ void RayTracingApp::run() {
             allAttachments[i].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
 
-        // historyColour and historyLength are storage images — need GENERAL layout
-        allAttachments[4].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
-        allAttachments[5].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
-        allAttachments[6].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+        // Depth
+        allAttachments[4].format = VK_FORMAT_D32_SFLOAT;
+        allAttachments[4].samples = VK_SAMPLE_COUNT_1_BIT;
+        allAttachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        allAttachments[4].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        allAttachments[4].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        allAttachments[4].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        allAttachments[4].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        allAttachments[4].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-
-        allAttachments[4].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
-        allAttachments[5].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
-        allAttachments[6].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        allAttachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        allAttachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        allAttachments[6].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-
-        // Depth attachment [6]
-        allAttachments[7].format = VK_FORMAT_D32_SFLOAT;
-        allAttachments[7].samples = VK_SAMPLE_COUNT_1_BIT;
-        allAttachments[7].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        allAttachments[7].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        allAttachments[7].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        allAttachments[7].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        allAttachments[7].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        allAttachments[7].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference colorAttachmentRefs[7]{};
-        for (int i = 0; i < 7; i++) {
-            colorAttachmentRefs[i].attachment = i;
-            colorAttachmentRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference colorRefs[4]{};
+        for (int i = 0; i < 4; i++) {
+            colorRefs[i].attachment = i;
+            colorRefs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
 
-        VkAttachmentReference depthAttachmentRef{};
-        depthAttachmentRef.attachment = 7;
-        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference depthRef{};
+        depthRef.attachment = 4;
+        depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         VkSubpassDescription subpass{};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 7;
-        subpass.pColorAttachments = colorAttachmentRefs;
-        subpass.pDepthStencilAttachment = &depthAttachmentRef;
+        subpass.colorAttachmentCount = 4;
+        subpass.pColorAttachments = colorRefs;
+        subpass.pDepthStencilAttachment = &depthRef;
 
         VkSubpassDependency dependencies[3]{};
-
         dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
         dependencies[0].dstSubpass = 0;
         dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -232,26 +213,14 @@ void RayTracingApp::run() {
 
         dependencies[2].srcSubpass = 0;
         dependencies[2].dstSubpass = VK_SUBPASS_EXTERNAL;
-
-        dependencies[2].srcStageMask =
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-        dependencies[2].dstStageMask =
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-
-        dependencies[2].srcAccessMask =
-            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-        dependencies[2].dstAccessMask =
-            VK_ACCESS_SHADER_READ_BIT |
-            VK_ACCESS_SHADER_WRITE_BIT;
-
-        dependencies[2].dependencyFlags = 0;
-
+        dependencies[2].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[2].dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        dependencies[2].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[2].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 
         VkRenderPassCreateInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        renderPassInfo.attachmentCount = 8;
+        renderPassInfo.attachmentCount = 5;
         renderPassInfo.pAttachments = allAttachments;
         renderPassInfo.subpassCount = 1;
         renderPassInfo.pSubpasses = &subpass;
@@ -262,6 +231,7 @@ void RayTracingApp::run() {
             throw std::runtime_error("failed to create G-buffer render pass!");
         }
     }
+
     // ---- Ray tracing raster system ----
     RayTracingRast rayTracingRast{
         lveDevice,
@@ -274,29 +244,23 @@ void RayTracingApp::run() {
     // Create the 4 G-buffer images via your existing method
     GBufferRenderTargets gBuffers = rayTracingRast.targets;
 
-       VkImageView attachments[8] = {
-        gBuffers.positionView,
-        gBuffers.normalView,
-        gBuffers.barycentricView,
-        gBuffers.motionView,
-        gBuffers.historyColorView,   // ADD
-        gBuffers.historyLengthView,  // ADD
-        gBuffers.historyColorView2,   // ADD
-        gBuffers.depthView,
+    VkImageView attachments[5] = {
+       gBuffers.positionView,
+       gBuffers.normalView,
+       gBuffers.barycentricView,
+       gBuffers.motionView,
+       gBuffers.depthView,
     };
-
-
-
-
 
     VkFramebufferCreateInfo fbInfo{};
     fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fbInfo.renderPass = gBufferRenderPass;
-    fbInfo.attachmentCount = 8;
+    fbInfo.attachmentCount = 5;
     fbInfo.pAttachments = attachments;
     fbInfo.width = lveRenderer.getSwapChainExtents().width;
     fbInfo.height = lveRenderer.getSwapChainExtents().height;
     fbInfo.layers = 1;
+
 
     VkFramebuffer gBufferFramebuffer;
     if (vkCreateFramebuffer(lveDevice.device(), &fbInfo, nullptr, &gBufferFramebuffer) != VK_SUCCESS) {
@@ -472,7 +436,7 @@ void RayTracingApp::run() {
                 .build(computeDescriptorSets[i]);
 
 
-            LveDescriptorWriter(*computeSetLayout, *globalPool)
+            LveDescriptorWriter(*computeSetLayout2, *globalPool)
                 .writeImage(0, &posInfo)
                 .writeImage(1, &normalInfo)
                 .writeImage(2, &baryInfo)
@@ -494,6 +458,8 @@ void RayTracingApp::run() {
 
     glm::mat4 prevView(0);
     bool Trip = false;
+    bool firstFrameDone = false;
+
     while (!lveWindow.shouldClose()) {
         glfwPollEvents();
 
@@ -516,7 +482,7 @@ void RayTracingApp::run() {
         }
 
         bool hasMoved = false;
-        cameraController.moveInPlaneXZ(lveWindow.getGLFWwindow(), frameTime, viewerObject, hasMoved);
+        cameraController.moveWithMouseLook(lveWindow.getGLFWwindow(), frameTime, viewerObject, hasMoved);
         camera.setViewYXZ(viewerObject.transform.translation, viewerObject.transform.rotation);
         camera.setPerspectiveProjection(glm::radians(50.f), lveRenderer.getAspectRatio(), 0.1f, 100.f);
 
@@ -539,13 +505,16 @@ void RayTracingApp::run() {
             ubo.inverseProjection = camera.getInverseProjection();
             ubo.view = camera.getView();
             ubo.inverseView = camera.getInverseView();
+            ubo.prevView = prevView; // use THIS frame's saved prev
+            ubo.height = lveRenderer.getSwapChainExtents().height;
+            ubo.width = lveRenderer.getSwapChainExtents().width;
 
-            ubo.prevView = prevView;
-
-            prevView = ubo.view;
-
+            std::this_thread::sleep_for(std::chrono::milliseconds(0));
             uboBuffers[frameIndex]->writeToBuffer(&ubo);
             uboBuffers[frameIndex]->flush();
+
+            prevView = ubo.view; // save for next time THIS frameIndex runs
+
 
             if (hasMoved) rayTracingSystem.resetFrameId();
             if (!Trip) {
@@ -634,6 +603,9 @@ void RayTracingApp::run() {
             lveRenderer.getSwapChainExtents().width,
             lveRenderer.getSwapChainExtents().height,
             frameIndex);
+
+
+
                     lveRenderer.endFrame([&]() {
                         rayTracingSystem.handleResize(lveRenderer.getSwapChainExtents().width,
                         lveRenderer.getSwapChainExtents().height,
@@ -644,8 +616,10 @@ void RayTracingApp::run() {
                     Trip = false;
 
                         });
+
                 }
             }
+
 
     vkDeviceWaitIdle(lveDevice.device());
 
@@ -658,8 +632,6 @@ void RayTracingApp::run() {
         << viewerObject.transform.translation.z << std::endl;
 }
 
-
-
 void RayTracingApp::recreateGBuffer(
     VkRenderPass gBufferRenderPass,
     GBufferRenderTargets& gBuffers,
@@ -668,54 +640,42 @@ void RayTracingApp::recreateGBuffer(
     VkExtent2D extents
 ) {
     std::cout << "REC CALLED" << std::endl << std::endl;
-    // Destroy old framebuffer
     if (frameBuffer != VK_NULL_HANDLE) {
         vkDestroyFramebuffer(lveDevice.device(), frameBuffer, nullptr);
         frameBuffer = VK_NULL_HANDLE;
     }
-
-    // Add the two new views + depth
     vkDestroyImageView(lveDevice.device(), gBuffers.positionView, nullptr);
     vkDestroyImageView(lveDevice.device(), gBuffers.normalView, nullptr);
     vkDestroyImageView(lveDevice.device(), gBuffers.barycentricView, nullptr);
     vkDestroyImageView(lveDevice.device(), gBuffers.motionView, nullptr);
-    vkDestroyImageView(lveDevice.device(), gBuffers.historyColorView, nullptr);   
-    vkDestroyImageView(lveDevice.device(), gBuffers.historyLengthView, nullptr);  
-    vkDestroyImageView(lveDevice.device(), gBuffers.historyColorView2, nullptr);  
-    vkDestroyImageView(lveDevice.device(), gBuffers.depthView, nullptr);          
+    vkDestroyImageView(lveDevice.device(), gBuffers.historyColorView, nullptr);
+    vkDestroyImageView(lveDevice.device(), gBuffers.historyLengthView, nullptr);
+    vkDestroyImageView(lveDevice.device(), gBuffers.historyColorView2, nullptr);
+    vkDestroyImageView(lveDevice.device(), gBuffers.depthView, nullptr);
 
     rayTracingRast.swapChainExtents = extents;
     rayTracingRast.createGBufferImages(lveDevice, gBuffers);
 
-    VkImageView attachments[8] = {
+    // Only 4 GBuffer attachments + depth — NO history images
+    VkImageView attachments[5] = {
         gBuffers.positionView,
         gBuffers.normalView,
         gBuffers.barycentricView,
         gBuffers.motionView,
-        gBuffers.historyColorView,   // ADD
-        gBuffers.historyLengthView,  // ADD
-        gBuffers.historyColorView2,   // ADD
-        gBuffers.depthView,          // ADD
+        gBuffers.depthView,
     };
-
     VkFramebufferCreateInfo fbInfo{};
     fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fbInfo.renderPass = gBufferRenderPass;
-    fbInfo.attachmentCount = 8;  // was 5
+    fbInfo.attachmentCount = 5;
     fbInfo.pAttachments = attachments;
     fbInfo.width = extents.width;
     fbInfo.height = extents.height;
     fbInfo.layers = 1;
-
-    if (vkCreateFramebuffer(
-        lveDevice.device(),
-        &fbInfo,
-        nullptr,
-        &frameBuffer) != VK_SUCCESS) {
+    if (vkCreateFramebuffer(lveDevice.device(), &fbInfo, nullptr, &frameBuffer) != VK_SUCCESS) {
         throw std::runtime_error("failed to create G-buffer framebuffer!");
     }
 }
-
 void RayTracingApp::transitionHistoryToGeneral(VkCommandBuffer cmd, VkImage image) {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -776,7 +736,7 @@ void RayTracingApp::loadGameObjects() {
   auto obj = LveGameObject::createGameObject();
   obj.model = lveModel;
   obj.transform.translation = {0.f, -0.557f, 0.f};
-  obj.transform.rotation = {0.f, glm::radians(-40.f), 0.f};
+  obj.transform.rotation = {0.f, glm::radians(-0.f), 0.f};//-40f
   obj.transform.scale = { 0.35f, 0.35f , 0.35f };
   gameObjects.emplace(obj.getId(), std::move(obj));
  lveModel = LveModel::createModelFromFile(
@@ -808,7 +768,7 @@ void RayTracingApp::loadGameObjects() {
   cube.transform.scale = {0.04f, 0.46f, 0.5f};
   gameObjects.emplace(cube.getId(), std::move(cube));
   //left wall
-    cube = LveGameObject::createGameObject();
+  cube = LveGameObject::createGameObject();
   cube.model = lveModel;
   cube.transform.translation = {-0.54f, -1.f, 0.f};
   cube.transform.scale = {0.04f, 0.46f, 0.5f};
@@ -821,6 +781,12 @@ void RayTracingApp::loadGameObjects() {
   cube.transform.scale = {0.5f, 0.5f, 0.04f};
   gameObjects.emplace(cube.getId(), std::move(cube));
 
+
+  cube = LveGameObject::createGameObject();
+  cube.model = lveModel;
+  cube.transform.translation = { 0.f, -1.f, 5.0f };
+  cube.transform.scale = { 5, 5, 0.04f };
+  gameObjects.emplace(cube.getId(), std::move(cube));
 }
 
 }  // namespace lve

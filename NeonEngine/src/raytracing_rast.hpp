@@ -40,6 +40,8 @@ namespace lve {
 
     class RayTracingRast {
     public:
+        bool pingPong = true;
+
         RayTracingRast(LveDevice& device, VkRenderPass pass,
             VkDescriptorSetLayout globalSetLayout, VkDescriptorSetLayout computeSetLayout, VkDescriptorSetLayout computeSetLayout2, VkExtent2D _swapChainExtents);
         ~RayTracingRast();
