@@ -161,10 +161,8 @@ void main() {
     const float INV_PI = 0.3183098861837907;
 
     payload.misc.y++;
-    payload.throughput *= vec4(mat.albedo.xyz, 1.0);
 
     vec3 newDirection = vec3(0);
-
 
     if (int(mat.misc.z) == 0) {
 
@@ -175,7 +173,6 @@ void main() {
                    gl_HitTEXT;
 
         offsetPos = worldPos + normal * 0.001;
-
 
         float r1 = random(payload.misc.x);
         float r2 = random(payload.misc.x);
@@ -196,37 +193,20 @@ void main() {
             normal * sqrt(1.0 - r1)
         );
 
-        vec3 specularDir =
-            reflect(
-                normalize(gl_WorldRayDirectionEXT),
-                normal
-            );
-
+        vec3 specularDir = reflect(normalize(gl_WorldRayDirectionEXT), normal);
         float rough = clamp(mat.misc.x, 0.0, 1.0);
+        newDirection = normalize(mix(specularDir, diffuseDir, rough));
 
-        newDirection =
-            normalize(
-                mix(specularDir, diffuseDir, rough)
-            );
-
-
-        Material lightMat =
-            materials.m[1];
-
+        // NEE — use throughput BEFORE albedo is applied
+        Material lightMat = materials.m[1];
         vec3 lightDir;
         float lightPDF;
 
-        vec3 Le =
-            sampleSphereLightMat(
-                lightMat,
-                offsetPos,
-                payload.misc.x,
-                lightDir,
-                lightPDF
-            );
+        vec3 Le = sampleSphereLightMat(
+            lightMat, offsetPos, payload.misc.x, lightDir, lightPDF
+        );
 
-        float cosTheta =
-            dot(normal, lightDir);
+        float cosTheta = dot(normal, lightDir);
 
         if (cosTheta > 0.0 && lightPDF > 0.0) {
 
@@ -243,26 +223,20 @@ void main() {
                 gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 0, 0, 1,
                 offsetPos, 0.001,
-                lightDir,
-                shadowDist,
-                1
+                lightDir, shadowDist, 1
             );
 
             if (shadowPayload > 0.5) {
+                vec3 brdf = mat.albedo.xyz * INV_PI;
 
-                vec3 brdf =
-                    mat.albedo.xyz * INV_PI;
-
-                vec3 direct =
-                    payload.throughput.xyz *
-                    brdf *
-                    Le *
-                    cosTheta /
-                    lightPDF;
-
-                payload.color.xyz += direct;
+                // throughput here is pre-albedo, so no double counting
+                payload.color.xyz +=
+                    payload.throughput.xyz * brdf * Le * cosTheta / lightPDF;
             }
         }
+
+        // Apply albedo AFTER NEE, for the indirect bounce
+        payload.throughput *= vec4(mat.albedo.xyz, 1.0);
 
         payload.misc.z = 0u;
     }

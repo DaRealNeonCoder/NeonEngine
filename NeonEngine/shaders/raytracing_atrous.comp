@@ -58,7 +58,6 @@ float normalWeightFast(vec3 n0, vec3 n1)
 
 void main()
 {
-return;
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size  = imageSize(historyColourImage);
 
@@ -78,10 +77,14 @@ return;
     vec3 centerNrm = texelFetch(normalTex, pixel, 0).xyz;
     vec4 centerData = imageLoad(historyDataImage, pixel);
 
-    // If your normal texture is already normalized, keep this off for speed.
-    // If not, uncomment this line.
-    // centerNrm = normalize(centerNrm);
-
+    // At the top of main(), after fetching centerPos:
+    bool isSky = (dot(centerPos, centerPos) < EPS); // pos=(0,0,0) means no hit
+    if (isSky) {
+        // Just pass through, don't filter
+        vec3 src = imageLoad(historyColourImage, pixel).rgb;
+        imageStore(inputImage, pixel, vec4(src, 1.0));
+        return;
+    }
     float centerLum = centerData.g;
     float centerVar  = max(centerData.a, 0.0);
 
