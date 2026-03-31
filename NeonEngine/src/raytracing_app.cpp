@@ -3,6 +3,7 @@
 #include "keyboard_movement_controller.hpp"
 #include "lve_buffer.hpp"
 #include "lve_camera.hpp"
+#include "lve_texture.hpp"
 #include "lve_frame_info.hpp"
 #include "raytracing_system.hpp"
 #include "raytracing_rast.hpp"
@@ -36,7 +37,7 @@ globalPool =
         .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 2)
         .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, LveSwapChain::MAX_FRAMES_IN_FLIGHT)
         .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 8)
-        .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 8)
+        .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 10)
 
         .setMaxSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT * 36)
         .build();
@@ -114,6 +115,7 @@ void RayTracingApp::run() {
         .addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
         .addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
         .addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
+        .addBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_ALL)
         .build();
 
 
@@ -288,6 +290,8 @@ void RayTracingApp::run() {
     std::vector<VkDescriptorSet> computeDescriptorSets2(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
 
+    LveTexture text = {};
+    LveTexture::AllocatedImage environmentLighting = text.loadHDR("C:\\Users\\ZyBros\\Downloads\\satara_night_4k.hdr", lveDevice);
 
 
     for (int i = 0; i < LveSwapChain::MAX_FRAMES_IN_FLIGHT; i++) {
@@ -307,6 +311,7 @@ void RayTracingApp::run() {
         auto materialBufferInfo = rayTracingSystem.getMaterialBufferDescriptor();
         auto vertexBufferInfo = rayTracingSystem.getVertexBufferDescriptor();
         auto indexBufferInfo = rayTracingSystem.getIndexBufferDescriptor();
+        VkDescriptorImageInfo textureImageInfo = text.getDescriptor(environmentLighting);
 
         LveDescriptorWriter(*rayTracingSetLayout, *globalPool)
             .writeAccelerationStructure(0, &asInfo, globalDescriptorSets[i])
@@ -315,6 +320,7 @@ void RayTracingApp::run() {
             .writeBuffer(3, &materialBufferInfo)
             .writeBuffer(4, &vertexBufferInfo)
             .writeBuffer(5, &indexBufferInfo)
+            .writeImage(6, &textureImageInfo)
             .build(globalDescriptorSets[i]);
 
 
@@ -377,7 +383,6 @@ void RayTracingApp::run() {
             .writeImage(5, &historyColourInfo2)
             .writeImage(6, &historyLengthInfo)
             .writeImage(7, &historyColourInfo)
-
             .build(computeDescriptorSets2[i]);
     }
 
@@ -422,7 +427,7 @@ void RayTracingApp::run() {
 
             VkDescriptorImageInfo outputInfo = rayTracingSystem.getStorageImageDescriptor(i);
             // outputInfo.imageLayout should be VK_IMAGE_LAYOUT_GENERAL
-
+            VkDescriptorImageInfo textureImageInfo = text.getDescriptor(environmentLighting);
             LveDescriptorWriter(*computeSetLayout, *globalPool)
                 .writeImage(0, &posInfo)
                 .writeImage(1, &normalInfo)
@@ -432,7 +437,6 @@ void RayTracingApp::run() {
                 .writeImage(5, &historyColourInfo)
                 .writeImage(6, &historyLengthInfo)
                 .writeImage(7, &historyColourInfo2)
-
                 .build(computeDescriptorSets[i]);
 
 

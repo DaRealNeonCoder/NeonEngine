@@ -211,22 +211,48 @@ VkDescriptorImageInfo LveTexture::getDescriptor(AllocatedImage& img) {
   return info;
 }
 
+
+LveTexture::AllocatedImage LveTexture::loadHDR(const char* file, LveDevice& lveDevice) {
+    int texWidth, texHeight, texChannels;
+    float* pixels = stbi_loadf(file, &texWidth, &texHeight, &texChannels, 4);
+
+    if (!pixels) {
+        std::cerr << "Failed to load HDR file " << file << std::endl;
+        return AllocatedImage{};
+    }
+
+    VkDeviceSize imageSize = static_cast<VkDeviceSize>(texWidth) * texHeight * 4 * sizeof(float);
+
+    LveBuffer stagingBuffer{
+        lveDevice,
+        imageSize,
+        1,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT };
+
+    stagingBuffer.map();
+    stagingBuffer.writeToBuffer(pixels);
+
+    stbi_image_free(pixels);
+
+    VkExtent3D extent{ static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1 };
+    VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    AllocatedImage image;
+    createImage(
+        lveDevice,
+        extent,
+        format,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        image);
+
+    uploadImageData(lveDevice, stagingBuffer.getBuffer(), image);
+
+    createImageView(lveDevice, image);
+    createSampler(lveDevice, image);
+
+    return image;
+}
+
 }  // namespace lve
 
-  /*VkDescriptorImageInfo descriptorInfo{};
-  descriptorInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  descriptorInfo.imageView = image.imageView;
-  descriptorInfo.sampler = image.sampler;
-
-  VkWriteDescriptorSet write{};
-  write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  write.dstSet = descriptorSet;
-  write.dstBinding = binding;
-  write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  write.descriptorCount = 1;
-  write.pImageInfo = &descriptorInfo;
-
-  vkUpdateDescriptorSets(device.device(), 1, &write, 0, nullptr);
-
-  descriptor logic that we'll use soon.
-  */
+ 

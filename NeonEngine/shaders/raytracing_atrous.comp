@@ -58,6 +58,7 @@ float normalWeightFast(vec3 n0, vec3 n1)
 
 void main()
 {
+return;
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size  = imageSize(historyColourImage);
 

@@ -22,7 +22,7 @@ class LveTexture {
   AllocatedImage memoryStuff(const char* file, LveDevice& lveDevice);
   void destroyImage(LveDevice& device, AllocatedImage& image);
   VkDescriptorImageInfo getDescriptor(AllocatedImage& img);
-
+  AllocatedImage loadHDR(const char* file, LveDevice& lveDevice);
  private:
   // Helpers (all defined in the .cpp)
   void createImage(
