@@ -1,73 +1,82 @@
 #version 450
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D positionTex;
 layout(set = 0, binding = 1) uniform sampler2D normalTex;
 layout(set = 0, binding = 2) uniform sampler2D baryTex;
 layout(set = 0, binding = 3) uniform sampler2D motionTex;
+
 layout(set = 0, binding = 4, rgba8)   uniform image2D inputImage;
 layout(set = 0, binding = 5, rgba16f) uniform image2D historyColourImage;
 layout(set = 0, binding = 6, rgba32f) uniform image2D historyDataImage;
 layout(set = 0, binding = 7, rgba16f) uniform image2D historyColourImage2;
 
-// historyDataImage layout:
-//   r = historyLength
-//   g = moment1 (avg luminance)
-//   b = moment2 (avg luminance^2)
-//   a = variance
-
 float CalculateLuminance(vec3 colour)
 {
     return 0.2126 * colour.r + 0.7152 * colour.g + 0.0722 * colour.b;
 }
-bool LoadPreviousData(ivec2 pixel, ivec2 size,
-                      out vec3 prevColour,
-                      out float historyLength,
-                      out vec2 prevMoments)
+
+vec3 RGBToYCoCg(vec3 rgb)
 {
-    // Defaults
+    float Y  =  0.25 * rgb.r + 0.5 * rgb.g + 0.25 * rgb.b;
+    float Co =  0.5  * rgb.r                - 0.5  * rgb.b;
+    float Cg = -0.25 * rgb.r + 0.5 * rgb.g - 0.25 * rgb.b;
+    return vec3(Y, Co, Cg);
+}
+
+vec3 YCoCgToRGB(vec3 ycocg)
+{
+    float Y  = ycocg.x;
+    float Co = ycocg.y;
+    float Cg = ycocg.z;
+    return vec3(Y + Co - Cg, Y + Cg, Y - Co - Cg);
+}
+bool LoadPreviousData(
+    ivec2 pixel,
+    ivec2 size,
+    out vec3 prevColour,
+    out float historyLength,
+    out vec2 prevMoments)
+{
     prevColour    = vec3(0.0);
     historyLength = 0.0;
     prevMoments   = vec2(0.0);
 
-    // --- Current pixel data ---
     vec3 currPos    = texelFetch(positionTex, pixel, 0).xyz;
     vec3 currNormal = texelFetch(normalTex,   pixel, 0).xyz;
+    int  currMeshID = int(round(texelFetch(normalTex, pixel, 0).w));
+    vec3 currBary   = texelFetch(baryTex, pixel, 0).xyz;
 
-    // Reject invalid current pixel (background / sky)
     if (dot(currPos, currPos) < 1e-6)
         return false;
 
-    // --- Motion reprojection ---
-    vec2 motion     = texelFetch(motionTex, pixel, 0).xy;
-    vec2 uv         = (vec2(pixel) + 0.5) / vec2(size);
-    vec2 prevUV     = uv - motion;
+    vec2 motion = texelFetch(motionTex, pixel, 0).xy;
+    vec2 uv     = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 prevUV = uv - motion;
 
-    // Bounds check (UV space)
     if (prevUV.x < 0.0 || prevUV.y < 0.0 ||
         prevUV.x > 1.0 || prevUV.y > 1.0)
         return false;
 
-    // Sub-pixel position for bilinear gather
     vec2  prevPos2D   = prevUV * vec2(size) - 0.5;
-    ivec2 prevPixel00 = ivec2(floor(prevPos2D));
+    ivec2 base        = ivec2(floor(prevPos2D));
     vec2  f           = fract(prevPos2D);
 
-    // 2x2 bilinear tap offsets
     const ivec2 offsets[4] = ivec2[4](
         ivec2(0, 0), ivec2(1, 0),
         ivec2(0, 1), ivec2(1, 1)
     );
+
     float weights[4];
     weights[0] = (1.0 - f.x) * (1.0 - f.y);
     weights[1] =        f.x  * (1.0 - f.y);
     weights[2] = (1.0 - f.x) *        f.y;
     weights[3] =        f.x  *        f.y;
 
-    // Relaxed thresholds
-    float dist           = length(currPos);
-    float posThreshold   = max(0.02 * max(dist, 1e-3), 0.01);
-    float normalThresh   = 0.7;
+    float dist         = length(currPos);
+    float posThreshold = max(0.01 * dist, 0.005); // tighter
+    float normalThresh = 0.9;                     // stricter
 
     vec3  accumColour  = vec3(0.0);
     float accumHist    = 0.0;
@@ -76,43 +85,50 @@ bool LoadPreviousData(ivec2 pixel, ivec2 size,
 
     for (int i = 0; i < 4; i++)
     {
-        ivec2 tap = prevPixel00 + offsets[i];
+        ivec2 tap = base + offsets[i];
 
-        // Per-tap bounds check
         if (tap.x < 0 || tap.y < 0 || tap.x >= size.x || tap.y >= size.y)
             continue;
 
-        vec3 tapPos    = texelFetch(positionTex, tap, 0).xyz;
-        vec3 tapNormal = texelFetch(normalTex,   tap, 0).xyz;
+        vec3  tapPos    = texelFetch(positionTex, tap, 0).xyz;
+        vec3  tapNormal = texelFetch(normalTex,   tap, 0).xyz;
+        int   tapMeshID = int(round(texelFetch(normalTex, tap, 0).w));
+        vec3  tapBary   = texelFetch(baryTex, tap, 0).xyz;
 
-        // Reject background taps
         if (dot(tapPos, tapPos) < 1e-6)
             continue;
 
-        // Position validity
-        float normalPosDiff = abs(dot(currPos - tapPos, currNormal));
-        float worldPosDiff  = length(currPos - tapPos);
-        if (normalPosDiff > posThreshold || worldPosDiff > posThreshold * 10.0)
+        if (currMeshID != tapMeshID)
             continue;
 
-        // Normal validity
+        float currDepth = length(currPos);
+        float tapDepth  = length(tapPos);
+        if (abs(currDepth - tapDepth) > 0.02 * currDepth)
+            continue;
+
+        float worldDiff = length(currPos - tapPos);
+        if (worldDiff > posThreshold)
+            continue;
+
         if (dot(currNormal, tapNormal) < normalThresh)
+            continue;
+
+        if (length(currBary - tapBary) > 0.2)
             continue;
 
         float w = weights[i];
 
-        accumColour  += imageLoad(historyColourImage, tap).rgb * w;
-        vec4 tapData  = imageLoad(historyDataImage, tap);
-        accumHist    += tapData.r * w;
+        accumColour += imageLoad(historyColourImage, tap).rgb * w;
+
+        vec4 tapData = imageLoad(historyDataImage, tap);
+        accumHist    += tapData.r  * w;
         accumMoments += tapData.gb * w;
         accumWeight  += w;
     }
 
-    // Require a minimum of blended weight to accept history
-    if (accumWeight < 0.01)
+    if (accumWeight < 0.5)
         return false;
 
-    // Normalise
     float invW    = 1.0 / accumWeight;
     prevColour    = accumColour  * invW;
     historyLength = accumHist    * invW;
@@ -126,15 +142,18 @@ void main()
 
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size  = imageSize(inputImage);
-    if (pixel.x >= size.x || pixel.y >= size.y) return;
 
-    vec2 uv            = (vec2(pixel) + 0.5) / vec2(size);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
     vec3 currentColour = imageLoad(inputImage, pixel).rgb;
 
     vec3  prevColour;
     float historyLength;
     vec2  prevMoments;
-    bool  couldLoad = LoadPreviousData(pixel, size, prevColour, historyLength, prevMoments);
+
+    bool couldLoad = LoadPreviousData(pixel, size, prevColour, historyLength, prevMoments);
 
     float alpha;
     if (couldLoad)
@@ -149,47 +168,21 @@ void main()
         historyLength = 1.0;
     }
 
-    // FIX 3: Neighbourhood AABB clamp.
-    // Even when reprojection passes all validity tests, the scene may have changed
-    // (e.g. a new object revealed behind a moving one). Clamping the previous colour
-    // into the AABB of the current 3x3 neighbourhood prevents stale history from
-    // ever being blended in when it is wildly outside the local colour range.
-    vec3 nMin = vec3(1e9);
-    vec3 nMax = vec3(-1e9);
-    for (int dy = -1; dy <= 1; dy++)
-    {
-        for (int dx = -1; dx <= 1; dx++)
-        {
-            ivec2 tap = pixel + ivec2(dx, dy);
-            tap = clamp(tap, ivec2(0), size - 1);
-            vec3 s = imageLoad(inputImage, tap).rgb;
-            nMin = min(nMin, s);
-            nMax = max(nMax, s);
-        }
-    }
-    vec3 clampedPrev = clamp(prevColour, nMin, nMax);
-
-    // Use clamped history only when we have valid history; fall back to raw current otherwise.
-    vec3 blendPrev = couldLoad ? clampedPrev : currentColour;
-
-    // Accumulate colour
+    vec3 blendPrev = couldLoad ? prevColour : currentColour;
     vec3 newColour = mix(blendPrev, currentColour, alpha);
 
-    // Accumulate moments
     vec2 moments;
     moments.x = CalculateLuminance(currentColour);
     moments.y = moments.x * moments.x;
     moments   = mix(prevMoments, moments, alpha);
 
-    // Derive variance
     float variance = max(0.0, moments.y - moments.x * moments.x);
 
-    // Write history
     imageStore(historyColourImage2, pixel, vec4(newColour, 1.0));
-    imageStore(historyDataImage,   pixel, vec4(historyLength, moments.x, moments.y, variance));
+    imageStore(historyDataImage,    pixel, vec4(historyLength, moments.x, moments.y, variance));
 
-    // Debug visualisation
     vec4 result = vec4(0.0, 0.0, 0.0, 1.0);
+
     if (mode == 0)
     {
         result.rgb = fract(texture(positionTex, uv).xyz * 0.1);
@@ -235,5 +228,20 @@ void main()
         ivec2 prevPixel = ivec2(prevUV * vec2(size) + 0.5);
         result.rgb = imageLoad(historyColourImage, prevPixel).rgb;
     }
+    else if (mode == 10)
+{
+    float rawID = texelFetch(normalTex, pixel, 0).w;
+    int id = int(round(rawID));
+
+    uint h = uint(id);
+    h ^= h * 0x27d4eb2du;
+    h ^= h >> 15;
+
+    float r = float((h >>  0) & 255u) / 255.0;
+    float g = float((h >>  8) & 255u) / 255.0;
+    float b = float((h >> 16) & 255u) / 255.0;
+
+    result.rgb = vec3(r, g, b);
+}
     imageStore(inputImage, pixel, result);
 }

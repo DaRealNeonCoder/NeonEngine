@@ -13,6 +13,7 @@ namespace lve {
     struct SimplePushConstantData {
         glm::mat4 modelMatrix{1.f};
         glm::mat4 normalMatrix{1.f};
+        int meshID;
     };
 
     struct GBufferRenderTargets {
@@ -40,7 +41,7 @@ namespace lve {
 
     class RayTracingRast {
     public:
-        bool pingPong = true;
+        bool pingPong = false;
 
         RayTracingRast(LveDevice& device, VkRenderPass pass,
             VkDescriptorSetLayout globalSetLayout, VkDescriptorSetLayout computeSetLayout, VkDescriptorSetLayout computeSetLayout2, VkExtent2D _swapChainExtents);

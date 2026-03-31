@@ -291,7 +291,7 @@ void RayTracingApp::run() {
 
 
     LveTexture text = {};
-    LveTexture::AllocatedImage environmentLighting = text.loadHDR("C:\\Users\\ZyBros\\Downloads\\satara_night_4k.hdr", lveDevice);
+    LveTexture::AllocatedImage environmentLighting = text.loadHDR("C:\\Users\\ZyBros\\Downloads\\qwantani_dusk_2_puresky_4k.hdr", lveDevice);
 
 
     for (int i = 0; i < LveSwapChain::MAX_FRAMES_IN_FLIGHT; i++) {
@@ -489,8 +489,6 @@ void RayTracingApp::run() {
         cameraController.moveWithMouseLook(lveWindow.getGLFWwindow(), frameTime, viewerObject, hasMoved);
         camera.setViewYXZ(viewerObject.transform.translation, viewerObject.transform.rotation);
         camera.setPerspectiveProjection(glm::radians(50.f), lveRenderer.getAspectRatio(), 0.1f, 100.f);
-
-
 
         if (auto commandBuffer = lveRenderer.beginFrame([&]() {
             rayTracingSystem.handleResize(lveRenderer.getSwapChainExtents().width,

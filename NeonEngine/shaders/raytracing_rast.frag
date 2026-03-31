@@ -22,6 +22,13 @@ layout(set = 0, binding = 0, std140) uniform GlobalUbo {
     mat4 prevView;
 } ubo;
 
+
+layout(push_constant) uniform PushConstants {
+    mat4 modelMatrix;
+    mat4 normalMatrix;
+    int meshID;
+} push;
+
 void main() {
     outPosition    = vec4(fragPosWorld, 1.0);
     outNormal      = vec4(normalize(fragNormalWorld), 0.0);
@@ -42,4 +49,6 @@ void main() {
     outMotion.xy = motionVector;
     outMotion.z  = viewZ;
     outMotion.w  = 0.0;
+
+    outNormal.w      = push.meshID;
 }

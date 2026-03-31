@@ -607,7 +607,7 @@ void RayTracingSystem::createMaterialBuffer() {
   dragonMat.misc.x = 1;
 
   Material notRoughMat{};
-  notRoughMat.emission = glm::vec4{100,100,100,0.4 * 0.4 * 3.1415927 * 4 };
+  notRoughMat.emission = glm::vec4{1,1,1,0.4 * 0.4 * 3.1415927 * 4 };
   notRoughMat.position = glm::vec4{0,-5.0f,0,0.4f};
   notRoughMat.albedo = glm::vec4{1};
   notRoughMat.misc.x = 1.f;

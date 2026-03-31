@@ -92,7 +92,7 @@ namespace lve {
             &frameInfo.globalDescriptorSet,
             0, nullptr
         );
-
+        int x = 0;
         for (auto& kv : frameInfo.gameObjects) {
             auto& obj = kv.second;
             if (!obj.model) continue;
@@ -100,7 +100,8 @@ namespace lve {
             SimplePushConstantData push{};
             push.modelMatrix = obj.transform.mat4();
             push.normalMatrix = obj.transform.normalMatrix();
-
+            push.meshID = x;
+            x++;
             vkCmdPushConstants(
                 cmd,
                 pipelineLayout,
@@ -247,15 +248,21 @@ namespace lve {
     }
 
     void RayTracingRast::CreateComputePipelineLayout(VkDescriptorSetLayout setLayout) {
+        VkPushConstantRange pushRange{};
+        pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pushRange.offset = 0;
+        pushRange.size = sizeof(uint32_t);
+
         VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         layoutInfo.setLayoutCount = 1;
         layoutInfo.pSetLayouts = &setLayout;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &pushRange;
 
         if (vkCreatePipelineLayout(lveDevice.device(), &layoutInfo, nullptr, &computePipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create compute pipeline layout");
         }
     }
-
     void RayTracingRast::CreateComputePipeline() {
         computeShaderModule = LvePipeline::loadShaderModule(
             "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\raytracing_pp.comp.spv",
