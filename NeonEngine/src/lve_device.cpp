@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <vulkan.h>
 
+// TODO: clean this up
 namespace lve {
 
 // local callback functions
@@ -145,6 +146,7 @@ void LveDevice::pickPhysicalDevice() {
   vkGetPhysicalDeviceProperties(physicalDevice, &properties);
   std::cout << "physical device: " << properties.deviceName << std::endl;
 }
+
 void LveDevice::createLogicalDevice() {
   QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
   // ----------------------------
@@ -166,28 +168,35 @@ void LveDevice::createLogicalDevice() {
   // Features Chain - USE VkPhysicalDeviceFeatures2
   // ----------------------------
   VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
-  bufferDeviceAddressFeatures.sType =
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+  bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
   bufferDeviceAddressFeatures.bufferDeviceAddress = VK_TRUE;
+  // pNext = nullptr (end of chain)
 
   VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{};
-  rayTracingPipelineFeatures.sType =
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+  rayTracingPipelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
   rayTracingPipelineFeatures.rayTracingPipeline = VK_TRUE;
   rayTracingPipelineFeatures.pNext = &bufferDeviceAddressFeatures;
 
   VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{};
-  accelerationStructureFeatures.sType =
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+  accelerationStructureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
   accelerationStructureFeatures.accelerationStructure = VK_TRUE;
   accelerationStructureFeatures.pNext = &rayTracingPipelineFeatures;
+
+  VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{};
+  descriptorIndexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
+  descriptorIndexingFeatures.descriptorBindingVariableDescriptorCount = VK_TRUE;
+  descriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
+  descriptorIndexingFeatures.pNext = &accelerationStructureFeatures;  
 
   VkPhysicalDeviceFeatures2 deviceFeatures2{};
   deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
   deviceFeatures2.features.samplerAnisotropy = VK_TRUE;
   deviceFeatures2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
-  deviceFeatures2.features.shaderStorageImageReadWithoutFormat = VK_TRUE;  
-  deviceFeatures2.pNext = &accelerationStructureFeatures;
+  deviceFeatures2.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
+  deviceFeatures2.pNext = &descriptorIndexingFeatures; 
+
+
 
   VkDeviceCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -212,6 +221,8 @@ void LveDevice::createLogicalDevice() {
   vkGetDeviceQueue(device_, indices.graphicsFamily, 0, &graphicsQueue_);
   vkGetDeviceQueue(device_, indices.presentFamily, 0, &presentQueue_);
 }
+
+
 void LveDevice::createCommandPool() {
   QueueFamilyIndices queueFamilyIndices = findPhysicalQueueFamilies();
 

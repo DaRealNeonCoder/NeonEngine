@@ -24,33 +24,66 @@ LveDescriptorSetLayout::Builder &LveDescriptorSetLayout::Builder::addBinding(
   return *this;
 }
 
+LveDescriptorSetLayout::Builder& LveDescriptorSetLayout::Builder::addBindlessBinding(
+    uint32_t binding, VkDescriptorType descriptorType,
+    VkShaderStageFlags stageFlags, uint32_t maxCount) {
+    assert(bindings.count(binding) == 0 && "Binding already in use");
+
+    VkDescriptorSetLayoutBinding layoutBinding{};
+    layoutBinding.binding = binding;
+    layoutBinding.descriptorType = descriptorType;
+    layoutBinding.descriptorCount = maxCount;
+    layoutBinding.stageFlags = stageFlags;
+    bindings[binding] = layoutBinding;
+
+    bindingFlags[binding] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+        VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+    return *this;
+}
+
 std::unique_ptr<LveDescriptorSetLayout> LveDescriptorSetLayout::Builder::build() const {
-  return std::make_unique<LveDescriptorSetLayout>(lveDevice, bindings);
+  return std::make_unique<LveDescriptorSetLayout>(lveDevice, bindings, bindingFlags);
 }
-
 // *************** Descriptor Set Layout *********************
-
+// .cpp
 LveDescriptorSetLayout::LveDescriptorSetLayout(
-    LveDevice &lveDevice, std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> bindings)
-    : lveDevice{lveDevice}, bindings{bindings} {
-  std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings{};
-  for (auto kv : bindings) {
-    setLayoutBindings.push_back(kv.second);
-  }
+    LveDevice& lveDevice,
+    std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> bindings,
+    std::unordered_map<uint32_t, VkDescriptorBindingFlags> bindingFlags)
+    : lveDevice{ lveDevice }, bindings{ bindings } {
 
-  VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
-  descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  descriptorSetLayoutInfo.bindingCount = static_cast<uint32_t>(setLayoutBindings.size());
-  descriptorSetLayoutInfo.pBindings = setLayoutBindings.data();
+    std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings{};
+    for (const auto kv : bindings) setLayoutBindings.push_back(kv.second);
 
-  if (vkCreateDescriptorSetLayout(
-          lveDevice.device(),
-          &descriptorSetLayoutInfo,
-          nullptr,
-          &descriptorSetLayout) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create descriptor set layout!");
-  }
+    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
+    descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descriptorSetLayoutInfo.bindingCount = static_cast<uint32_t>(setLayoutBindings.size());
+    descriptorSetLayoutInfo.pBindings = setLayoutBindings.data();
+
+    // Only attach flags info if any bindless bindings were registered
+    std::vector<VkDescriptorBindingFlags> flags;
+    VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{};
+
+    if (!bindingFlags.empty()) {
+        // Must be one entry per binding, in the same order as setLayoutBindings
+        flags.resize(setLayoutBindings.size(), 0);
+        for (size_t i = 0; i < setLayoutBindings.size(); i++) {
+            uint32_t b = setLayoutBindings[i].binding;
+            if (bindingFlags.count(b)) flags[i] = bindingFlags.at(b);
+        }
+
+        flagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+        flagsInfo.bindingCount = static_cast<uint32_t>(flags.size());
+        flagsInfo.pBindingFlags = flags.data();
+        descriptorSetLayoutInfo.pNext = &flagsInfo;
+    }
+
+    if (vkCreateDescriptorSetLayout(lveDevice.device(), &descriptorSetLayoutInfo,
+        nullptr, &descriptorSetLayout) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create descriptor set layout!");
+    }
 }
+
 
 LveDescriptorSetLayout::~LveDescriptorSetLayout() {
   vkDestroyDescriptorSetLayout(lveDevice.device(), descriptorSetLayout, nullptr);
@@ -119,6 +152,30 @@ bool LveDescriptorPool::allocateDescriptor(
   return true;
 }
 
+bool LveDescriptorPool::allocateDescriptor(
+    const VkDescriptorSetLayout descriptorSetLayout,
+    VkDescriptorSet& descriptor,
+    uint32_t variableCount
+) const {
+
+    VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
+    countInfo.sType =
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+    countInfo.descriptorSetCount = 1;
+    countInfo.pDescriptorCounts = &variableCount;
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.pNext = &countInfo; 
+    allocInfo.descriptorPool = descriptorPool;
+    allocInfo.pSetLayouts = &descriptorSetLayout;
+    allocInfo.descriptorSetCount = 1;
+
+    if (vkAllocateDescriptorSets(lveDevice.device(), &allocInfo, &descriptor) != VK_SUCCESS) {
+        return false;
+    }
+    return true;
+}
 void LveDescriptorPool::freeDescriptors(std::vector<VkDescriptorSet> &descriptors) const {
   vkFreeDescriptorSets(
       lveDevice.device(),
@@ -176,7 +233,21 @@ LveDescriptorWriter &LveDescriptorWriter::writeImage(
   writes.push_back(write);
   return *this;
 }
+LveDescriptorWriter& LveDescriptorWriter::writeImageArray(
+    uint32_t binding, std::vector<VkDescriptorImageInfo>& imageInfos) {
+    assert(setLayout.bindings.count(binding) == 1 && "Layout does not contain specified binding");
 
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.dstBinding = binding;
+    write.dstArrayElement = 0;
+    write.descriptorCount = static_cast<uint32_t>(imageInfos.size());
+    write.pImageInfo = imageInfos.data();
+
+    writes.push_back(write);
+    return *this;
+}
 LveDescriptorWriter &LveDescriptorWriter::writeAccelerationStructure(
     uint32_t binding, VkWriteDescriptorSetAccelerationStructureKHR *asInfo, VkDescriptorSet &set) {
   assert(setLayout.bindings.count(binding) == 1 && "Layout does not contain specified binding");
@@ -204,7 +275,8 @@ LveDescriptorWriter &LveDescriptorWriter::writeAccelerationStructure(
 }
 
 bool LveDescriptorWriter::build(VkDescriptorSet &set) {
-  bool success = pool.allocateDescriptor(setLayout.getDescriptorSetLayout(), set);
+  bool success = pool.allocateDescriptor(setLayout.getDescriptorSetLayout(), set, 10);// 10 = number of descriptors for bindless bindings (arrays of textures for example)
+
   if (!success) {
     return false;
   }

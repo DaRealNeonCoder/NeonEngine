@@ -22,6 +22,7 @@ RayTracingSystem::RayTracingSystem(
     VkDescriptorSetLayout globalSetLayout, 
     std::vector<RayTracingVertex> allVertex,
     std::vector<uint32_t> allIndicies,
+    std::vector<LveMaterial> allMaterials,
     uint32_t width,
     uint32_t height)
     : vulkanDevice{device3}, device{device3.device()} {
@@ -53,7 +54,7 @@ RayTracingSystem::RayTracingSystem(
 
   createStorageImage(storageImage, width, height);
 
-  createMaterialBuffer();
+  createMaterialBuffer(allMaterials);
   createBottomLevelAccelerationStructure();
   createTopLevelAccelerationStructure();
   createRayTracingPipeline(globalSetLayout);
@@ -595,52 +596,70 @@ uint64_t RayTracingSystem::getBufferDeviceAddress(VkBuffer buffer) {
   return vkGetBufferDeviceAddressKHR(device, &bufferDeviceAI);
 }
 
-void RayTracingSystem::createMaterialBuffer() {
-  Material roughMat{};
-  roughMat.emission = glm::vec4{0};
-  roughMat.albedo = glm::vec4{1, 1, 1, 1};
-  roughMat.misc.x = 1.f;
+void RayTracingSystem::createMaterialBuffer(std::vector<LveMaterial> materials) {
 
-  Material dragonMat{};
-  dragonMat.emission = glm::vec4{0};
-  dragonMat.albedo = glm::vec4{1, 1, 1, 1};
-  dragonMat.misc.x = 1;
 
-  Material notRoughMat{};
-  notRoughMat.emission = glm::vec4{1,1,1,0.4 * 0.4 * 3.1415927 * 4 };
-  notRoughMat.position = glm::vec4{0,-5.0f,0,0.4f};
-  notRoughMat.albedo = glm::vec4{1};
-  notRoughMat.misc.x = 1.f;
+    std::vector<RayTracingMaterial> materialsFinal;
+    RayTracingMaterial notRoughMat{};
+    notRoughMat.emission = glm::vec4{ 10,10,10,0.4 * 0.4 * 3.1415927 * 4 };
+    notRoughMat.position = glm::vec4{ 0,-10.0f,0,0.4f };
+    notRoughMat.albedo = glm::vec4{ 1 };
+    notRoughMat.misc.x = 0.5f;
 
-  Material roughMat1{};
-  roughMat1.emission = glm::vec4{0};
-  roughMat1.albedo = glm::vec4{0, 1, 0, 1};
-  roughMat1.misc.x = 1.f;
+    materialsFinal.push_back(notRoughMat);
+    for (size_t i = 0; i < materials.size(); i++)
+    {
+        RayTracingMaterial mat{};
+        mat.misc.x = 1.f;
+        mat.misc.z = materials[i].type;
+        mat.albedo = materials[i].albedo;
+        //mat.albedo = glm::vec4(1,0,0,1);
 
-  Material roughMat2{};
-  roughMat2.emission = glm::vec4{0};
-  roughMat2.albedo = glm::vec4{1, 0, 0, 1};
-  roughMat2.misc.x = 1.f;
+        materialsFinal.push_back(mat);
+    }
+   
+    for (size_t i = 0; i < materialsFinal.size(); i++)
+    {
+        const RayTracingMaterial& m = materialsFinal[i];
 
-  Material materials[7] = {
-      dragonMat,
-      notRoughMat,
-      roughMat,
-      roughMat1,
-      roughMat2,
-      roughMat,
-      roughMat,
-  };
+        std::cout << "Material [" << i << "]\n";
 
-  materialBuffer = std::make_unique<LveBuffer>(
-      vulkanDevice,
-      sizeof(Material),
-      static_cast<uint32_t>(sizeof(materials) / sizeof(Material)),
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        std::cout << "  emission : ("
+            << m.emission.x << ", "
+            << m.emission.y << ", "
+            << m.emission.z << ", "
+            << m.emission.w << ")\n";
+
+        std::cout << "  albedo   : ("
+            << m.albedo.x << ", "
+            << m.albedo.y << ", "
+            << m.albedo.z << ", "
+            << m.albedo.w << ")\n";
+
+        std::cout << "  position : ("
+            << m.position.x << ", "
+            << m.position.y << ", "
+            << m.position.z << ", "
+            << m.position.w << ")\n";
+
+        std::cout << "  misc     : ("
+            << m.misc.x << ", "
+            << m.misc.y << ", "
+            << m.misc.z << ", "
+            << m.misc.w << ")\n";
+
+        std::cout << "-------------------------------------\n";
+    }
+
+    materialBuffer = std::make_unique<LveBuffer>(
+        vulkanDevice,
+        sizeof(RayTracingMaterial),
+        static_cast<uint32_t>(materialsFinal.size()),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
   materialBuffer->map();
-  materialBuffer->writeToBuffer((void*)materials);
+  materialBuffer->writeToBuffer(materialsFinal.data());
 }
 
 void RayTracingSystem::createTopLevelAccelerationStructure() {

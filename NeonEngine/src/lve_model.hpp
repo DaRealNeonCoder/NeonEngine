@@ -10,7 +10,15 @@
 #include <vector>
 
 namespace lve {
+    struct LveMaterial {
+        glm::vec4 albedo{1.f, 1.f, 1.f, 1.f};
+        glm::vec4 emission{0.f, 0.f, 0.f, 0.f};
+        std::string albedoMap{};
+        uint32_t type{ 0 };
+    };
+
 class LveModel {
+
  public:
   struct Vertex {
     glm::vec3 position{};
@@ -41,7 +49,12 @@ class LveModel {
 
   void bind(VkCommandBuffer commandBuffer);
   void draw(VkCommandBuffer commandBuffer);
-
+  void setMaterial(LveMaterial _material) {
+      material = _material;
+  }
+  LveMaterial getMaterial() {
+      return material;
+  }
   const std::vector<Vertex> &getVertices() const { return vertices; }
   const std::vector<uint32_t> &getIndices() const { return indices; }
 
@@ -57,6 +70,7 @@ class LveModel {
   bool hasIndexBuffer = false;
   std::unique_ptr<LveBuffer> indexBuffer;
   uint32_t indexCount;
+  LveMaterial material;
 
   std::vector<Vertex> vertices;  
   std::vector<uint32_t> indices;  

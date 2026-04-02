@@ -20,14 +20,19 @@ hitAttributeEXT vec2 attribs;
 struct Material {
     vec4 emission;
     vec4 albedo;
-    vec4 position;
+    vec4 position;// position of light, if light. hardcoded for now.
     vec4 misc;
 };
 
-struct Vertex {
+struct RayTracingVertex {
     vec4 pos;
     vec4 normal;
+    vec4 uv;
     uint materialIndex;
+    uint pad1;
+    uint pad2; 
+    uint pad3; 
+    
 };
 
 layout(set = 0, binding = 3) readonly buffer MaterialBuffer {
@@ -35,13 +40,14 @@ layout(set = 0, binding = 3) readonly buffer MaterialBuffer {
 } materials;
 
 layout(set = 0, binding = 4) readonly buffer VertexBuffer {
-    Vertex v[];
+    RayTracingVertex v[];
 } vertices;
 
 layout(set = 0, binding = 5) readonly buffer IndexBuffer {
     uint i[];
 } indices;
 
+layout(set = 0, binding = 6) uniform sampler2D textures[];  // unbounded array
 
 
 float random(inout uint seed) {
@@ -99,7 +105,7 @@ vec3 sampleSphereLightMat(
     return light.emission.xyz;
 }
 
-
+// mat types (mat.misc.z) : glass = 67, normal diffuse = 0, texture = 2
 void main() {
 
     vec3 barycentrics = vec3(
@@ -114,9 +120,9 @@ void main() {
         indices.i[3 * gl_PrimitiveID + 2]
     );
 
-    Vertex v0 = vertices.v[index.x];
-    Vertex v1 = vertices.v[index.y];
-    Vertex v2 = vertices.v[index.z];
+    RayTracingVertex v0 = vertices.v[index.x];
+    RayTracingVertex v1 = vertices.v[index.y];
+    RayTracingVertex v2 = vertices.v[index.z];
 
     vec3 normal = normalize(
         v0.normal.xyz * barycentrics.x +
@@ -124,12 +130,16 @@ void main() {
         v2.normal.xyz * barycentrics.z
     );
 
+    vec2 uv = v0.uv.xy * barycentrics.x
+        + v1.uv.xy * barycentrics.y
+        + v2.uv.xy * barycentrics.z;
+
     normal = faceforward(normal, gl_WorldRayDirectionEXT, normal);
 
     vec3 worldPos = vec3(0);
     vec3 offsetPos = vec3(0);
 
-    Material mat = materials.m[v0.materialIndex];
+    Material mat = materials.m[v0.materialIndex + 1]; // dodo hack but alas (light is the first material)
 
 
     if (length(mat.emission.xyz) > 0.0) {
@@ -198,7 +208,88 @@ void main() {
         newDirection = normalize(mix(specularDir, diffuseDir, rough));
 
         // NEE — use throughput BEFORE albedo is applied
-        Material lightMat = materials.m[1];
+        Material lightMat = materials.m[0];
+        vec3 lightDir;
+        float lightPDF;
+
+        vec3 Le = sampleSphereLightMat(
+            lightMat, offsetPos, payload.misc.x, lightDir, lightPDF
+        );
+
+        float cosTheta = dot(normal, lightDir);
+
+        if (cosTheta > 0.0 && lightPDF > 0.0) {
+
+            float shadowDist =
+                length(lightMat.position.xyz - offsetPos)
+                - lightMat.position.w
+                - 0.01;
+
+            shadowPayload = 0.0;
+
+            traceRayEXT(
+                topLevelAS,
+                gl_RayFlagsTerminateOnFirstHitEXT |
+                gl_RayFlagsSkipClosestHitShaderEXT,
+                0xFF, 0, 0, 1,
+                offsetPos, 0.001,
+                lightDir, shadowDist, 1
+            );
+
+        if (shadowPayload > 0.5) {
+            vec3 brdf = mat.albedo.xyz * INV_PI;
+
+            vec3 direct =
+                payload.throughput.xyz *
+                brdf *
+                Le *
+                cosTheta /
+                lightPDF;
+
+            payload.color += vec4(direct, 1.0);
+        }
+        }
+
+        // Apply albedo AFTER NEE, for the indirect bounce
+        payload.throughput *= vec4(mat.albedo.xyz, 1.0);
+
+        payload.misc.z = 0u;
+    }
+    else  if (int(mat.misc.z) == 2) {
+
+        normal = faceforward(normal, gl_WorldRayDirectionEXT, normal);
+
+        worldPos = gl_WorldRayOriginEXT +
+                   gl_WorldRayDirectionEXT *
+                   gl_HitTEXT;
+
+        offsetPos = worldPos + normal * 0.001;
+
+        float r1 = random(payload.misc.x);
+        float r2 = random(payload.misc.x);
+
+        float r = sqrt(r1);
+        float theta = 2.0 * 3.14159265 * r2;
+
+        vec3 tangent =
+            abs(normal.x) > abs(normal.y)
+            ? normalize(vec3(-normal.z, 0, normal.x))
+            : normalize(vec3(0, normal.z, -normal.y));
+
+        vec3 bitangent = cross(normal, tangent);
+
+        vec3 diffuseDir = normalize(
+            tangent * (r * cos(theta)) +
+            bitangent * (r * sin(theta)) +
+            normal * sqrt(1.0 - r1)
+        );
+
+        vec3 specularDir = reflect(normalize(gl_WorldRayDirectionEXT), normal);
+        float rough = clamp(mat.misc.x, 0.0, 1.0);
+        newDirection = normalize(mix(specularDir, diffuseDir, rough));
+
+        // NEE — use throughput BEFORE albedo is applied
+        Material lightMat = materials.m[0];
         vec3 lightDir;
         float lightPDF;
 
@@ -227,18 +318,24 @@ void main() {
             );
 
             if (shadowPayload > 0.5) {
-                vec3 brdf = mat.albedo.xyz * INV_PI;
+                vec3 texAlbedo = texture(textures[1], uv).rgb;
+                vec3 brdf = texAlbedo * INV_PI;
 
-                // throughput here is pre-albedo, so no double counting
-                payload.color.xyz +=
-                    payload.throughput.xyz * brdf * Le * cosTheta / lightPDF;
+                vec3 direct =
+                    payload.throughput.xyz *
+                    brdf *
+                    Le *
+                    cosTheta /
+                    lightPDF;
+
+                payload.color += vec4(direct, 1.0);
             }
         }
 
-        // Apply albedo AFTER NEE, for the indirect bounce
-        payload.throughput *= vec4(mat.albedo.xyz, 1.0);
+        vec3 texAlbedo = texture(textures[1], uv).rgb;
+        payload.throughput *= vec4(texAlbedo, 1.0);
 
-        payload.misc.z = 0u;
+        payload.misc.z = 2;
     }
 
 

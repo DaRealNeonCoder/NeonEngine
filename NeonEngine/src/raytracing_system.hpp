@@ -42,10 +42,14 @@ struct AccelerationStructure {
 struct RayTracingVertex {
   glm::vec4 pos;
   glm::vec4 normal;
-  alignas(16) uint32_t materialIndex;
+  glm::vec4 uv;
+  uint32_t materialIndex;
+  uint32_t pad1;
+  uint32_t pad2;
+  uint32_t pad3;
 };
 
-struct Material {
+struct RayTracingMaterial {
   glm::vec4 emission;
   glm::vec4 albedo;
   glm::vec4 position;
@@ -60,6 +64,7 @@ class RayTracingSystem {
       VkDescriptorSetLayout globalSetLayout,
       std::vector<RayTracingVertex> allVertex,
       std::vector<uint32_t> allIndicies,
+      std::vector<LveMaterial> allMaterials,
       uint32_t width,
       uint32_t height);
   ~RayTracingSystem();
@@ -70,7 +75,7 @@ class RayTracingSystem {
   void handleResize(
       uint32_t width, uint32_t height, const std::vector<VkDescriptorSet>& descriptorSets);
   void updateUniforms(uint32_t frameIndex, const glm::mat4& view, const glm::mat4& proj);
-  void createMaterialBuffer();
+  void createMaterialBuffer(std::vector<LveMaterial> materials);
   void copyStorageImageToSwapChain(
       VkCommandBuffer commandBuffer,
       VkImage swapChainImage,

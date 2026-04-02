@@ -9,6 +9,7 @@
 #include "raytracing_rast.hpp"
 #include <thread>
 
+
 // libs
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -37,7 +38,7 @@ globalPool =
         .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 2)
         .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, LveSwapChain::MAX_FRAMES_IN_FLIGHT)
         .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 8)
-        .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 10)
+        .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 20)
 
         .setMaxSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT * 36)
         .build();
@@ -104,18 +105,15 @@ void RayTracingApp::run() {
         .addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_ALL)  // historyLength
         .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_ALL)  // historyLength
         .build();
-    auto rayTracingSetLayout =
-        lve::LveDescriptorSetLayout::Builder(lveDevice)
-        .addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-            VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
-            VK_SHADER_STAGE_MISS_BIT_KHR)
-        .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
-        .addBinding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_ALL)
-        .addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
-        .addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
-        .addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)
-        .addBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_ALL)
+
+    auto rayTracingSetLayout = LveDescriptorSetLayout::Builder(lveDevice)
+        .addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+        .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR)
+        .addBinding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+        .addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+        .addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+        .addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+        .addBindlessBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, 10)
         .build();
 
 
@@ -135,9 +133,10 @@ void RayTracingApp::run() {
         const auto& modelIndices = obj.model->getIndices();
 
         for (const auto& vertex : modelVertices) {
-            RayTracingVertex rtVertex;
+            RayTracingVertex rtVertex{};
             glm::vec4 transformedPos = obj.transform.mat4() * glm::vec4(vertex.position, 1.0f);
             rtVertex.pos = transformedPos;
+            rtVertex.uv = glm::vec4(vertex.uv, 0, 0);
             rtVertex.materialIndex = obj.getId();
             glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(obj.transform.mat4())));
             rtVertex.normal = glm::vec4(glm::normalize(normalMatrix * vertex.normal), 1.0f);
@@ -269,18 +268,6 @@ void RayTracingApp::run() {
         throw std::runtime_error("failed to create G-buffer framebuffer!");
     }
 
-    // ---- Ray tracing system ----
-    RayTracingSystem rayTracingSystem{
-        lveDevice,
-        lveRenderer.getSwapChainImageFormat(),
-        rayTracingSetLayout->getDescriptorSetLayout(),
-        vertices,
-        indices,
-        lveRenderer.getSwapChainExtents().width,
-        lveRenderer.getSwapChainExtents().height };
-
-
-
 
 
     // ---- Descriptor sets ----
@@ -288,10 +275,49 @@ void RayTracingApp::run() {
     std::vector<VkDescriptorSet> globalDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
     std::vector<VkDescriptorSet> computeDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
     std::vector<VkDescriptorSet> computeDescriptorSets2(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
-
+    
+    
 
     LveTexture text = {};
-    LveTexture::AllocatedImage environmentLighting = text.loadHDR("C:\\Users\\ZyBros\\Downloads\\qwantani_dusk_2_puresky_4k.hdr", lveDevice);
+    LveTexture::AllocatedImage environmentLighting =
+        text.loadHDR("C:\\Users\\ZyBros\\Downloads\\qwantani_dusk_2_puresky_4k.hdr", lveDevice);
+
+    std::vector<VkDescriptorImageInfo> textureInfos;
+    std::vector<LveMaterial> materials;
+
+    textureInfos.push_back(text.getDescriptor(environmentLighting));
+    int x = 0;
+    for (auto& kv : gameObjects) {
+        auto& obj = kv.second;
+        if (!obj.model) continue;
+
+        if (!obj.model->getMaterial().albedoMap.empty())
+        {
+            LveTexture::AllocatedImage texture =
+                text.loadHDR(obj.model->getMaterial().albedoMap.c_str(), lveDevice);
+            textureInfos.push_back(text.getDescriptor(texture));
+        }
+        materials.push_back(obj.model->getMaterial());
+        std::cout << "gameobj id at: "<< x << "is :" <<obj.getId() <<"\n";
+        x++;
+    }
+
+    
+    std::cout << "SIZE OF MATERIAL STUC" << materials.size() << "\n";
+    // ---- Ray tracing system ----
+    RayTracingSystem rayTracingSystem{
+        lveDevice,
+        lveRenderer.getSwapChainImageFormat(),
+        rayTracingSetLayout->getDescriptorSetLayout(),
+        vertices,
+        indices,
+        materials,
+        lveRenderer.getSwapChainExtents().width,
+        lveRenderer.getSwapChainExtents().height };
+
+
+
+
 
 
     for (int i = 0; i < LveSwapChain::MAX_FRAMES_IN_FLIGHT; i++) {
@@ -302,16 +328,13 @@ void RayTracingApp::run() {
 
         auto storageImageInfo = rayTracingSystem.getStorageImageDescriptor(i);
         auto tlas = rayTracingSystem.getTLAS();
-
         VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
         asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
         asInfo.accelerationStructureCount = 1;
         asInfo.pAccelerationStructures = &tlas;
-
         auto materialBufferInfo = rayTracingSystem.getMaterialBufferDescriptor();
         auto vertexBufferInfo = rayTracingSystem.getVertexBufferDescriptor();
         auto indexBufferInfo = rayTracingSystem.getIndexBufferDescriptor();
-        VkDescriptorImageInfo textureImageInfo = text.getDescriptor(environmentLighting);
 
         LveDescriptorWriter(*rayTracingSetLayout, *globalPool)
             .writeAccelerationStructure(0, &asInfo, globalDescriptorSets[i])
@@ -320,9 +343,8 @@ void RayTracingApp::run() {
             .writeBuffer(3, &materialBufferInfo)
             .writeBuffer(4, &vertexBufferInfo)
             .writeBuffer(5, &indexBufferInfo)
-            .writeImage(6, &textureImageInfo)
+            .writeImageArray(6, textureInfos)   // <-- was writeImage
             .build(globalDescriptorSets[i]);
-
 
 
         VkDescriptorImageInfo posInfo{};
@@ -709,86 +731,163 @@ void RayTracingApp::transitionHistoryToGeneral(VkCommandBuffer cmd, VkImage imag
     );
 }
 
+
+
+void RayTracingApp::buildCornellBox() {
+    LveMaterial defaultWall{};
+
+    LveMaterial greenWall{};
+    greenWall.albedo = { 0.f, 1.f, 0.f, 1.f };
+
+    LveMaterial redWall{};
+    redWall.albedo = { 1.f, 0.f, 0.f, 1.f };
+
+    // Floor
+    std::shared_ptr<LveModel> floorModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
+    floorModel->setMaterial(defaultWall);
+    auto cube = LveGameObject::createGameObject();
+    cube.model = floorModel;
+    cube.transform.translation = { 0.f, -0.5f, 0.f };
+    cube.transform.scale = { 0.58f, 0.04f, 0.5f };
+    gameObjects.emplace(cube.getId(), std::move(cube));
+
+    // Right wall (red)
+    std::shared_ptr<LveModel> rightWallModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
+    rightWallModel->setMaterial(redWall);
+    cube = LveGameObject::createGameObject();
+    cube.model = rightWallModel;
+    cube.transform.translation = { 0.54f, -1.f, 0.f };
+    cube.transform.scale = { 0.04f, 0.46f, 0.5f };
+    gameObjects.emplace(cube.getId(), std::move(cube));
+
+    // Left wall (green)
+    std::shared_ptr<LveModel> leftWallModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
+    leftWallModel->setMaterial(greenWall);
+    cube = LveGameObject::createGameObject();
+    cube.model = leftWallModel;
+    cube.transform.translation = { -0.54f, -1.f, 0.f };
+    cube.transform.scale = { 0.04f, 0.46f, 0.5f };
+    gameObjects.emplace(cube.getId(), std::move(cube));
+
+    // Back wall
+    std::shared_ptr<LveModel> backWallModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
+    backWallModel->setMaterial(defaultWall);
+    cube = LveGameObject::createGameObject();
+    cube.model = backWallModel;
+    cube.transform.translation = { 0.f, -1.f, 0.5f };
+    cube.transform.scale = { 0.5f, 0.5f, 0.04f };
+    gameObjects.emplace(cube.getId(), std::move(cube));
+
+    return;
+    // Far back wall
+    std::shared_ptr<LveModel> farWallModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
+    farWallModel->setMaterial(defaultWall);
+    cube = LveGameObject::createGameObject();
+    cube.model = farWallModel;
+    cube.transform.translation = { 0.f, -1.f, 5.0f };
+    cube.transform.scale = { 5.f, 5.f, 0.04f };
+    gameObjects.emplace(cube.getId(), std::move(cube));
+}
+
+void RayTracingApp::loadScene1_MCDay() {
+    
+    LveMaterial mat{};
+
+    mat.albedoMap = "C:\\Users\\ZyBros\\Downloads\\plaza-day-time\\source\\plaza01_day\\texture\\plaza_BaseColor.png";
+    mat.type = 2;
+    mat.albedo = glm::vec4(0, 0, 1, 1);
+    std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\MC_day.obj");
+    lveModel->setMaterial(mat);
+    auto obj = LveGameObject::createGameObject();
+    obj.model = lveModel;
+    obj.transform.translation = { 0.f, -0.557f, 0.f };
+    obj.transform.rotation = { 0.f, glm::radians(-0.f), 0.f };
+    obj.transform.scale = { 1, 1, 1 };
+    gameObjects.emplace(obj.getId(), std::move(obj));
+}
+
+void RayTracingApp::loadScene2_CornellDragon() {
+    std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\Dragon_lowPoly.obj");
+    lveModel->setMaterial(LveMaterial{});
+    auto obj = LveGameObject::createGameObject();
+    obj.model = lveModel;
+    obj.transform.translation = { 0.07f, -0.4f, 0.f };
+    obj.transform.rotation = { 0.f, -70.f + 180, 0.f };
+    obj.transform.scale = { 1, 1, 1 };
+    gameObjects.emplace(obj.getId(), std::move(obj));
+
+    buildCornellBox();
+}
+
+void RayTracingApp::loadScene3_CornellCar() {
+    std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\car.obj");
+    lveModel->setMaterial(LveMaterial{});
+    auto obj = LveGameObject::createGameObject();
+    obj.model = lveModel;
+    obj.transform.translation = { 0.f, -0.557f, 0.f };
+    obj.transform.rotation = { 0.f, glm::radians(-0.f), 0.f };
+    obj.transform.scale = { 0.35f, 0.35f, 0.35f };
+    gameObjects.emplace(obj.getId(), std::move(obj));
+
+    buildCornellBox();
+}
+
+void RayTracingApp::loadScene4_CornellKnight() {
+    std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\Knight.obj");
+    lveModel->setMaterial(LveMaterial{});
+    auto obj = LveGameObject::createGameObject();
+    obj.model = lveModel;
+    obj.transform.translation = { 0.f, -0.55f, 0.f };
+    obj.transform.rotation = { 0.f, 0, 0.f };
+    obj.transform.scale = { 0.23f, 0.23f, 0.23f };
+    gameObjects.emplace(obj.getId(), std::move(obj));
+
+    buildCornellBox();
+}
+
+void RayTracingApp::loadScene5_DebugCube() {
+    std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
+        lveDevice,
+        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
+    lveModel->setMaterial(LveMaterial{});
+    auto obj = LveGameObject::createGameObject();
+    obj.model = lveModel;
+    obj.transform.translation = { 0.f, -0.557f, 0.f };
+    obj.transform.rotation = { 0.f, glm::radians(-0.f), 0.f };
+    obj.transform.scale = { 0.35f, 0.35f, 0.35f };
+    gameObjects.emplace(obj.getId(), std::move(obj));
+
+    buildCornellBox();
+}
 void RayTracingApp::loadGameObjects() {
-  /*
-  std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
-      lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\Dragon_lowPoly.obj");
-  auto obj = LveGameObject::createGameObject();
-  obj.model = lveModel;
-  obj.transform.translation = {0.07f, -0.4f, 0.f};
-  obj.transform.rotation = {0.f, -70.f + 180, 0.f};
-  obj.transform.scale = {1, 1, 1};
-  gameObjects.emplace(obj.getId(), std::move(obj));
-  */
-  /*
-  std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
-      lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\Knight.obj");
-  auto obj = LveGameObject::createGameObject();
-  obj.model = lveModel;
-  obj.transform.translation = {0.f, -0.55f, 0.f};
-  obj.transform.rotation = {0.f, 0, 0.f};
-  obj.transform.scale = {0.23f, 0.23f, 0.23f};
-  gameObjects.emplace(obj.getId(), std::move(obj));
-  */
-  std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
-      lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
-  auto obj = LveGameObject::createGameObject();
-  obj.model = lveModel;
-  obj.transform.translation = {0.f, -0.557f, 0.f};
-  obj.transform.rotation = {0.f, glm::radians(-0.f), 0.f};//-40f
-  obj.transform.scale = { 0.35f, 0.35f , 0.35f };
-  gameObjects.emplace(obj.getId(), std::move(obj));
- lveModel = LveModel::createModelFromFile(
-      lveDevice,
-      "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
-  
- std::shared_ptr<LveModel> lveModel2 = LveModel::createModelFromFile(
-     lveDevice,
-     "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\sphere.obj");
- auto cube = LveGameObject::createGameObject();
+    const int ACTIVE_SCENE = 1; 
 
-    //ceiling
- cube.model = lveModel2;
- cube.transform.translation = {0.f, -1.5f, 0.f};
- cube.transform.scale = {0.4, 0.4, 0.4};
-    //gameObjects.emplace(cube.getId(), std::move(cube));
-  
-  
-  //floor
-  cube = LveGameObject::createGameObject();
-  cube.model = lveModel;
-  cube.transform.translation = {0.f, -0.5f, 0.f};
-  cube.transform.scale = {0.58f, 0.04f, 0.5f};
-  gameObjects.emplace(cube.getId(), std::move(cube));
-  //right wall
-  cube = LveGameObject::createGameObject();
-  cube.model = lveModel;
-  cube.transform.translation = {0.54f, -1.f, 0.f};
-  cube.transform.scale = {0.04f, 0.46f, 0.5f};
-  gameObjects.emplace(cube.getId(), std::move(cube));
-  //left wall
-  cube = LveGameObject::createGameObject();
-  cube.model = lveModel;
-  cube.transform.translation = {-0.54f, -1.f, 0.f};
-  cube.transform.scale = {0.04f, 0.46f, 0.5f};
-  gameObjects.emplace(cube.getId(), std::move(cube));
+    switch (ACTIVE_SCENE) {
+    case 1: loadScene1_MCDay();         break;
+    case 2: loadScene2_CornellDragon(); break;
+    case 3: loadScene3_CornellCar();    break;
+    case 4: loadScene4_CornellKnight(); break;
+    case 5: loadScene5_DebugCube();     break;
 
-  //backwall
-  cube = LveGameObject::createGameObject();
-  cube.model = lveModel;
-  cube.transform.translation = {0.f, -1.f, 0.5f};
-  cube.transform.scale = {0.5f, 0.5f, 0.04f};
-  gameObjects.emplace(cube.getId(), std::move(cube));
-
-
-  cube = LveGameObject::createGameObject();
-  cube.model = lveModel;
-  cube.transform.translation = { 0.f, -1.f, 5.0f };
-  cube.transform.scale = { 5, 5, 0.04f };
-  gameObjects.emplace(cube.getId(), std::move(cube));
+    }
 }
 
 }  // namespace lve

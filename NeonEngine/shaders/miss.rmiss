@@ -7,7 +7,7 @@ struct RayPayload {
     uvec4 misc;   // seed, depth
 };
 layout(location = 0) rayPayloadInEXT RayPayload payload;
-layout(set = 0, binding = 6) uniform sampler2D envMap; 
+layout(set = 0, binding = 6) uniform sampler2D[] textureMaps; 
 
 const float PI = 3.14159265358979;
 
@@ -22,5 +22,5 @@ void main()
 {
     vec3 dir = normalize(gl_WorldRayDirectionEXT);
     vec2 uv  = directionToUV(dir);
-    payload.color.xyz += payload.throughput.xyz * texture(envMap, uv).rgb;
+    payload.color.xyz += payload.throughput.xyz * texture(textureMaps[0], uv).rgb;
 }

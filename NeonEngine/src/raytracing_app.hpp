@@ -26,8 +26,13 @@ class RayTracingApp {
   void recreateGBuffer(VkRenderPass gBufferRenderPass, GBufferRenderTargets& gBuffers, VkFramebuffer& frameBuffer, RayTracingRast& rayTracingRast, VkExtent2D extents);
   void transitionHistoryToGeneral(VkCommandBuffer cmd, VkImage image);
  private:
-  void loadGameObjects();
-
+	 void loadGameObjects();
+	void loadScene1_MCDay();
+	void loadScene2_CornellDragon();
+	void loadScene3_CornellCar();
+	void loadScene4_CornellKnight();
+	void loadScene5_DebugCube();
+	void buildCornellBox();
   LveWindow lveWindow{WIDTH, HEIGHT, "Vulkan Tutorial"};
   LveDevice lveDevice{lveWindow};
   LveRenderer lveRenderer{lveWindow, lveDevice};

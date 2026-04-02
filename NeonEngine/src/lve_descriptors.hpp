@@ -15,11 +15,14 @@ class LveDescriptorSetLayout {
    public:
     Builder(LveDevice &lveDevice) : lveDevice{lveDevice} {}
 
+    std::unordered_map<uint32_t, VkDescriptorBindingFlags> bindingFlags; // add this
     Builder &addBinding(
         uint32_t binding,
         VkDescriptorType descriptorType,
         VkShaderStageFlags stageFlags,
         uint32_t count = 1);
+    Builder& addBindlessBinding(uint32_t binding, VkDescriptorType descriptorType,
+        VkShaderStageFlags stageFlags, uint32_t maxCount);
     std::unique_ptr<LveDescriptorSetLayout> build() const;
 
    private:
@@ -27,8 +30,9 @@ class LveDescriptorSetLayout {
     std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> bindings{};
   };
 
-  LveDescriptorSetLayout(
-      LveDevice &lveDevice, std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> bindings);
+  LveDescriptorSetLayout(LveDevice& lveDevice,
+      std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> bindings,
+      std::unordered_map<uint32_t, VkDescriptorBindingFlags> bindingFlags = {});
   ~LveDescriptorSetLayout();
   LveDescriptorSetLayout(const LveDescriptorSetLayout &) = delete;
   LveDescriptorSetLayout &operator=(const LveDescriptorSetLayout &) = delete;
@@ -52,6 +56,8 @@ class LveDescriptorPool {
     Builder &addPoolSize(VkDescriptorType descriptorType, uint32_t count);
     Builder &setPoolFlags(VkDescriptorPoolCreateFlags flags);
     Builder &setMaxSets(uint32_t count);
+
+
     std::unique_ptr<LveDescriptorPool> build() const;
 
    private:
@@ -73,6 +79,11 @@ class LveDescriptorPool {
   bool allocateDescriptor(
       const VkDescriptorSetLayout descriptorSetLayout, VkDescriptorSet &descriptor) const;
 
+  bool allocateDescriptor(
+      const VkDescriptorSetLayout descriptorSetLayout,
+      VkDescriptorSet& descriptor,
+      uint32_t variableCount // <-- NEW
+  ) const;
   void freeDescriptors(std::vector<VkDescriptorSet> &descriptors) const;
 
   void resetPool();
@@ -92,6 +103,7 @@ class LveDescriptorWriter {
   LveDescriptorWriter &writeImage(uint32_t binding, VkDescriptorImageInfo *imageInfo);
   LveDescriptorWriter &writeAccelerationStructure(
       uint32_t binding, VkWriteDescriptorSetAccelerationStructureKHR *asInfo, VkDescriptorSet &set);
+  LveDescriptorWriter &writeImageArray(uint32_t binding, std::vector<VkDescriptorImageInfo>& imageInfos);
 
   bool build(VkDescriptorSet &set);
   void overwrite(VkDescriptorSet &set);

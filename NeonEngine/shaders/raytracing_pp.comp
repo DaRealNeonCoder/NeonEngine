@@ -138,6 +138,7 @@ bool LoadPreviousData(
 }
 void main()
 {
+return;
     int mode = 5;
 
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
