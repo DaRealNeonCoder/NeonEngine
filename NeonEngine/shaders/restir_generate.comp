@@ -1,0 +1,148 @@
+// not sure what the point of this shader is.
+// it seems to implement something similar to SER for efficent path tracing.
+// shouldnt be strictly required anywhere
+
+
+#version 460
+#extension GL_EXT_nonuniform_qualifier : enable
+
+// --------------------------------------------------
+// Constants (must match your engine)
+// --------------------------------------------------
+#define SCREEN_TILE_BITS 4              // assuming 16x16 tiles
+#define SCREEN_TILE_DIM 16
+
+// --------------------------------------------------
+// Structs
+// --------------------------------------------------
+
+struct PackedHitInfo {
+    vec4 data;
+};
+
+struct HitInfo {
+    vec4 data;
+};
+
+bool hitIsValid(HitInfo h) {
+    return h.data.w > 0.0; // stub logic
+}
+
+struct Ray {
+    vec3 origin;
+    vec3 dir;
+};
+
+// --------------------------------------------------
+// Uniforms
+// --------------------------------------------------
+
+layout(std140, set = 0, binding = 0) uniform Params {
+    ivec2 frameDim;
+} params;
+
+layout(set = 0, binding = 1) uniform sampler2D vbuffer;
+
+layout(rgba32f, set = 0, binding = 2) uniform image2D outputColor;
+
+// push constant or uniform
+layout(push_constant) uniform PushConstants {
+    int gSampleId;
+    int kUseEnvBackground;
+} pc;
+
+// --------------------------------------------------
+// Utility functions
+// --------------------------------------------------
+
+// Morton decode (stub – replace with real one)
+uvec2 deinterleave_8bit(uint x) {
+    // TODO: real Morton decode
+    return uvec2(x % SCREEN_TILE_DIM, x / SCREEN_TILE_DIM);
+}
+
+// Camera ray (stub)
+Ray computeRayPinhole(ivec2 pixel, ivec2 frameDim) {
+    Ray r;
+    r.origin = vec3(0.0);
+    r.dir = normalize(vec3(
+        (float(pixel.x) / frameDim.x) * 2.0 - 1.0,
+        (float(pixel.y) / frameDim.y) * 2.0 - 1.0,
+        1.0
+    ));
+    return r;
+}
+
+// Env map eval (stub)
+vec3 evalEnvMap(vec3 dir) {
+    return vec3(0.0); // replace with HDRI sampling
+}
+
+// --------------------------------------------------
+// Main logic (PathGenerator::execute)
+// --------------------------------------------------
+
+void writeBackground(ivec2 pixel, vec3 dir)
+{
+    vec3 color = vec3(0.0);
+
+    if (pc.kUseEnvBackground != 0) {
+        color = evalEnvMap(dir);
+    }
+
+    imageStore(outputColor, pixel, vec4(color, 1.0));
+}
+
+// --------------------------------------------------
+// Compute shader entry
+// --------------------------------------------------
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+void main()
+{
+    uvec2 tileID = gl_WorkGroupID.xy;
+    uint threadIdx = gl_LocalInvocationID.x;
+
+    // Tile offset
+    uvec2 tileOffset = tileID << SCREEN_TILE_BITS;
+
+    // Morton mapping
+    uvec2 localPixel = deinterleave_8bit(threadIdx);
+    ivec2 pixel = ivec2(tileOffset + localPixel);
+
+    Ray cameraRay;
+    bool useGeneralQueue = false;
+
+    // Do NOT early return (matches original behavior)
+    if (pixel.x < params.frameDim.x && pixel.y < params.frameDim.y)
+    {
+        cameraRay = computeRayPinhole(pixel, params.frameDim);
+
+        vec4 packed = texelFetch(vbuffer, pixel, 0);
+        HitInfo hit;
+        hit.data = packed;
+
+        bool hitSurface = hitIsValid(hit);
+
+        if (hitSurface) {
+            useGeneralQueue = true;
+        }
+    }
+
+    if (pixel.x < params.frameDim.x && pixel.y < params.frameDim.y)
+    {
+        uint pathID = (uint(pixel.y) << 12) | uint(pixel.x);
+
+        if (useGeneralQueue)
+        {
+            // TODO: queue append (not implemented in original either)
+        }
+        else if (pc.gSampleId == 0)
+        {
+            writeBackground(pixel, cameraRay.dir);
+        }
+
+        pathID = (uint(pixel.y) << 12) | uint(pixel.x);
+    }
+}

@@ -878,7 +878,7 @@ void RayTracingApp::loadScene5_DebugCube() {
     buildCornellBox();
 }
 void RayTracingApp::loadGameObjects() {
-    const int ACTIVE_SCENE = 1; 
+    const int ACTIVE_SCENE = 5; 
 
     switch (ACTIVE_SCENE) {
     case 1: loadScene1_MCDay();         break;

@@ -2,12 +2,65 @@
 #extension GL_EXT_ray_tracing : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
+// ReSTIR PT implementation adapted from https://github.com/DQLin/ReSTIR_PT/ 
+
+
 const int MAX_DEPTH = 3;
+
+struct HitInfo
+{
+    vec4 misc1
+
+    /*
+
+        packed vector of the following: 
+        vec2 barycentrics;
+        uint primitveID; // The triangle we hit on the model. 
+                         // original implementation had another uint for the mesh instance ID, which imma ignore.
+    
+    */
+};
+
+struct PathReservoir
+{
+    vec4 F = vec4(0.0); // cached integrand (always updated after a new path is chosen in RIS)
+    vec4 cachedJacobian; // saved previous vertex scatter PDF, scatter PDF, and geometry term at rcVertex (used when rcVertex is not v2)
+
+    vec4 rcVertexWi[2]; // incident direction on reconnection vertex
+    vec4 rcVertexIrradiance[2]; // sampled irradiance on reconnection vertex
+
+    vec4 misc1;
+    
+    /* 
+    
+        packed vector of the following:
+    
+        float M = 0.f; // this is a float, because temporal history length is allowed to be a fraction. 
+        float weight = 0.f; // during RIS and when used as a "RisState", this is w_sum; during RIS when used as an incoming reseroivr or after RIS, this is 1/p(y) * 1/M * w_sum
+        uint pathFlags; // this is a path type indicator, see the struct definition for details
+        uint rcRandomSeed; // saved random seed after rcVertex (due to the need of blending half-vector reuse and random number replay)
+    
+    */
+
+    vec4 misc2;
+
+    /* 
+    
+        packed vector of the following:
+     
+        float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
+        uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
+        
+    */
+
+    HitInfo hitInfo;
+
+};
 
 struct RayPayload {
     vec4 color;
     vec4 throughput;
-    uvec4 misc;
+    uvec4 misc; // x = seed, y = path depth. z = material type. w = path ID.
 };
 
 layout(location = 0) rayPayloadInEXT RayPayload payload;
@@ -20,7 +73,7 @@ hitAttributeEXT vec2 attribs;
 struct Material {
     vec4 emission;
     vec4 albedo;
-    vec4 position;// position of light, if light. hardcoded for now.
+    vec4 position;// position of light, if light. hardcoded into the main material struc for now.
     vec4 misc;
 };
 
@@ -35,6 +88,7 @@ struct RayTracingVertex {
     
 };
 
+
 layout(set = 0, binding = 3) readonly buffer MaterialBuffer {
     Material m[];
 } materials;
@@ -47,7 +101,15 @@ layout(set = 0, binding = 5) readonly buffer IndexBuffer {
     uint i[];
 } indices;
 
-layout(set = 0, binding = 6) uniform sampler2D textures[];  // unbounded array
+layout(set = 0, binding = 6) readonly buffer ResevoirBuffer {
+    PathReservoir p[];
+} reservoirs;
+
+layout(set = 0, binding = 7) uniform sampler2D textures[];  // unbounded array
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
 
 
 float random(inout uint seed) {
@@ -63,6 +125,50 @@ float fresnelSchlick(float cosTheta, float eta) {
     return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
 }
 
+
+void firstHit(uint rayId, vec2 bary, vec3 newDirection, vec3 directContribution)
+{
+    reservoirs.p[rayId].rcVertexWi[0] = vec4(newDirection, 0.0);
+
+    // rcVertexIrradiance — the incoming light at rcVertex (from NEE + indirect)
+    // This is what gets reused when a neighbor shifts their path to hit your rcVertex
+    reservoirs.p[rayId].rcVertexIrradiance[0] =
+        vec4(directContribution, 0.0);
+
+    // Store triangle data so neighbors can reconnect to this point
+    reservoirs.p[rayId].hitInfo.misc1.z = gl_PrimitiveID ;
+    // misc2.zw = barycentrics
+    reservoirs.p[rayID].hitInfo.misc1.x = bary.x;
+    reservoirs.p[rayID].hitInfo.misc1.y = bary.y;
+
+    // Save the random seed at this point, for random replay of the suffix
+    reservoir.misc2.y = /*current seed state*/;  // initRandomSeed or rcRandomSeed
+}
+
+void pathTerminate(uint rayID)
+{
+    reservoir[rayID].F = vec4(payload.color.xyz, 0.0);
+
+    // RIS weight update — this is the WRS step
+    // target = luminance(F), source pdf = 1/N for uniform candidate sampling
+    float targetPdf = dot(reservoir[rayID].F.rgb, vec3(0.2126, 0.7152, 0.0722)); // luminance
+    float risWeight = targetPdf > 0.0 ? 1.0 / targetPdf : 0.0;
+
+    // misc2.x = M (sample count), misc2.y = w_sum
+    reservoir[rayID].misc2.x += 1.0;  // M++
+    reservoir[rayID].misc2.y += risWeight * targetPdf;  // w_sum += w_i * p_hat(x_i)
+}
+
+//move this somewhere else
+void finalizeRIS(inout PathReservoir r) {
+    float M = r.misc2.x;
+    float wSum = r.misc2.y;
+    float pHat = luminance(r.F.rgb);
+
+    // weight = 1/p_hat(y) * 1/M * w_sum
+    r.misc2.y = (pHat > 0.0) ? (wSum / (M * pHat)) : 0.0;
+}
+// add the jacobian stuff we're missing
 
 vec3 sampleSphereLightMat(
     Material light,
@@ -149,13 +255,14 @@ void main() {
                 1.0
             );
         }
+        pathTerminate(payload.misc.w);
         return;
     }
 
 
     if (payload.misc.y >= uint(MAX_DEPTH)) return;
 
-
+    if(payload.misc.y == 0) firstHit(payload.misc.w, barycentrics.xy, );
     float maxThroughput = max(
         payload.throughput.r,
         max(payload.throughput.g, payload.throughput.b)
@@ -163,7 +270,11 @@ void main() {
 
     if (payload.misc.y > 2u) {
         float q = max(0.05, 1.0 - maxThroughput);
-        if (random(payload.misc.x) < q) return;
+        if (random(payload.misc.x) < q)
+        {
+            pathTerminate(payload.misc.w);
+            return;
+        }
         payload.throughput /= (1.0 - q);
     }
 
