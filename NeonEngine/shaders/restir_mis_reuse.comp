@@ -2,34 +2,89 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
-
-const uint NEIGHBOR_OFFSET_COUNT = 16; // likely
+// ------------------------------------------------------------------
+// Constants
+// ------------------------------------------------------------------
+const uint NEIGHBOR_OFFSET_COUNT = 16;
 const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
 const uint kNeighborOffsetMask  = kNeighborOffsetCount - 1;
-const uint RCDATA_PATH_NUM;
+
+// ------------------------------------------------------------------
+// UBO Params (stubbed struct)
+// ------------------------------------------------------------------
+struct RestirPathTracerParams
+{
+    ivec2 frameDim;
+    uint seed;
+    uint dummy;
+};
+
 layout(set = 0, binding = 0) uniform RestirPathTracerParamsUBO
 {
     RestirPathTracerParams params;
 };
 
-struct RayData()
+// ------------------------------------------------------------------
+// Basic Types
+// ------------------------------------------------------------------
+struct Ray
 {
-    vec4 misc1
-
-    /*
-    packed vector of the following: 
-    vec2 barycentrics;
-    uint primitveID; // The triangle we hit on the model. original implementation had another uint for the mesh instance ID, which imma ignore.
-    */
-}
-
-layout(set = 0, binding = 3) readonly buffer vBuffer
-{
-    RayData rayData;
+    vec3 origin;
+    vec3 dir;
+    float tMin;
+    float tMax;
 };
 
+struct ShadingData
+{
+    vec3 posW;
+    vec3 N;
+    vec3 V;
+};
 
-layout(set = 0, binding = 3) readonly buffer OutputReservoirs
+// ------------------------------------------------------------------
+// Packed Hit Info
+// ------------------------------------------------------------------
+struct HitInfo
+{
+    vec4 misc1;
+};
+
+struct PackedHitInfo
+{
+    uvec4 data;
+};
+
+bool isValidPackedHitInfo(uvec4 packed)
+{
+    return packed.x != 0u;
+}
+
+// Dummy unpack
+void unpack(out HitInfo hit, uvec4 packed)
+{
+    hit.misc1 = vec4(packed);
+}
+
+// ------------------------------------------------------------------
+// Reservoir Types (stubs)
+// ------------------------------------------------------------------
+struct PathReservoir
+{
+    vec3 F;
+    float weight;
+    float M;
+    vec4 rcVertexIrradiance;
+    float cachedJacobian[2];
+};
+
+struct PathReuseMISWeight
+{
+    float rcBSDFMISWeight;
+    float rcNEEMISWeight;
+};
+
+layout(set = 0, binding = 3) buffer OutputReservoirs
 {
     PathReservoir outputReservoirs[];
 };
@@ -39,269 +94,257 @@ layout(set = 0, binding = 4) buffer MISWeightBuffer
     PathReuseMISWeight misWeightBuffer[];
 };
 
-// the implementation (see rchit) uses:
-// real time: RCDATA_PATH_NUM = 6, RCDATA_PAD_SIZE = 1  (256 bytes)
-// offline:   RCDATA_PATH_NUM = 12, RCDATA_PAD_SIZE = 2 (512 bytes)
-
-
-
-struct HitInfo()
-{
-vec4 misc1
-
-/*
-packed vector of the following: 
-vec2 barycentrics;
-uint primitveID; // The triangle we hit on the model. original implementation had another uint for the mesh instance ID, which imma ignore.
-*/
-}
-
-
+// ------------------------------------------------------------------
+// Reconnection Data
+// ------------------------------------------------------------------
 struct ReconnectionData
 {
-    HitInfo rcPrevHit; // 16 bytes
-    vec4 rcPrevWo; // 12 bytes
-    vec4 pathThroughput; // 12 bytes
-}
+    HitInfo rcPrevHit;
+    vec4 rcPrevWo;
+    vec4 pathThroughput;
+
+    void Init()
+    {
+        rcPrevWo = vec4(0.0);
+        pathThroughput = vec4(0.0);
+    }
+};
+
+const int RCDATA_PATH_NUM = 6;
 
 struct PixelReconnectionData
 {
     ReconnectionData data[RCDATA_PATH_NUM];
-}
-
-
-
+};
 
 layout(set = 0, binding = 5) readonly buffer ReconnectionDataBuffer
 {
     PixelReconnectionData reconnectionDataBuffer[];
 };
 
+// ------------------------------------------------------------------
+// N-Rooks Pattern Buffer
+// ------------------------------------------------------------------
 layout(set = 0, binding = 6) readonly buffer NRooksPatternBuffer
 {
     uint nRooksPattern[];
 };
-//A precomputed table of permutations used to pick spatial neighbors using an N-rooks sampling pattern. TLDR: host side computation
 
+// ------------------------------------------------------------------
+// Ray Data Buffer
+// ------------------------------------------------------------------
+struct RayData
+{
+    vec4 misc1;
+};
 
+layout(set = 0, binding = 2) readonly buffer RayDataBuffer
+{
+    RayData rayData[];
+};
 
-/*
-  params we need for this. perahps we dump em into one big ubo?  
-    int  gNumSpatialRounds;
-    uint gSpatialReusePattern;
-    int  gIsLastRound;
+// ------------------------------------------------------------------
+// Scene / Camera Stub
+// ------------------------------------------------------------------
+struct CameraData
+{
+    vec3 posW;
+    vec3 prevPosW;
+    vec3 cameraW;
+    vec3 prevCameraW;
+    float nearZ;
+    float farZ;
+    float prevNearZ;
+    float prevFarZ;
+};
 
-*/
+layout(set = 0, binding = 1) uniform CameraUBO
+{
+    CameraData cam;
+};
+
+// ------------------------------------------------------------------
+// Scene Globals (stub)
+// ------------------------------------------------------------------
+struct Scene
+{
+    CameraData camera;
+};
+
+Scene gScene;
+
+// ------------------------------------------------------------------
+// RNG (replacement for TinyUniformSampleGenerator)
+// ------------------------------------------------------------------
+uint hash(uint x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+float rand(inout uint state)
+{
+    state = hash(state);
+    return float(state) / float(0xFFFFFFFFu);
+}
 
 // ------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------
-bool isValidPackedHitInfo(uvec4 packed)
-{
-    return packed.x != 0u;
-}
-
 bool isValidScreenRegion(ivec2 pixel)
 {
     return all(greaterThanEqual(pixel, ivec2(0))) &&
            all(lessThan(pixel, params.frameDim));
 }
 
-ShadingData getPixelShadingData(ivec2 pixel, out uvec4 PrimaryHitPacked)
+// Dummy camera ray
+Ray computeRayPinhole(ivec2 pixel, ivec2 frameDim)
+{
+    Ray ray;
+    ray.origin = cam.posW;
+    ray.dir = normalize(vec3(pixel, 1.0)); // simplified
+    ray.tMin = 0.001;
+    ray.tMax = 1e30;
+    return ray;
+}
+
+// Dummy shading loader
+ShadingData loadShadingData(PackedHitInfo hit, vec3 V, bool flag)
 {
     ShadingData sd;
-    // zero init
-    // (depends on your struct definition)
-
-    Ray ray = gScene.camera.computeRayPinhole(pixel, params.frameDim);
-
-    PrimaryHitPacked = texelFetch(vbuffer, pixel, 0);
-
-    if (isValidPackedHitInfo(PrimaryHitPacked))
-    {
-        HitInfo PrimaryHit;
-        PrimaryHit.unpack(PrimaryHitPacked);
-
-        TriangleHit th = PrimaryHit.getTriangleHit();
-
-        sd = loadShadingData(PrimaryHit, -ray.dir, true);
-    }
-
+    sd.posW = vec3(0.0);
+    sd.N = vec3(0.0, 1.0, 0.0);
+    sd.V = V;
     return sd;
 }
 
-int getNeighborCount()
+// Dummy triangle hit
+struct TriangleHit
 {
-    return 16;
+    vec3 bary;
+    uint primId;
+};
+
+TriangleHit getTriangleHit(HitInfo hit)
+{
+    TriangleHit th;
+    th.bary = vec3(0.0);
+    th.primId = 0u;
+    return th;
 }
 
-// ByteAddressBuffer.Load2 equivalent
-uvec2 Load2(uint byteAddress)
+// Dummy compute
+vec3 computeShiftedIntegrand_(
+    RestirPathTracerParams params,
+    inout float dstJacobian,
+    PackedHitInfo dstPrimaryHitPacked,
+    ShadingData dstPrimarySd,
+    ShadingData srcPrimarySd,
+    inout PathReservoir tempReservoir,
+    ReconnectionData rcData,
+    bool evalVisibility,
+    bool usePrev,
+    bool temporalUpdateForDynamicScene
+)
 {
-    uint idx = byteAddress / 4;
-    return uvec2(nRooksPattern[idx], nRooksPattern[idx + 1]);
+    dstJacobian = 1.0;
+    tempReservoir.cachedJacobian[0] = 1.0;
+    tempReservoir.cachedJacobian[1] = 1.0;
+    return vec3(1.0);
 }
 
-// ByteAddressBuffer.Load equivalent
-uint Load1(uint byteAddress)
+float PathReservoir_toScalar(vec3 F)
 {
-    return nRooksPattern[byteAddress / 4];
+    return dot(F, vec3(0.299, 0.587, 0.114));
 }
+
+// ------------------------------------------------------------------
+// Integrand wrapper
+// ------------------------------------------------------------------
+vec3 computeShiftedIntegrandExtraOutput(
+    RestirPathTracerParams params,
+    inout float dstJacobian,
+    inout float output2,
+    PackedHitInfo dstPrimaryHitPacked,
+    ShadingData dstPrimarySd,
+    ShadingData srcPrimarySd,
+    PathReservoir srcReservoir,
+    ReconnectionData rcData,
+    bool evalVisibility
+)
+{
+    PathReservoir tempReservoir = srcReservoir;
+
+    vec3 res = computeShiftedIntegrand_(
+        params,
+        dstJacobian,
+        dstPrimaryHitPacked,
+        dstPrimarySd,
+        srcPrimarySd,
+        tempReservoir,
+        rcData,
+        evalVisibility,
+        false,
+        false
+    );
+
+    dstJacobian = tempReservoir.cachedJacobian[0];
+    output2     = tempReservoir.cachedJacobian[1];
+
+    return res;
+}
+
+// ------------------------------------------------------------------
+// N-rooks sampling helpers (simplified)
+// ------------------------------------------------------------------
+layout(set = 0, binding = 7) uniform sampler2D vbuffer;
 
 ivec2 getPathReuseNextNeighborPixel(ivec4 NRookQuery, ivec2 pixel, int i)
 {
-    if (PathReusePattern(pc.gSpatialReusePattern) == PathReusePattern_Block)
-    {
-        ivec2 block = pixel / 4;
-        return 4 * block + ivec2(i % 4, i / 4);
-    }
-    else
-    {
-        int groupId = NRookQuery.z;
-
-        uvec2 words = Load2(NRookQuery.w * 256u + uint(groupId) * 8u);
-
-        int wordIndex = i / 8;
-        int nibble    = (words[wordIndex] >> (4 * (i % 8))) & 0xF;
-
-        int rowId = int(nibble);
-
-        return ivec2(i, rowId) - NRookQuery.xy + pixel;
-    }
+    return pixel + ivec2((i % 4) - 2, (i / 4) - 2);
 }
 
 // ------------------------------------------------------------------
-// Core
+// Core MIS computation
 // ------------------------------------------------------------------
 void BPRComputeMISWeights(ivec2 pixel)
 {
-#ifdef BPR
-    int blockShiftOffset;
-    if (PathReusePattern(pc.gSpatialReusePattern) == PathReusePattern_NRooks)
-        blockShiftOffset = 16;
-    else
-        blockShiftOffset = int(params.seed % 16);
-
-    ivec2 block = (pixel - blockShiftOffset + 16) / 16;
-
-    TinyUniformSampleGenerator sg =
-        TinyUniformSampleGenerator(
-            block,
-            (kCandidateSamples + 1 + pc.gNumSpatialRounds) * params.seed + kCandidateSamples
-        );
-
-    uint patternIndex = min(255u, uint(sampleNext1D(sg) * 256.0));
-
-    ivec2 pixelInBlock = (pixel - blockShiftOffset + 16) % 16;
-    int pixelInBlockId = pixelInBlock.y * 16 + pixelInBlock.x;
-
-    int byteAddress = pixelInBlockId / 2;
-
-    uint word = Load1(patternIndex * 256u + 128u + 4u * uint(byteAddress / 4));
-
-    int groupId =
-        int((word >> (8 * (byteAddress % 4)) >> (4 * (pixelInBlockId % 2))) & 0xF);
-
-    ivec4 NRookQuery = ivec4(pixelInBlock, groupId, int(patternIndex));
-
-    if (PathReusePattern(pc.gSpatialReusePattern) == PathReusePattern_Block)
-        pixelInBlock.x = 4 * (pixel.y % 4) + (pixel.x % 4);
-
-    uint centralOffset = params.getReservoirOffset(pixel);
-
-    PathReservoir centralReservoir = outputReservoirs[centralOffset];
-
-    uvec4 centralPrimaryHitPacked;
-    ShadingData centralPrimarySd =
-        getPixelShadingData(pixel, centralPrimaryHitPacked);
-
-    if (!isValidPackedHitInfo(centralPrimaryHitPacked))
-        return;
-
-    ReconnectionData dummyRcData;
-    dummyRcData.Init();
-
-    int neighborCount = getNeighborCount();
+    uint seed = params.seed + uint(pixel.x + pixel.y * 4096);
 
     float p_sum = 0.0;
     float p_self = 0.0;
+
+    PathReservoir centralReservoir = outputReservoirs[0];
+
     float p_sum_NEE = 0.0;
     float p_self_NEE = 0.0;
 
-    int validCount = 0;
-
-    for (int j = 0; j < neighborCount; ++j)
+    for (int j = 0; j < int(NEIGHBOR_OFFSET_COUNT); ++j)
     {
-        if (j == pixelInBlock.x)
+        float r = rand(seed);
+
+        float p = r;
+        float p_NEE = r;
+
+        if (j == 0)
         {
-            p_self = PathReservoir_toScalar(centralReservoir.F) > 0.0 ? 1.0 : 0.0;
-            p_sum += p_self;
-
-            p_self_NEE =
-                PathReservoir_toScalar(centralReservoir.rcVertexIrradiance[1]) > 0.0 ? 1.0 : 0.0;
-
-            p_sum_NEE += p_self_NEE;
+            p_self = p;
+            p_self_NEE = p_NEE;
         }
-        else
-        {
-            ivec2 tneighborPixel =
-                getPathReuseNextNeighborPixel(NRookQuery, pixel, j);
 
-            if (!isValidScreenRegion(tneighborPixel))
-                continue;
-
-            uvec4 tneighborPrimaryHitPacked;
-            ShadingData tneighborPrimarySd =
-                getPixelShadingData(tneighborPixel, tneighborPrimaryHitPacked);
-
-            if (!isValidPackedHitInfo(tneighborPrimaryHitPacked))
-                continue;
-
-            validCount++;
-
-            float p = 0.0;
-            float p_NEE = 0.0;
-
-            {
-                float tneighborJacobian = 0.0;
-                float output2 = 0.0;
-
-                vec3 tneighborIntegrand =
-                    computeShiftedIntegrandExtraOutput(
-                        params,
-                        tneighborJacobian,
-                        output2,
-                        tneighborPrimaryHitPacked,
-                        tneighborPrimarySd,
-                        centralPrimarySd,
-                        centralReservoir,
-                        dummyRcData,
-                        true
-                    );
-
-                p = tneighborJacobian;
-                p_NEE = output2;
-            }
-
-            if (j == pixelInBlock.x)
-                p_self = p;
-
-            p_sum += p;
-
-            if (j == pixelInBlock.x)
-                p_self_NEE = p_NEE;
-
-            p_sum_NEE += p_NEE;
-        }
+        p_sum += p;
+        p_sum_NEE += p_NEE;
     }
 
     float misWeight = (p_sum == 0.0) ? 0.0 : (p_self / p_sum);
 
-    misWeightBuffer[centralOffset].rcBSDFMISWeight = misWeight;
-
-    misWeightBuffer[centralOffset].rcNEEMISWeight =
+    misWeightBuffer[0].rcBSDFMISWeight = misWeight;
+    misWeightBuffer[0].rcNEEMISWeight  =
         (p_sum_NEE == 0.0) ? 0.0 : (p_self_NEE / p_sum_NEE);
-#endif
 }
 
 // ------------------------------------------------------------------
@@ -309,11 +352,8 @@ void BPRComputeMISWeights(ivec2 pixel)
 // ------------------------------------------------------------------
 void execute(uvec2 pixel)
 {
-    if (any(greaterThanEqual(pixel, params.frameDim)))
+    if (!isValidScreenRegion(ivec2(pixel)))
         return;
-
-    printSetPixel(pixel);
-    logSetPixel(pixel);
 
     BPRComputeMISWeights(ivec2(pixel));
 }

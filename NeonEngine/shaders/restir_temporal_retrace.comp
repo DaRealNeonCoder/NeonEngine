@@ -1,24 +1,25 @@
 #version 460
 #extension GL_EXT_scalar_block_layout : require
 
+// ------------------------------------------------------------------
+// Structs
+// ------------------------------------------------------------------
 
-struct ShadingData { vec3 posW; vec3 N; vec3 V; };
+struct ShadingData {
+    vec3 posW;
+    vec3 N;
+    vec3 V;
+};
 
-
-struct HitInfo()
+struct HitInfo
 {
-    vec4 misc1
-
+    vec4 misc1;
     /*
-
-        packed vector of the following: 
+        packed:
         vec2 barycentrics;
-        uint primitveID; // The triangle we hit on the model. 
-                         // original implementation had another uint for the mesh instance ID, which imma ignore.
-    
+        uint primitiveID;
     */
-}
-
+};
 struct PathReservoir
 {
     vec4 F = 0.f; // cached integrand (always updated after a new path is chosen in RIS)
@@ -54,32 +55,28 @@ struct PathReservoir
     HitInfo hitInfo;
 
 }
-
-
 struct ReconnectionData
 {
-    HitInfo rcPrevHit; // 16 bytes
-    vec4 rcPrevWo; // 12 bytes
-    vec4 pathThroughput; // 12 bytes
-}
+    HitInfo rcPrevHit;
+    vec4 rcPrevWo;
+    vec4 pathThroughput;
+};
 
 struct PixelReconnectionData
 {
     ReconnectionData data[RCDATA_PATH_NUM];
-    float4 padding[RCDATA_PAD_SIZE]; //pad to 256 bytes
-}
-
-
-
+    vec4 padding[RCDATA_PAD_SIZE];
+};
 
 // ------------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------------
+
 const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
 const uint kNeighborOffsetMask  = kNeighborOffsetCount - 1;
 
 // ------------------------------------------------------------------
-// Resource bindings (you will likely adjust set/binding indices)
+// Resources
 // ------------------------------------------------------------------
 
 layout(set = 0, binding = 0) uniform RestirPathTracerParamsUBO
@@ -87,8 +84,15 @@ layout(set = 0, binding = 0) uniform RestirPathTracerParamsUBO
     RestirPathTracerParams params;
 };
 
-layout(set = 0, binding = 1) uniform sampler2D vbuffer;
-layout(set = 0, binding = 2) uniform sampler2D temporalVbuffer;
+layout(set = 0, binding = 6) readonly buffer vBuffer {
+    HitInfo h[];
+} vBuff;
+
+layout(binding = 1) uniform sampler2D temporalVbuffer
+{
+    HitInfo tH[];
+} tempVBuff; // prev frame temp buffer
+
 layout(set = 0, binding = 3) uniform sampler2D motionVectors;
 
 layout(set = 0, binding = 4) buffer NRooksPatternBuffer
@@ -113,7 +117,10 @@ layout(set = 0, binding = 8) buffer ReconnectionBuffer
     PixelReconnectionData reconnectionDataBuffer[];
 };
 
-// Push constants / uniform block for misc params
+// ------------------------------------------------------------------
+// Push constants
+// ------------------------------------------------------------------
+
 layout(push_constant) uniform PushConstants
 {
     int  gNumSpatialRounds;
@@ -124,7 +131,7 @@ layout(push_constant) uniform PushConstants
 } pc;
 
 // ------------------------------------------------------------------
-// Utility helpers
+// Helpers
 // ------------------------------------------------------------------
 
 bool isValidPackedHitInfo(uvec4 packed)
@@ -145,7 +152,7 @@ bool isValidScreenRegion(ivec2 pixel)
 ShadingData getPixelShadingData(ivec2 pixel, out uvec4 PrimaryHitPacked)
 {
     ShadingData sd;
-    sd = ShadingData(); // zero-init
+    sd = ShadingData(vec3(0), vec3(0), vec3(0));
 
     Ray ray = computeRayPinhole(pixel, params.frameDim);
 
@@ -165,7 +172,7 @@ ShadingData getPixelShadingData(ivec2 pixel, out uvec4 PrimaryHitPacked)
 ShadingData getPixelTemporalShadingData(ivec2 pixel, out uvec4 PrimaryHitPacked)
 {
     ShadingData sd;
-    sd = ShadingData();
+    sd = ShadingData(vec3(0), vec3(0), vec3(0));
 
     Ray ray = computeRayPinholePrevFrame(pixel, params.frameDim);
 
@@ -188,28 +195,21 @@ ShadingData getPixelTemporalShadingData(ivec2 pixel, out uvec4 PrimaryHitPacked)
 
 void ReSTIR(uvec2 pixel)
 {
-    // RNG
     TinyUniformSampleGenerator sg =
         TinyUniformSampleGenerator(
             pixel,
             (kCandidateSamples + 1u + uint(pc.gNumSpatialRounds)) * params.seed + kCandidateSamples
         );
 
-    // Reservoir offset
     uint centralOffset = getReservoirOffset(params, pixel);
     PathReservoir centralReservoir = outputReservoirs[centralOffset];
 
-    // Primary shading
     uvec4 centralPrimaryHitPacked;
     ShadingData centralPrimarySd =
         getPixelShadingData(ivec2(pixel), centralPrimaryHitPacked);
 
     if (!isValidPackedHitInfo(centralPrimaryHitPacked))
         return;
-
-    // --------------------------------------------------------------
-    // Temporal reprojection
-    // --------------------------------------------------------------
 
     vec2 motionVector = texelFetch(motionVectors, ivec2(pixel), 0).xy;
 
@@ -219,13 +219,12 @@ void ReSTIR(uvec2 pixel)
     if (pc.gEnableTemporalReprojection != 0)
     {
         vec2 jitter = sampleNext2D(sg);
-        prevPixel = ivec2(pixel + motionVector * vec2(params.frameDim) + (jitter * 1.0 - 0.0));
+        prevPixel = ivec2(pixel + motionVector * vec2(params.frameDim) + jitter);
     }
 
     if (!isValidScreenRegion(prevPixel) || !foundTemporalSurface)
         return;
 
-    // Fetch temporal shading
     uvec4 temporalPrimaryHitPacked;
     ShadingData temporalPrimarySd =
         getPixelTemporalShadingData(prevPixel, temporalPrimaryHitPacked);
@@ -236,10 +235,6 @@ void ReSTIR(uvec2 pixel)
     PathReservoir temporalReservoir =
         temporalReservoirs[getReservoirOffset(params, uvec2(prevPixel))];
 
-    // --------------------------------------------------------------
-    // Talbot MIS / hybrid shift logic
-    // --------------------------------------------------------------
-
     HitInfo dstRcPrevVertexHit;
     HitInfo dstRcPrevVertexHit2;
 
@@ -249,8 +244,7 @@ void ReSTIR(uvec2 pixel)
     vec3 Tp;
     vec3 Tp2;
 
-    // central -> temporal
-    if (rcVertexLength(centralReservoir.pathFlags) > 1)
+    if (rcVertexLength(centralReservoir.misc1.z) > 1)
     {
         Tp = traceHybridShiftRays(
             params,
@@ -262,12 +256,12 @@ void ReSTIR(uvec2 pixel)
             dstRcPrevVertexWo
         );
 
-        reconnectionDataBuffer[centralOffset].data[0] =
-            ReconnectionData(dstRcPrevVertexHit, dstRcPrevVertexWo, Tp);
+        reconnectionDataBuffer[centralOffset].data[0].rcPrevHit = dstRcPrevVertexHit;
+        reconnectionDataBuffer[centralOffset].data[0].rcPrevWo = vec4(dstRcPrevVertexWo, 0.0);
+        reconnectionDataBuffer[centralOffset].data[0].pathThroughput = vec4(Tp, 0.0);
     }
 
-    // temporal -> central
-    if (rcVertexLength(temporalReservoir.pathFlags) > 1)
+    if (rcVertexLength(temporalReservoir.misc1.z) > 1)
     {
         Tp2 = traceHybridShiftRays(
             params,
@@ -279,8 +273,9 @@ void ReSTIR(uvec2 pixel)
             dstRcPrevVertexWo2
         );
 
-        reconnectionDataBuffer[centralOffset].data[1] =
-            ReconnectionData(dstRcPrevVertexHit2, dstRcPrevVertexWo2, Tp2);
+        reconnectionDataBuffer[centralOffset].data[1].rcPrevHit = dstRcPrevVertexHit2;
+        reconnectionDataBuffer[centralOffset].data[1].rcPrevWo = vec4(dstRcPrevVertexWo2, 0.0);
+        reconnectionDataBuffer[centralOffset].data[1].pathThroughput = vec4(Tp2, 0.0);
     }
 }
 
@@ -299,8 +294,6 @@ void execute(uvec2 pixel)
     ReSTIR(pixel);
 }
 
-// ------------------------------------------------------------------
-// Compute entry point
 // ------------------------------------------------------------------
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;

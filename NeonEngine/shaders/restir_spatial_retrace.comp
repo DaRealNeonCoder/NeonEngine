@@ -3,94 +3,93 @@
 #extension GL_EXT_buffer_reference : enable
 
 // ------------------------------------------------------------------
-// Forward declarations (you said you'll fill these in)
+// Constants (TEMP — replace with your real values)
+// ------------------------------------------------------------------
+#define NEIGHBOR_OFFSET_COUNT 256
+#define RCDATA_PATH_NUM 64
+#define RCDATA_PAD_SIZE 16
+#define kCandidateSamples 8
+
+// ------------------------------------------------------------------
+// Basic structs
 // ------------------------------------------------------------------
 
-struct ShadingData { vec3 posW; vec3 N; vec3 V; };
-
-
-struct HitInfo()
+struct PackedHitInfo
 {
-    vec4 misc1
+    uint x, y, z, w;
+};
 
-    /*
+struct HitInfo
+{
+    vec4 misc1;
+};
 
-        packed vector of the following: 
-        vec2 barycentrics;
-        uint primitveID; // The triangle we hit on the model. 
-                         // original implementation had another uint for the mesh instance ID, which imma ignore.
-    
-    */
-}
+struct TriangleHit
+{
+    vec3 dummy;
+};
+
+struct ShadingData
+{
+    vec3 posW;
+    vec3 N;
+    vec3 V;
+};
 
 struct PathReservoir
 {
-    vec4 F = 0.f; // cached integrand (always updated after a new path is chosen in RIS)
-    vec4 cachedJacobian; // saved previous vertex scatter PDF, scatter PDF, and geometry term at rcVertex (used when rcVertex is not v2)
+    vec4 F;
+    vec4 cachedJacobian;
 
-    vec4 rcVertexWi[2]; // incident direction on reconnection vertex
-    vec4 rcVertexIrradiance[2]; // sampled irradiance on reconnection vertex
+    vec4 rcVertexWi[2];
+    vec4 rcVertexIrradiance[2];
 
     vec4 misc1;
-    
-    /* 
-    
-        packed vector of the following:
-    
-        float M = 0.f; // this is a float, because temporal history length is allowed to be a fraction. 
-        float weight = 0.f; // during RIS and when used as a "RisState", this is w_sum; during RIS when used as an incoming reseroivr or after RIS, this is 1/p(y) * 1/M * w_sum
-        uint pathFlags; // this is a path type indicator, see the struct definition for details
-        uint rcRandomSeed; // saved random seed after rcVertex (due to the need of blending half-vector reuse and random number replay)
-    
-    */
-
     vec4 misc2;
 
-    /* 
-    
-        packed vector of the following:
-     
-        float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
-        uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
-        
-    */
-
     HitInfo hitInfo;
-
-}
-
+};
 
 struct ReconnectionData
 {
-    HitInfo rcPrevHit; // 16 bytes
-    vec4 rcPrevWo; // 12 bytes
-    vec4 pathThroughput; // 12 bytes
-}
+    HitInfo rcPrevHit;
+    vec4 rcPrevWo;
+    vec4 pathThroughput;
+};
 
 struct PixelReconnectionData
 {
     ReconnectionData data[RCDATA_PATH_NUM];
-    float4 padding[RCDATA_PAD_SIZE]; //pad to 256 bytes
-}
-
-
+    vec4 padding[RCDATA_PAD_SIZE];
+};
 
 struct RestirPathTracerParams
 {
     uvec2 frameDim;
     uint seed;
-    uint getReservoirOffset(uvec2 pixel);
 };
+
+// ------------------------------------------------------------------
+// Dummy helper (REPLACE with real implementation)
+// ------------------------------------------------------------------
+int rcVertexLength(PathReservoir r)
+{
+    return int(r.misc1.x); // placeholder
+}
+
+// ------------------------------------------------------------------
+// External functions (decl only)
+// ------------------------------------------------------------------
 
 struct Ray { vec3 origin; vec3 dir; };
 
-// External / user-provided functions
 Ray computeRayPinhole(uvec2 pixel, uvec2 frameDim);
 ShadingData loadShadingData(HitInfo hit, vec3 wo, bool flag);
 TriangleHit getTriangleHit(HitInfo hit);
 void unpackHitInfo(in PackedHitInfo packed, out HitInfo hit);
 
 float sampleNext1D(inout uint state);
+
 vec3 traceHybridShiftRays(
     RestirPathTracerParams params,
     bool flag,
@@ -100,15 +99,19 @@ vec3 traceHybridShiftRays(
     out HitInfo dstHit,
     out vec3 dstWo);
 
-// RNG
 uint TinyUniformSampleGenerator(uvec2 pixel, uint seed);
 
 // ------------------------------------------------------------------
 // Resources
 // ------------------------------------------------------------------
 
-layout(set = 0, binding = 0) uniform sampler2D vbuffer;
-layout(set = 0, binding = 1) uniform sampler1D neighborOffsets;
+layout(set = 0, binding = 6) readonly buffer vBuffer {
+    HitInfo h[];
+} vBuff;
+
+layout(set = 0, binding = 1)   readonly buffer neighborOffsets{
+    uint u[];
+}nO;
 
 layout(set = 0, binding = 2) buffer NRooksPatternBuffer
 {
@@ -133,14 +136,10 @@ layout(set = 0, binding = 6) buffer ReconnectionBuffer
 };
 
 // ------------------------------------------------------------------
-// Constants
-// ------------------------------------------------------------------
 
 const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
 const uint kNeighborOffsetMask  = kNeighborOffsetCount - 1;
 
-// ------------------------------------------------------------------
-// Push constants / uniform block
 // ------------------------------------------------------------------
 
 layout(push_constant) uniform CB
@@ -160,7 +159,7 @@ layout(push_constant) uniform CB
 } gPathRetracePass;
 
 // ------------------------------------------------------------------
-// Helper functions
+// Helpers
 // ------------------------------------------------------------------
 
 bool isValidPackedHitInfo(PackedHitInfo packed)
@@ -174,43 +173,47 @@ bool isValidScreenRegion(ivec2 pixel)
            all(lessThan(pixel, ivec2(gPathRetracePass.params.frameDim)));
 }
 
-bool isValidGeometry(ShadingData centralSd, ShadingData neighborSd)
+bool isValidGeometry(ShadingData a, ShadingData b)
 {
     if (!gPathRetracePass.gFeatureBasedRejection) return true;
 
-    vec3 camPos = vec3(0.0); // TODO: camera position
-    float centralDist = distance(camPos, centralSd.posW);
-    float neighborDist = distance(camPos, neighborSd.posW);
+    vec3 camPos = vec3(0.0);
 
-    return dot(centralSd.N, neighborSd.N) >= 0.5 &&
-           abs(centralDist - neighborDist) < 0.1 * centralDist;
+    float d0 = distance(camPos, a.posW);
+    float d1 = distance(camPos, b.posW);
+
+    return dot(a.N, b.N) >= 0.5 &&
+           abs(d0 - d1) < 0.1 * d0;
 }
 
-ShadingData getPixelShadingData(ivec2 pixel, out PackedHitInfo PrimaryHitPacked)
+// ------------------------------------------------------------------
+
+ShadingData getPixelShadingData(ivec2 pixel, out PackedHitInfo packedHit)
 {
     ShadingData sd;
 
     Ray ray = computeRayPinhole(uvec2(pixel), gPathRetracePass.params.frameDim);
 
     vec4 packed = texelFetch(vbuffer, pixel, 0);
-    PrimaryHitPacked = PackedHitInfo(
-        floatBitsToUint(packed.x),
-        floatBitsToUint(packed.y),
-        floatBitsToUint(packed.z),
-        floatBitsToUint(packed.w)
-    );
 
-    if (isValidPackedHitInfo(PrimaryHitPacked))
+    packedHit.x = floatBitsToUint(packed.x);
+    packedHit.y = floatBitsToUint(packed.y);
+    packedHit.z = floatBitsToUint(packed.z);
+    packedHit.w = floatBitsToUint(packed.w);
+
+    if (isValidPackedHitInfo(packedHit))
     {
-        HitInfo PrimaryHit;
-        unpackHitInfo(PrimaryHitPacked, PrimaryHit);
+        HitInfo hit;
+        unpackHitInfo(packedHit, hit);
 
-        TriangleHit th = getTriangleHit(PrimaryHit);
-        sd = loadShadingData(PrimaryHit, -ray.dir, true);
+        TriangleHit th = getTriangleHit(hit);
+        sd = loadShadingData(hit, -ray.dir, true);
     }
 
     return sd;
 }
+
+// ------------------------------------------------------------------
 
 int getNeighborCount()
 {
@@ -219,33 +222,29 @@ int getNeighborCount()
 
 ivec2 getNextNeighborPixel(uint startIndex, ivec2 pixel, int i)
 {
-    ivec2 neighborPixel = ivec2(0);
-
-    if (gPathRetracePass.gSpatialReusePattern == 0) // Default
+    if (gPathRetracePass.gSpatialReusePattern == 0)
     {
-        uint neighborIndex = (startIndex + uint(i)) & kNeighborOffsetMask;
+        uint idx = (startIndex + uint(i)) & kNeighborOffsetMask;
 
-        vec2 offset = texelFetch(neighborOffsets, int(neighborIndex), 0).xy;
-        neighborPixel = pixel + ivec2(offset * gPathRetracePass.gGatherRadius);
+        vec2 offset = texelFetch(neighborOffsets, int(idx), 0).xy;
+        return pixel + ivec2(offset * gPathRetracePass.gGatherRadius);
     }
-    else // SmallWindow
+    else
     {
-        int diameter = 2 * gPathRetracePass.gSmallWindowRadius + 1;
+        int d = 2 * gPathRetracePass.gSmallWindowRadius + 1;
 
-        neighborPixel = pixel + ivec2(
-            -gPathRetracePass.gSmallWindowRadius + (i % diameter),
-            -gPathRetracePass.gSmallWindowRadius + (i / diameter)
+        ivec2 np = pixel + ivec2(
+            -gPathRetracePass.gSmallWindowRadius + (i % d),
+            -gPathRetracePass.gSmallWindowRadius + (i / d)
         );
 
-        if (all(equal(neighborPixel, pixel)))
-            neighborPixel = ivec2(-1);
+        if (all(equal(np, pixel))) return ivec2(-1);
+        return np;
     }
-
-    return neighborPixel;
 }
 
 // ------------------------------------------------------------------
-// ReSTIR core (UNMODIFIED LOGIC)
+// ReSTIR
 // ------------------------------------------------------------------
 
 void ReSTIR(uvec2 pixel)
@@ -258,89 +257,58 @@ void ReSTIR(uvec2 pixel)
         gPathRetracePass.gSpatialRoundId
     );
 
-    uint centralOffset = gPathRetracePass.params.getReservoirOffset(pixel);
+    uint centralOffset = 0; // TODO: implement
     PathReservoir centralReservoir = outputReservoirs[centralOffset];
 
-    PackedHitInfo centralPrimaryHitPacked;
-    ShadingData centralPrimarySd =
-        getPixelShadingData(ivec2(pixel), centralPrimaryHitPacked);
+    PackedHitInfo centralPacked;
+    ShadingData centralSd =
+        getPixelShadingData(ivec2(pixel), centralPacked);
 
-    if (!isValidPackedHitInfo(centralPrimaryHitPacked)) return;
-
-    uvec2 chosenPixel = pixel;
-    int chosen_i = -1;
-    vec3 color = vec3(0.0);
+    if (!isValidPackedHitInfo(centralPacked)) return;
 
     int neighborCount = getNeighborCount();
     uint startIndex = uint(sampleNext1D(sg) * kNeighborOffsetCount);
 
     for (int i = 0; i < neighborCount; ++i)
     {
-        ivec2 neighborPixel = getNextNeighborPixel(startIndex, ivec2(pixel), i);
+        ivec2 np = getNextNeighborPixel(startIndex, ivec2(pixel), i);
+        if (!isValidScreenRegion(np)) continue;
 
-        if (!isValidScreenRegion(neighborPixel)) continue;
+        uint neighborOffset = 0; // TODO
+        PathReservoir neighborReservoir = outputReservoirs[neighborOffset];
 
-        uint neighborOffset =
-            gPathRetracePass.params.getReservoirOffset(uvec2(neighborPixel));
+        PackedHitInfo neighborPacked;
+        ShadingData neighborSd = getPixelShadingData(np, neighborPacked);
 
-        PathReservoir neighborReservoir =
-            outputReservoirs[neighborOffset];
+        if (!isValidPackedHitInfo(neighborPacked)) continue;
+        if (!isValidGeometry(centralSd, neighborSd)) continue;
 
-        PackedHitInfo neighborPrimaryHitPacked;
-        ShadingData neighborPrimarySd =
-            getPixelShadingData(neighborPixel, neighborPrimaryHitPacked);
-
-        if (!isValidPackedHitInfo(neighborPrimaryHitPacked)) continue;
-        if (!isValidGeometry(centralPrimarySd, neighborPrimarySd)) continue;
-
-        HitInfo dstRcPrevVertexHit;
-        HitInfo dstRcPrevVertexHit2;
-
-        vec3 dstRcPrevVertexWo;
-        vec3 dstRcPrevVertexWo2;
-
+        HitInfo dstHit;
+        vec3 dstWo;
         vec3 Tp;
-        vec3 Tp2;
 
-        if (centralReservoir.pathFlags.rcVertexLength() > 1)
+        if (rcVertexLength(centralReservoir) > 1)
         {
             Tp = traceHybridShiftRays(
                 gPathRetracePass.params,
                 false,
-                neighborPrimaryHitPacked,
-                neighborPrimarySd,
+                neighborPacked,
+                neighborSd,
                 centralReservoir,
-                dstRcPrevVertexHit,
-                dstRcPrevVertexWo
+                dstHit,
+                dstWo
             );
 
-            reconnectionDataBuffer[centralOffset].data[2 * i] =
-                ReconnectionData(dstRcPrevVertexHit, dstRcPrevVertexWo, Tp);
-        }
-
-        if (neighborReservoir.pathFlags.rcVertexLength() > 1)
-        {
-            Tp2 = traceHybridShiftRays(
-                gPathRetracePass.params,
-                false,
-                centralPrimaryHitPacked,
-                centralPrimarySd,
-                neighborReservoir,
-                dstRcPrevVertexHit2,
-                dstRcPrevVertexWo2
-            );
-
-            reconnectionDataBuffer[centralOffset].data[2 * i + 1] =
-                ReconnectionData(dstRcPrevVertexHit2, dstRcPrevVertexWo2, Tp2);
+            reconnectionDataBuffer[centralOffset].data[2 * i].rcPrevHit = dstHit;
+            reconnectionDataBuffer[centralOffset].data[2 * i].rcPrevWo = vec4(dstWo, 0.0);
+            reconnectionDataBuffer[centralOffset].data[2 * i].pathThroughput = vec4(Tp, 0.0);
         }
     }
 }
 
 // ------------------------------------------------------------------
-// Entry
-// ------------------------------------------------------------------
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(local_size_x = 16, local_size_y = 16) in;
 
 void main()
 {

@@ -28,7 +28,31 @@ struct PixelReconnectionData
     float4 padding[RCDATA_PAD_SIZE]; //pad to 256 bytes
 }
 
+    ShadingData getPixelShadingData(int2 pixel, out PackedHitInfo PrimaryHitPacked)
+    {
+        ShadingData sd = {};
+        Ray ray = gScene.camera.computeRayPinhole(pixel, params.frameDim);
+        PrimaryHitPacked = vbuffer[pixel];
+        if (isValidPackedHitInfo(PrimaryHitPacked))
+        {
+            HitInfo PrimaryHit; PrimaryHit.unpack(PrimaryHitPacked);
+            sd = loadShadingData(PrimaryHit, -ray.dir, true);
+        }
+        return sd;
+    }
 
+    ShadingData getPixelTemporalShadingData(int2 pixel, out PackedHitInfo PrimaryHitPacked)
+    {
+        ShadingData sd = {};
+        Ray ray = gScene.camera.computeRayPinholePrevFrame(pixel, params.frameDim);
+        PrimaryHitPacked = temporalVbuffer[pixel];
+        if (isValidPackedHitInfo(PrimaryHitPacked))
+        {
+            HitInfo PrimaryHit; PrimaryHit.unpack(PrimaryHitPacked);
+            sd = loadShadingData(PrimaryHit, -ray.dir, true);
+        }
+        return sd;
+    } 
 
 struct HitInfo()
 {
@@ -338,10 +362,16 @@ bool mergeReservoirNoResampling(
 // Resources
 // --------------------------------------------------
 
-layout(binding = 0) uniform sampler2D vbuffer;
-layout(binding = 1) uniform sampler2D temporalVbuffer;
+layout(set = 0, binding = 6) readonly buffer vBuffer {
+    HitInfo h[];
+} vBuff;
+
+layout(binding = 1) uniform sampler2D temporalVbuffer
+{
+    HitInfo tH[];
+} tempVBuff; // prev frame temp buffer
 layout(binding = 2) uniform sampler2D motionVectors;
-layout(binding = 3) uniform sampler2D directLighting;
+//layout(binding = 3) uniform sampler2D directLighting;
 
 layout(binding = 4, rgba32f) uniform image2D outputColor;
 
