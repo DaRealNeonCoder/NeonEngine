@@ -1,6 +1,7 @@
 #version 460
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_buffer_reference : enable
+#extension GL_EXT_ray_query : require
 
 // ------------------------------------------------------------------
 // Constants (TEMP — replace with your real values)
@@ -14,42 +15,65 @@
 // Basic structs
 // ------------------------------------------------------------------
 
-struct PackedHitInfo
-{
-    uint x, y, z, w;
-};
 
+//cls
 struct HitInfo
 {
     vec4 misc1;
 };
 
-struct TriangleHit
+//cls
+struct Ray
 {
-    vec3 dummy;
+    vec3 origin;
+    vec3 dir;
+    float tMin;
+    float tMax;
 };
 
+//cls
 struct ShadingData
 {
-    vec3 posW;
-    vec3 N;
-    vec3 V;
+    // --- Geometry (16-byte aligned each) ---
+    vec4 posW;        // xyz = position
+    vec4 N;           // xyz = shading normal
+    vec4 V;           // xyz = view direction
+
+    vec4 faceN;       // xyz = geometric normal
+
+    vec4 diffuse;     // xyz = albedo
+
+    uint materialID;
+    uint flags;
+    float NdotV;
+    float pad;     
 };
 
+
+//cls
 struct PathReservoir
 {
-    vec4 F;
-    vec4 cachedJacobian;
+    vec4 F; // cached integrand (always updated after a new path is chosen in RIS)
+    vec4 cachedJacobian; // saved previous vertex scatter PDF, scatter PDF, and geometry term at rcVertex (used when rcVertex is not v2)
 
-    vec4 rcVertexWi[2];
-    vec4 rcVertexIrradiance[2];
-
-    vec4 misc1;
-    vec4 misc2;
+    vec4 rcVertexWi[2]; // incident direction on reconnection vertex
+    vec4 rcVertexIrradiance[2]; // sampled irradiance on reconnection vertex
 
     HitInfo hitInfo;
-};
 
+    vec4 rcVertexBSDFLightSamplingIrradiance;
+
+    float M; // this is a float, because temporal history length is allowed to be a fraction. 
+    float weight; // during RIS and when used as a "RisState", this is w_sum; during RIS when used as an incoming reseroivr or after RIS, this is 1/p(y) * 1/M * w_sum
+    uint pathFlags; // this is a path type indicator, see the struct definition for details
+    uint rcRandomSeed; // saved random seed after rcVertex (due to the need of blending half-vector reuse and random number replay)
+    
+    float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
+    uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
+    float rcLightPdf; 
+
+};
+//cls
 struct ReconnectionData
 {
     HitInfo rcPrevHit;
@@ -57,55 +81,83 @@ struct ReconnectionData
     vec4 pathThroughput;
 };
 
+//cls
 struct PixelReconnectionData
 {
     ReconnectionData data[RCDATA_PATH_NUM];
     vec4 padding[RCDATA_PAD_SIZE];
 };
 
+//wrk
 struct RestirPathTracerParams
 {
     uvec2 frameDim;
     uint seed;
 };
 
-// ------------------------------------------------------------------
-// Dummy helper (REPLACE with real implementation)
-// ------------------------------------------------------------------
+//wrk
 int rcVertexLength(PathReservoir r)
 {
-    return int(r.misc1.x); // placeholder
+    return int(0); // placeholder
 }
 
 // ------------------------------------------------------------------
 // External functions (decl only)
 // ------------------------------------------------------------------
 
-struct Ray { vec3 origin; vec3 dir; };
 
-Ray computeRayPinhole(uvec2 pixel, uvec2 frameDim);
-ShadingData loadShadingData(HitInfo hit, vec3 wo, bool flag);
-TriangleHit getTriangleHit(HitInfo hit);
-void unpackHitInfo(in PackedHitInfo packed, out HitInfo hit);
 
-float sampleNext1D(inout uint state);
 
-vec3 traceHybridShiftRays(
-    RestirPathTracerParams params,
-    bool flag,
-    PackedHitInfo srcHit,
-    ShadingData srcSd,
-    PathReservoir reservoir,
-    out HitInfo dstHit,
-    out vec3 dstWo);
 
-uint TinyUniformSampleGenerator(uvec2 pixel, uint seed);
 
-// ------------------------------------------------------------------
-// Resources
-// ------------------------------------------------------------------
+//wrk
+float sampleNext1D(inout uint state)
+{
+    return 1.0;
+}
 
-layout(set = 0, binding = 6) readonly buffer vBuffer {
+//RAND
+//cls
+uint initRNG(uvec2 pixel, uint frame, uint extra)
+{
+    uint seed = pixel.x * 1973u + pixel.y * 9277u + frame * 26699u + extra * 104729u;
+    seed ^= (seed << 13);
+    seed ^= (seed >> 17);
+    seed ^= (seed << 5);
+    return seed;
+}
+
+//cls
+uint nextUInt(inout uint state)
+{
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+//wrk
+struct Material
+{
+    vec4 diffuseOpacity;     // xyz = albedo, w = opacity
+    vec4 specularRoughness;  // xyz = specular, w = roughness
+    vec4 emissive;           // xyz = emission
+    vec4 extraParams;        // whatever you want (metallic, etc.)
+};
+
+//cls
+float nextFloat(inout uint state)
+{
+    return float(nextUInt(state)) * (1.0 / 4294967296.0); // 1 / 2^32
+}
+
+//cls
+vec2 nextVec2(inout uint state)
+{
+    return vec2(nextFloat(state), nextFloat(state));
+}
+
+layout(set = 0, binding = 6) readonly buffer vbuffer {
     HitInfo h[];
 } vBuff;
 
@@ -130,11 +182,41 @@ layout(set = 0, binding = 5) buffer TemporalReservoirs
     PathReservoir temporalReservoirs[];
 };
 
-layout(set = 0, binding = 6) buffer ReconnectionBuffer
+layout(set = 0, binding = 7) buffer ReconnectionBuffer
 {
     PixelReconnectionData reconnectionDataBuffer[];
 };
 
+layout(set = 0, binding = 8) uniform sampler2D gWorldPosition;
+layout(set = 0, binding = 9) uniform sampler2D gWorldShadingNormal;
+layout(set = 0, binding = 10) uniform sampler2D gWorldFaceNormal;
+
+layout(set = 0, binding = 11) readonly buffer MaterialBuffer
+{
+    Material materials[];
+};
+
+layout(set = 0, binding = 12) uniform accelerationStructureEXT topLevelAS;
+
+struct RayTracingVertex {
+    vec4 pos;
+    vec4 normal;
+    vec4 uv;
+    uint materialIndex;
+    uint pad1;
+    uint pad2; 
+    uint pad3; 
+    
+};
+
+
+layout(set = 0, binding = 13) readonly buffer VertexBuffer {
+    RayTracingVertex v[];
+} vertices;
+
+layout(set = 0, binding = 14) readonly buffer IndexBuffer {
+    uint i[];
+} indices;
 // ------------------------------------------------------------------
 
 const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
@@ -142,6 +224,8 @@ const uint kNeighborOffsetMask  = kNeighborOffsetCount - 1;
 
 // ------------------------------------------------------------------
 
+
+//wrk
 layout(push_constant) uniform CB
 {
     RestirPathTracerParams params;
@@ -156,77 +240,450 @@ layout(push_constant) uniform CB
     int gSmallWindowRadius;
 
     bool gFeatureBasedRejection;
+
+    vec3 posW;
+    vec3 cameraW;
+    float nearZ;
+    float farZ;
+    
+
+
 } gPathRetracePass;
+
+//cls 
+Ray computeRayPinhole(uvec2 pixel, uvec2 frameDim)
+{
+    Ray ray;
+
+    // Compute the normalized ray direction assuming a pinhole camera.
+    ray.origin = gPathRetracePass.posW;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(frameDim);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    ray.dir = normalize(vec3(ndc, 1.0));
+
+    float invCos = 1.f / dot(normalize(gPathRetracePass.cameraW), ray.dir);
+    ray.tMin = gPathRetracePass.nearZ * invCos;
+    ray.tMax = gPathRetracePass.farZ * invCos;
+
+    return ray;
+}
+
+
+//cls
+uint getReservoirOffset(uvec2 pixel)
+{
+    return pixel.y * gPathRetracePass.params.frameDim.x + pixel.x;
+}
 
 // ------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------
 
-bool isValidPackedHitInfo(PackedHitInfo packed)
+//cls
+bool isValidPackedHitInfo(HitInfo packed)
 {
-    return packed.x != 0;
+    return packed.misc1.x != 0.0;
 }
 
+//cls
 bool isValidScreenRegion(ivec2 pixel)
 {
     return all(greaterThanEqual(pixel, ivec2(0))) &&
            all(lessThan(pixel, ivec2(gPathRetracePass.params.frameDim)));
 }
 
+
+//no idea
+vec3 perp_stark(vec3 n)
+{
+    return normalize(abs(n.z) < 0.999 ? cross(n, vec3(0,0,1)) : cross(n, vec3(0,1,0)));
+}
+//cls
+vec3 getPrimaryRayDir(uvec2 pixel, uvec2 frameDim)
+{
+    vec2 uv  = (vec2(pixel) + 0.5) / vec2(frameDim);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    // Simple pinhole (matches your computeRayPinhole)
+    vec3 dir = normalize(vec3(ndc, 1.0));
+
+    return dir;
+}
+
+//cls
+bool loadShadingData(
+    uvec2 pixel,
+    uvec2 frameDim,
+    out ShadingData sd,
+    out HitInfo hit
+)
+{
+    sd.posW = vec4(0.0);
+    sd.N = vec4(0.0);
+    sd.V = vec4(0.0);
+    sd.faceN = vec4(0.0);
+    sd.diffuse = vec4(0.0);
+    sd.materialID = 0u;
+    sd.flags = 0u;
+    sd.NdotV = 0.0;
+    sd.pad = 0.0;
+
+    vec3 rayDir = getPrimaryRayDir(pixel, frameDim);
+
+    // ------------------------------------------------------------------
+    // GBuffer fetch
+    // ------------------------------------------------------------------
+
+    vec4 worldPos = texelFetch(gWorldPosition, ivec2(pixel), 0);
+
+    if (worldPos.w == 0.0)
+        return false;
+
+    vec3 normal = normalize(texelFetch(gWorldShadingNormal, ivec2(pixel), 0).xyz);
+    vec3 faceNormal = normalize(texelFetch(gWorldFaceNormal, ivec2(pixel), 0).xyz);
+
+    uint materialID = uint(worldPos.w);
+
+    // ------------------------------------------------------------------
+    // Material fetch
+    // ------------------------------------------------------------------
+
+    Material mat = materials[materialID];
+
+    // ------------------------------------------------------------------
+    // Fill shading data
+    // ------------------------------------------------------------------
+
+    sd.posW   = vec4(worldPos.xyz, 1.0);
+    sd.N      = vec4(normal, 0.0);
+    sd.faceN  = vec4(faceNormal, 0.0);
+    sd.V      = vec4(normalize(-rayDir), 0.0);
+
+    sd.diffuse = vec4(mat.diffuseOpacity.xyz, 0.0);
+
+    sd.materialID = materialID;
+    sd.flags      = 0;
+
+    sd.NdotV = max(dot(normal, -rayDir), 0.0);
+
+    // ------------------------------------------------------------------
+    // VBuffer hit (optional, but you already have it)
+    // ------------------------------------------------------------------
+
+    uint idx = pixel.y * frameDim.x + pixel.x;
+    hit = vBuff.h[idx];
+
+    return true;
+}
+
+//cls
 bool isValidGeometry(ShadingData a, ShadingData b)
 {
     if (!gPathRetracePass.gFeatureBasedRejection) return true;
 
     vec3 camPos = vec3(0.0);
 
-    float d0 = distance(camPos, a.posW);
-    float d1 = distance(camPos, b.posW);
+    float d0 = distance(camPos, a.posW.xyz);
+    float d1 = distance(camPos, b.posW.xyz);
 
     return dot(a.N, b.N) >= 0.5 &&
            abs(d0 - d1) < 0.1 * d0;
 }
 
-// ------------------------------------------------------------------
 
-ShadingData getPixelShadingData(ivec2 pixel, out PackedHitInfo packedHit)
+//cls
+ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
 {
     ShadingData sd;
 
-    Ray ray = computeRayPinhole(uvec2(pixel), gPathRetracePass.params.frameDim);
+    Ray ray = computeRayPinhole(pixel,gPathRetracePass.params.frameDim);
 
-    vec4 packed = texelFetch(vbuffer, pixel, 0);
+    uint idx = pixel.y *gPathRetracePass.params.frameDim.x + pixel.x;
+    PrimaryHitPacked = vBuff.h[idx];
 
-    packedHit.x = floatBitsToUint(packed.x);
-    packedHit.y = floatBitsToUint(packed.y);
-    packedHit.z = floatBitsToUint(packed.z);
-    packedHit.w = floatBitsToUint(packed.w);
-
-    if (isValidPackedHitInfo(packedHit))
+    if (isValidPackedHitInfo(PrimaryHitPacked))
     {
-        HitInfo hit;
-        unpackHitInfo(packedHit, hit);
-
-        TriangleHit th = getTriangleHit(hit);
-        sd = loadShadingData(hit, -ray.dir, true);
+        
+        ShadingData sd;
+        sd.posW = vec4(0.0);
+        sd.N = vec4(0.0);
+        sd.V = vec4(0.0);
+        sd.faceN = vec4(0.0);
+        sd.diffuse = vec4(0.0);
+        sd.materialID = 0u;
+        sd.flags = 0u;
+        sd.NdotV = 0.0;
+        sd.pad = 0.0;
+        bool valid = loadShadingData(uvec2(pixel), gPathRetracePass.params.frameDim, sd, PrimaryHitPacked);
     }
 
     return sd;
 }
-
 // ------------------------------------------------------------------
-
+//cls
 int getNeighborCount()
 {
     return gPathRetracePass.gNeighborCount;
 }
 
+struct PathState
+{
+    vec3 throughput;
+    vec3 radiance;
+
+    Ray ray;
+    HitInfo hit;
+
+    uint rng;
+
+    int pathLength;
+    int maxPathLength;
+
+    bool isActive;
+};
+
+bool traceRay(
+    vec3 origin,
+    vec3 dir,
+    float tMin,
+    float tMax,
+    out HitInfo hit)
+{
+    rayQueryEXT rq;
+
+    rayQueryInitializeEXT(
+        rq,
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT,
+        0xFF,
+        origin,
+        tMin,
+        dir,
+        tMax
+    );
+
+    while (rayQueryProceedEXT(rq))
+    {
+        // default closest hit
+    }
+
+    if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionTriangleEXT)
+    {
+        return false;
+    }
+
+    uint primID = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+    float t     = rayQueryGetIntersectionTEXT(rq, true);
+
+    vec3 P = origin + t * dir;
+
+    // Correct index fetch
+    uint base = primID * 3;
+    uvec3 tri = uvec3(
+        indices.i[base + 0],
+        indices.i[base + 1],
+        indices.i[base + 2]
+    );
+
+    RayTracingVertex v0 = vertices.v[tri.x];
+    RayTracingVertex v1 = vertices.v[tri.y];
+    RayTracingVertex v2 = vertices.v[tri.z];
+
+    vec3 p0 = v0.pos.xyz;
+    vec3 p1 = v1.pos.xyz;
+    vec3 p2 = v2.pos.xyz;
+
+    // Robust barycentrics
+    vec3 e0 = p1 - p0;
+    vec3 e1 = p2 - p0;
+    vec3 vp = P  - p0;
+
+    vec3 n = cross(e0, e1);
+    float area2 = dot(n, n);
+
+    if (area2 < 1e-12)
+        return false;
+
+    float v = dot(cross(vp, e1), n) / area2;
+    float w = dot(cross(e0, vp), n) / area2;
+
+    vec2 bary = vec2(v, w);
+
+    hit.misc1 = vec4(bary, float(primID), t);
+
+    return true;
+}
+
+vec3 tangentSpaceCosineHemisphere(vec2 xi)
+{
+    float r = sqrt(xi.x);
+    float theta = 2.0 * 3.14159265 * xi.y;
+
+    return vec3(
+        r * cos(theta),
+        r * sin(theta),
+        sqrt(max(0.0, 1.0 - xi.x))
+    );
+}
+
+vec3 makeONB(vec3 n, vec3 a)
+{
+    vec3 t = normalize(abs(n.z) < 0.999 ? cross(n, vec3(0,0,1)) : cross(n, vec3(0,1,0)));
+    vec3 b = cross(n, t);
+    return t * a.x + b * a.y + n * a.z;
+}
+
+vec3 traceRandomReplayPathHybridSimple(
+    HitInfo hit,
+    ShadingData sd,
+    Ray ray,
+    uint pathLength,
+    uint initRandomSeed,
+    inout HitInfo rcPrevHit,
+    inout vec3 rcPrevHitWo)
+{
+    PathState path;
+
+    path.throughput = vec3(1.0);
+    path.radiance   = vec3(0.0);
+
+    path.ray = ray;
+    path.hit = hit;
+
+    path.rng = initRandomSeed;
+
+    path.pathLength = 0;
+    path.maxPathLength = int(pathLength);
+
+    path.isActive = true;
+
+    path.ray.origin = sd.posW.xyz;
+
+
+
+    while (path.isActive)
+    {
+        // --------------------------------------------------
+        // Trace ray
+        // --------------------------------------------------
+        bool hasHit = traceRay(
+            path.ray.origin,
+            path.ray.dir,
+            path.ray.tMin,
+            path.ray.tMax,
+            path.hit
+        );
+
+        if (!hasHit)
+        {
+            path.radiance += path.throughput * vec3(0.0); // env map later
+            break;
+        }
+
+        // --------------------------------------------------
+        // Load shading data
+        // --------------------------------------------------
+        ShadingData sdHit;
+        HitInfo tmp = path.hit;
+
+        // You need a version of this that works from HitInfo
+        bool valid = loadShadingData(
+            uvec2(0), // placeholder — you actually need hit-based fetch
+            gPathRetracePass.params.frameDim,
+            sdHit,
+            tmp
+        );
+
+        if (!valid)
+            break;
+
+        // --------------------------------------------------
+        // Save reconnection vertex info
+        // --------------------------------------------------
+        if (path.pathLength == path.maxPathLength - 1)
+        {
+            rcPrevHit   = path.hit;
+            rcPrevHitWo = -path.ray.dir;
+        }
+
+        // --------------------------------------------------
+        // Sample BSDF (REPLAY — deterministic)
+        // --------------------------------------------------
+        vec2 xi = nextVec2(path.rng);
+
+        vec3 local = tangentSpaceCosineHemisphere(xi);
+        vec3 newDir = makeONB(sdHit.N.xyz, local);
+
+        float cosTheta = max(dot(sdHit.N.xyz, newDir), 0.0);
+
+        vec3 f = sdHit.diffuse.xyz / 3.14159265;
+
+        // --------------------------------------------------
+        // Update throughput
+        // --------------------------------------------------
+        path.throughput *= f * cosTheta;
+
+        // --------------------------------------------------
+        // Spawn next ray
+        // --------------------------------------------------
+        path.ray.origin = sdHit.posW.xyz + sdHit.N.xyz * 0.001;
+        path.ray.dir    = newDir;
+
+        path.pathLength++;
+
+        // --------------------------------------------------
+        // Termination
+        // --------------------------------------------------
+        if (path.pathLength >= path.maxPathLength)
+            break;
+    }
+
+    return path.throughput;
+}
+
+
+
+
+
+
+
+vec3 traceHybridShiftRays(
+    RestirPathTracerParams params,
+    bool usePrev,
+    HitInfo dstPrimaryHitPacked,
+    ShadingData dstPrimarySd,
+    PathReservoir srcReservoir,
+    inout HitInfo dstRcPrevVertexHit,
+    inout vec3 dstRcPrevVertexWo)
+{
+    if (srcReservoir.weight == 0.0)
+        return vec3(0.0);
+
+    Ray ray;
+    ray.origin = gPathRetracePass.posW; // camera
+    ray.dir    = -dstPrimarySd.V.xyz;
+    ray.tMin   = 0.0;
+    ray.tMax   = 1e30;
+    uint pathLength = rcVertexLength(srcReservoir);
+    return traceRandomReplayPathHybridSimple(
+        dstPrimaryHitPacked,
+        dstPrimarySd,
+        ray,
+        pathLength,              //  replace with actual pathLength
+        srcReservoir.initRandomSeed,
+        dstRcPrevVertexHit,
+        dstRcPrevVertexWo
+    );
+}
 ivec2 getNextNeighborPixel(uint startIndex, ivec2 pixel, int i)
 {
     if (gPathRetracePass.gSpatialReusePattern == 0)
     {
         uint idx = (startIndex + uint(i)) & kNeighborOffsetMask;
 
-        vec2 offset = texelFetch(neighborOffsets, int(idx), 0).xy;
+        uvec2 offset = uvec2(nO.u[2*idx], nO.u[2*idx+1]);
+
         return pixel + ivec2(offset * gPathRetracePass.gGatherRadius);
     }
     else
@@ -247,37 +704,38 @@ ivec2 getNextNeighborPixel(uint startIndex, ivec2 pixel, int i)
 // ReSTIR
 // ------------------------------------------------------------------
 
+
+
+
+//cls
 void ReSTIR(uvec2 pixel)
 {
-    uint sg = TinyUniformSampleGenerator(
-        pixel,
-        (kCandidateSamples + 1 + gPathRetracePass.gNumSpatialRounds) *
-        gPathRetracePass.params.seed +
-        kCandidateSamples + 1 +
-        gPathRetracePass.gSpatialRoundId
-    );
+    uint seed = gPathRetracePass.params.seed + uint(gPathRetracePass.gSpatialRoundId);
 
-    uint centralOffset = 0; // TODO: implement
+    uint centralOffset = getReservoirOffset(pixel);
     PathReservoir centralReservoir = outputReservoirs[centralOffset];
 
-    PackedHitInfo centralPacked;
+    HitInfo centralPacked;
+
     ShadingData centralSd =
         getPixelShadingData(ivec2(pixel), centralPacked);
 
     if (!isValidPackedHitInfo(centralPacked)) return;
 
     int neighborCount = getNeighborCount();
-    uint startIndex = uint(sampleNext1D(sg) * kNeighborOffsetCount);
+    uint rng = seed;
+    uint startIndex = uint(sampleNext1D(rng) * kNeighborOffsetCount);
 
     for (int i = 0; i < neighborCount; ++i)
     {
         ivec2 np = getNextNeighborPixel(startIndex, ivec2(pixel), i);
+
         if (!isValidScreenRegion(np)) continue;
 
-        uint neighborOffset = 0; // TODO
+        uint neighborOffset = getReservoirOffset(uvec2(np));
         PathReservoir neighborReservoir = outputReservoirs[neighborOffset];
 
-        PackedHitInfo neighborPacked;
+        HitInfo neighborPacked;
         ShadingData neighborSd = getPixelShadingData(np, neighborPacked);
 
         if (!isValidPackedHitInfo(neighborPacked)) continue;
@@ -287,21 +745,21 @@ void ReSTIR(uvec2 pixel)
         vec3 dstWo;
         vec3 Tp;
 
-        if (rcVertexLength(centralReservoir) > 1)
+     if (rcVertexLength(neighborReservoir) > 1)
         {
-            Tp = traceHybridShiftRays(
+            vec3 Tp2 = traceHybridShiftRays(
                 gPathRetracePass.params,
                 false,
-                neighborPacked,
-                neighborSd,
-                centralReservoir,
+                centralPacked,
+                centralSd,
+                neighborReservoir,
                 dstHit,
                 dstWo
             );
 
-            reconnectionDataBuffer[centralOffset].data[2 * i].rcPrevHit = dstHit;
-            reconnectionDataBuffer[centralOffset].data[2 * i].rcPrevWo = vec4(dstWo, 0.0);
-            reconnectionDataBuffer[centralOffset].data[2 * i].pathThroughput = vec4(Tp, 0.0);
+            reconnectionDataBuffer[centralOffset].data[2 * i + 1].rcPrevHit = dstHit;
+            reconnectionDataBuffer[centralOffset].data[2 * i + 1].rcPrevWo  = vec4(dstWo, 0.0);
+            reconnectionDataBuffer[centralOffset].data[2 * i + 1].pathThroughput = vec4(Tp2, 0.0);
         }
     }
 }
@@ -310,6 +768,7 @@ void ReSTIR(uvec2 pixel)
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
+//cls
 void main()
 {
     uvec2 pixel = gl_GlobalInvocationID.xy;

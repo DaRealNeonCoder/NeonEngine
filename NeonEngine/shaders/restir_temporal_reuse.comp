@@ -1,135 +1,478 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : enable
 
+// should have all the code 
+
 layout(local_size_x = 16, local_size_y = 16) in;
 
 // --------------------------------------------------
 // Forward declarations (YOU must implement)
 // --------------------------------------------------
-const uint RCDATA_PATH_NUM;
-
-//assess what bits of this ya need.
-
-
-struct ShadingData { vec3 posW; vec3 N; vec3 V; };
+#define NEIGHBOR_OFFSET_COUNT 256
+#define RCDATA_PATH_NUM 64
+#define RCDATA_PAD_SIZE 16
+#define kCandidateSamples 8
 
 
-
-struct ReconnectionData
+//cls
+struct HitInfo
 {
-    HitInfo rcPrevHit; // 16 bytes
-    vec4 rcPrevWo; // 12 bytes
-    vec4 pathThroughput; // 12 bytes
-}
-
-struct PixelReconnectionData
-{
-    ReconnectionData data[RCDATA_PATH_NUM];
-    float4 padding[RCDATA_PAD_SIZE]; //pad to 256 bytes
-}
-
-    ShadingData getPixelShadingData(int2 pixel, out PackedHitInfo PrimaryHitPacked)
-    {
-        ShadingData sd = {};
-        Ray ray = gScene.camera.computeRayPinhole(pixel, params.frameDim);
-        PrimaryHitPacked = vbuffer[pixel];
-        if (isValidPackedHitInfo(PrimaryHitPacked))
-        {
-            HitInfo PrimaryHit; PrimaryHit.unpack(PrimaryHitPacked);
-            sd = loadShadingData(PrimaryHit, -ray.dir, true);
-        }
-        return sd;
-    }
-
-    ShadingData getPixelTemporalShadingData(int2 pixel, out PackedHitInfo PrimaryHitPacked)
-    {
-        ShadingData sd = {};
-        Ray ray = gScene.camera.computeRayPinholePrevFrame(pixel, params.frameDim);
-        PrimaryHitPacked = temporalVbuffer[pixel];
-        if (isValidPackedHitInfo(PrimaryHitPacked))
-        {
-            HitInfo PrimaryHit; PrimaryHit.unpack(PrimaryHitPacked);
-            sd = loadShadingData(PrimaryHit, -ray.dir, true);
-        }
-        return sd;
-    } 
-
-struct HitInfo()
-{
-    vec4 misc1
+    vec4 misc1;
 
     /*
 
         packed vector of the following: 
         vec2 barycentrics;
-        uint primitveID; // The triangle we hit on the model. 
+        float primitveID; // The triangle we hit on the model. 
                          // original implementation had another uint for the mesh instance ID, which imma ignore.
     
     */
-}
+};
 
+//cls
 struct PathReservoir
 {
-    vec4 F = 0.f; // cached integrand (always updated after a new path is chosen in RIS)
+    vec4 F; // cached integrand (always updated after a new path is chosen in RIS)
     vec4 cachedJacobian; // saved previous vertex scatter PDF, scatter PDF, and geometry term at rcVertex (used when rcVertex is not v2)
 
     vec4 rcVertexWi[2]; // incident direction on reconnection vertex
     vec4 rcVertexIrradiance[2]; // sampled irradiance on reconnection vertex
 
-    vec4 misc1;
-    
-    /* 
-    
-        packed vector of the following:
-    
-        float M = 0.f; // this is a float, because temporal history length is allowed to be a fraction. 
-        float weight = 0.f; // during RIS and when used as a "RisState", this is w_sum; during RIS when used as an incoming reseroivr or after RIS, this is 1/p(y) * 1/M * w_sum
-        uint pathFlags; // this is a path type indicator, see the struct definition for details
-        uint rcRandomSeed; // saved random seed after rcVertex (due to the need of blending half-vector reuse and random number replay)
-    
-    */
-
-    vec4 misc2;
-
-    /* 
-    
-        packed vector of the following:
-     
-        float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
-        uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
-        
-    */
-
     HitInfo hitInfo;
 
+    vec4 rcVertexBSDFLightSamplingIrradiance;
+
+    float M; // this is a float, because temporal history length is allowed to be a fraction. 
+    float weight; // during RIS and when used as a "RisState", this is w_sum; during RIS when used as an incoming reseroivr or after RIS, this is 1/p(y) * 1/M * w_sum
+    uint pathFlags; // this is a path type indicator, see the struct definition for details
+    uint rcRandomSeed; // saved random seed after rcVertex (due to the need of blending half-vector reuse and random number replay)
+    
+    float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
+    uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
+    float rcLightPdf; 
+
+};
+//cls
+struct Ray
+{
+    vec3 origin;
+    vec3 dir;
+    float tMin;
+    float tMax;
+};
+
+//wrk
+struct RestirPathTracerParams
+{
+    uvec2 frameDim;
+    uint seed;
+};
+
+
+//wrk
+layout(push_constant) uniform CB
+{
+    RestirPathTracerParams params;
+
+    int gSpatialRoundId;
+    int gNumSpatialRounds;
+    uint gSpatialReusePattern;
+
+    int gNeighborCount;
+    float gGatherRadius;
+
+    int gSmallWindowRadius;
+
+    bool gFeatureBasedRejection;
+
+    vec3 posW;
+    vec3 cameraW;
+    float nearZ;
+    float farZ;
+    
+
+    int gEnableTemporalReprojection;
+    float gTemporalHistoryLength;
+    int gNoResamplingForTemporalReuse;
+    int useDirectLighting;
+    int useTalbotMIS;
+    int gIsLastRound;
+
+} gPathRetracePass;
+
+
+float PathReservoir_toScalar(vec3 F)
+{
+    return dot(F, vec3(0.299, 0.587, 0.114));
+}
+//cls
+void finalizeRIS(inout PathReservoir r)
+{
+    float p_hat = PathReservoir_toScalar(r.F.xyz);
+    if (p_hat == 0.f || r.M == 0.f) r.weight = 0.f;
+    else r.weight = r.weight / (p_hat * r.M);
 }
 
-*/
+void PathReservoir_init(inout PathReservoir r)
+{
+    r.F = vec4(0.0);
+    r.cachedJacobian = vec4(0.0);
+
+    r.rcVertexWi[0] = vec4(0.0);
+    r.rcVertexWi[1] = vec4(0.0);
+
+    r.rcVertexIrradiance[0] = vec4(0.0);
+    r.rcVertexIrradiance[1] = vec4(0.0);
+
+    r.hitInfo.misc1.x = 0; // bary x
+    r.hitInfo.misc1.y = 0; // bary y
+
+    r.hitInfo.misc1.z = -1; // set Instance vert to invalid (the ref used the instance ID instead, Id imagine this is fine too :D )
+
+    r.rcVertexBSDFLightSamplingIrradiance = vec4(0.0);
+
+    r.M = 0.0;
+    r.weight = 0.0;
+
+    r.pathFlags = 0u;
+    r.rcRandomSeed = 0u;
+
+    r.lightPdf = 0.0;
+    r.initRandomSeed = 0u;
+    r.rcLightPdf = 0.0;
+}
+//cls
+void PathReservoir_prepareMerging(inout PathReservoir r)
+{
+    r.weight *= PathReservoir_toScalar(r.F.xyz) * r.M;
+}
+
+//cls
+void PathReservoir_finalizeGRIS(inout PathReservoir r)
+{
+    float p_hat = PathReservoir_toScalar(r.F.xyz);
+    if (p_hat == 0.0) r.weight = 0.0;
+    else r.weight /= p_hat;
+}
+
+//cls
+struct ShadingData
+{
+    // --- Geometry (16-byte aligned each) ---
+    vec4 posW;        // xyz = position
+    vec4 N;           // xyz = shading normal
+    vec4 V;           // xyz = view direction
+
+    vec4 faceN;       // xyz = geometric normal
+
+    vec4 diffuse;     // xyz = albedo, w = roughness
+
+    uint materialID;
+    uint flags;
+    float NdotV;
+    float pad;     
+};
+
+//cls
+struct ReconnectionData
+{
+    HitInfo rcPrevHit;
+    vec4 rcPrevWo; 
+    vec4 pathThroughput; 
+};
+
+
+//wrk
+struct Material
+{
+    vec4 diffuseOpacity;     // xyz = albedo, w = opacity
+    vec4 specularRoughness;  // xyz = specular, w = roughness
+    vec4 emissive;           // xyz = emission
+    vec4 extraParams;        // whatever you want (metallic, etc.)
+};
+
+
+//cls
+struct PixelReconnectionData
+{
+    ReconnectionData data[RCDATA_PATH_NUM];
+};
+
+
+layout(set = 0, binding = 6) readonly buffer vBuffer {
+    HitInfo h[];
+} vBuff;
+
+layout(binding = 1) readonly buffer temporalVbuffer
+{
+    HitInfo tH[];
+} tempVBuff; // prev frame temporal buffer
+
+layout(binding = 2) uniform sampler2D motionVectors;
+layout(binding = 3) uniform sampler2D directLighting;
+//do smth bout ts.
+
+layout(binding = 4, rgba32f) uniform image2D outputColor;
+
+layout(std430, binding = 5) buffer OutputReservoirs {
+    PathReservoir outputReservoirs[];
+};
+
+layout(std430, binding = 6) buffer TemporalReservoirs {
+    PathReservoir temporalReservoirs[];
+};
+
+layout(std430, binding = 7) buffer Reconnections {
+    PixelReconnectionData reconnectionDataBuffer[];
+};
+
+layout(set = 0, binding = 8) uniform sampler2D gWorldPosition;
+layout(set = 0, binding = 9) uniform sampler2D gWorldShadingNormal;
+layout(set = 0, binding = 10) uniform sampler2D gWorldFaceNormal;
+
+layout(set = 0, binding = 11) readonly buffer MaterialBuffer
+{
+    Material materials[];
+};
+
+//wrk
+vec3 perp_stark(vec3 n)
+{
+    return normalize(abs(n.z) < 0.999 ? cross(n, vec3(0,0,1)) : cross(n, vec3(0,1,0)));
+}
+//cls
+vec3 getPrimaryRayDir(uvec2 pixel, uvec2 frameDim)
+{
+    vec2 uv  = (vec2(pixel) + 0.5) / vec2(frameDim);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    // Simple pinhole (matches your computeRayPinhole)
+    vec3 dir = normalize(vec3(ndc, 1.0));
+
+    return dir;
+}
+//cls
+bool loadShadingData(
+    uvec2 pixel,
+    uvec2 frameDim,
+    out ShadingData sd,
+    out HitInfo hit
+)
+{
+    sd.posW = vec4(0.0);
+    sd.N = vec4(0.0);
+    sd.V = vec4(0.0);
+    sd.faceN = vec4(0.0);
+    sd.diffuse = vec4(0.0);
+    sd.materialID = 0u;
+    sd.flags = 0u;
+    sd.NdotV = 0.0;
+    sd.pad = 0.0;
+
+    vec3 rayDir = getPrimaryRayDir(pixel, frameDim);
+
+    // ------------------------------------------------------------------
+    // GBuffer fetch
+    // ------------------------------------------------------------------
+
+    vec4 worldPos = texelFetch(gWorldPosition, ivec2(pixel), 0);
+
+    if (worldPos.w == 0.0)
+        return false;
+
+    vec3 normal = normalize(texelFetch(gWorldShadingNormal, ivec2(pixel), 0).xyz);
+    vec3 faceNormal = normalize(texelFetch(gWorldFaceNormal, ivec2(pixel), 0).xyz);
+
+    uint materialID = uint(worldPos.w);
+
+    // ------------------------------------------------------------------
+    // Material fetch
+    // ------------------------------------------------------------------
+
+    Material mat = materials[materialID];
+
+    // ------------------------------------------------------------------
+    // Fill shading data
+    // ------------------------------------------------------------------
+
+    sd.posW   = vec4(worldPos.xyz, 1.0);
+    sd.N      = vec4(normal, 0.0);
+    sd.faceN  = vec4(faceNormal, 0.0);
+    sd.V      = vec4(normalize(-rayDir), 0.0);
+
+    sd.diffuse = vec4(mat.diffuseOpacity.xyz, 0.0);
+
+    sd.materialID = materialID;
+    sd.flags      = 0;
+
+    sd.NdotV = max(dot(normal, -rayDir), 0.0);
+
+    // ------------------------------------------------------------------
+    // VBuffer hit (optional, but you already have it)
+    // ------------------------------------------------------------------
+
+    uint idx = pixel.y * frameDim.x + pixel.x;
+    hit = vBuff.h[idx];
+
+    return true;
+}
+
+//RAND
+//cls
+uint initRNG(uvec2 pixel, uint frame, uint extra)
+{
+    uint seed = pixel.x * 1973u + pixel.y * 9277u + frame * 26699u + extra * 104729u;
+    seed ^= (seed << 13);
+    seed ^= (seed >> 17);
+    seed ^= (seed << 5);
+    return seed;
+}
+
+//cls
+uint nextUInt(inout uint state)
+{
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+//cls
+float nextFloat(inout uint state)
+{
+    return float(nextUInt(state)) * (1.0 / 4294967296.0); // 1 / 2^32
+}
+
+//cls
+vec2 nextVec2(inout uint state)
+{
+    return vec2(nextFloat(state), nextFloat(state));
+}
+
+
+
+//cls 
+Ray computeRayPinhole(uvec2 pixel, uvec2 frameDim)
+{
+    Ray ray;
+
+    // Compute the normalized ray direction assuming a pinhole camera.
+    ray.origin = gPathRetracePass.posW;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(frameDim);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    ray.dir = normalize(vec3(ndc, 1.0));
+
+    float invCos = 1.f / dot(normalize(gPathRetracePass.cameraW), ray.dir);
+    ray.tMin = gPathRetracePass.nearZ * invCos;
+    ray.tMax = gPathRetracePass.farZ * invCos;
+
+    return ray;
+}
+
+//cls
+bool isValidHitInfo(HitInfo packed)
+{
+    return packed.misc1.x != 0.0;
+}
+
+//cls
+ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
+{
+    ShadingData sd;
+
+    Ray ray = computeRayPinhole(pixel,gPathRetracePass.params.frameDim);
+
+    uint idx = pixel.y *gPathRetracePass.params.frameDim.x + pixel.x;
+    PrimaryHitPacked = vBuff.h[idx];
+
+    if (isValidHitInfo(PrimaryHitPacked))
+    {
+        
+        ShadingData sd;
+        sd.posW = vec4(0.0);
+        sd.N = vec4(0.0);
+        sd.V = vec4(0.0);
+        sd.faceN = vec4(0.0);
+        sd.diffuse = vec4(0.0);
+        sd.materialID = 0u;
+        sd.flags = 0u;
+        sd.NdotV = 0.0;
+        sd.pad = 0.0;
+        bool valid = loadShadingData(uvec2(pixel), gPathRetracePass.params.frameDim, sd, PrimaryHitPacked);
+    }
+
+    return sd;
+}
+
+
+//cls
+ShadingData getPixelTemporalShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
+{
+    ShadingData sd;
+
+    Ray ray = computeRayPinhole(pixel,gPathRetracePass.params.frameDim);
+
+    uint idx = pixel.y * gPathRetracePass.params.frameDim.x + pixel.x;
+    PrimaryHitPacked = tempVBuff.tH[idx];
+
+    if (isValidHitInfo(PrimaryHitPacked))
+    {
+        
+        ShadingData sd;
+        sd.posW = vec4(0.0);
+        sd.N = vec4(0.0);
+        sd.V = vec4(0.0);
+        sd.faceN = vec4(0.0);
+        sd.diffuse = vec4(0.0);
+        sd.materialID = 0u;
+        sd.flags = 0u;
+        sd.NdotV = 0.0;
+        sd.pad = 0.0;
+        bool valid = loadShadingData(uvec2(pixel), gPathRetracePass.params.frameDim, sd, PrimaryHitPacked);
+    }
+
+    return sd;
+
+}
+
+//cls
 void PathReservoir_copyMeta(inout PathReservoir dst, PathReservoir src)
 {
-    dst.pathFlags      = src.pathFlags;
-    dst.rcRandomSeed   = src.rcRandomSeed;
-    dst.initRandomSeed = src.initRandomSeed;
+    dst.F = src.F;
     dst.cachedJacobian = src.cachedJacobian;
-    dst.lightPdf       = src.lightPdf;
 
     dst.rcVertexWi[0] = src.rcVertexWi[0];
-    dst.rcVertexHit   = src.rcVertexHit;
-    dst.rcVertexIrradiance[0] = src.rcVertexIrradiance[0];
-
-#if BPR
     dst.rcVertexWi[1] = src.rcVertexWi[1];
+
+    dst.rcVertexIrradiance[0] = src.rcVertexIrradiance[0];
     dst.rcVertexIrradiance[1] = src.rcVertexIrradiance[1];
+
+    dst.hitInfo = src.hitInfo;
+
     dst.rcVertexBSDFLightSamplingIrradiance = src.rcVertexBSDFLightSamplingIrradiance;
+
+    dst.M = src.M;
+    dst.weight = src.weight;
+
+    dst.pathFlags = src.pathFlags;
+    dst.rcRandomSeed = src.rcRandomSeed;
+
+    dst.lightPdf = src.lightPdf;
+    dst.initRandomSeed = src.initRandomSeed;
     dst.rcLightPdf = src.rcLightPdf;
-#endif
 }
+
+
+
+//cls
+
 bool PathReservoir_merge(
     inout PathReservoir dst,
     vec3 in_F,
     float in_Jacobian,
     PathReservoir src,
-    inout SampleGenerator sg,
+    inout uint rng,
     float misWeight,
     bool forceAdd
 )
@@ -140,58 +483,48 @@ bool PathReservoir_merge(
               src.weight *
               misWeight;
 
+    // Always accumulate M first (matches reference)
     dst.M += src.M;
 
-    if (!isfinite(w) || w == 0.0)
+    // Reject invalid weights
+    if (isnan(w) || w == 0.0)
         return false;
 
+    // Accumulate weighti
     dst.weight += w;
 
-    // Accept?
-    if (forceAdd || sampleNext1D(sg) * dst.weight <= w)
+    // Reservoir acceptance test
+    if (forceAdd || nextFloat(rng) * dst.weight <= w)
     {
-        PathReservoir_copyMeta(dst, src);
-        dst.F = in_F;
+        dst.pathFlags = src.pathFlags;
+        dst.rcRandomSeed = src.rcRandomSeed;
+        dst.initRandomSeed = src.initRandomSeed;
+        dst.cachedJacobian = src.cachedJacobian;
+        dst.lightPdf = src.lightPdf;
+
+        // RC vertex data (BPR always enabled)
+        dst.rcVertexWi[0] = src.rcVertexWi[0];
+        dst.rcVertexWi[1] = src.rcVertexWi[1];
+
+        dst.hitInfo = src.hitInfo;
+
+        dst.rcVertexIrradiance[0] = src.rcVertexIrradiance[0];
+        dst.rcVertexIrradiance[1] = src.rcVertexIrradiance[1];
+
+        dst.rcVertexBSDFLightSamplingIrradiance =
+            src.rcVertexBSDFLightSamplingIrradiance;
+
+        dst.rcLightPdf = src.rcLightPdf;
+
+        dst.F = vec4(in_F,0);
+
         return true;
     }
 
     return false;
 }
 
-bool PathReservoir_merge(
-    inout PathReservoir dst,
-    vec3 in_F,
-    float in_Jacobian,
-    PathReservoir src,
-    inout SampleGenerator sg,
-    float misWeight,
-    bool forceAdd
-)
-{
-    float w = PathReservoir_toScalar(in_F) *
-              in_Jacobian *
-              src.M *
-              src.weight *
-              misWeight;
-
-    dst.M += src.M;
-
-    if (!isfinite(w) || w == 0.0)
-        return false;
-
-    dst.weight += w;
-
-    // Accept?
-    if (forceAdd || sampleNext1D(sg) * dst.weight <= w)
-    {
-        PathReservoir_copyMeta(dst, src);
-        dst.F = in_F;
-        return true;
-    }
-
-    return false;
-}
-
+/*cls why does this exist
 bool PathReservoir_mergeInSamplePixel(
     inout PathReservoir dst,
     PathReservoir src,
@@ -202,7 +535,7 @@ bool PathReservoir_mergeInSamplePixel(
 
     dst.M += src.M;
 
-    if (!isfinite(w) || w == 0.0)
+    if (isnan(w) || w == 0.0)
         return false;
 
     dst.weight += w;
@@ -218,93 +551,63 @@ bool PathReservoir_mergeInSamplePixel(
     return false;
 }
 
-float PathReservoir_toScalar(vec3 F)
+*/
+
+
+vec3 evalBSDFCosine(const ShadingData sd, const vec3 wi)
 {
-    // luminance
-    return dot(F, vec3(0.299, 0.587, 0.114));
+    vec3 N = normalize(sd.N.xyz);
+    vec3 albedo = sd.diffuse.xyz;
+
+    float cosTheta = max(dot(N, wi), 0.0);
+
+    // Lambert BRDF = albedo / PI
+    // Cosine term included => (albedo / PI) * cosTheta
+    return albedo * cosTheta * (1.0 / 3.14159265);
 }
 
-bool shiftAndMergeReservoir(
-    inout PathReservoir dstReservoir,
-    PathReservoir srcReservoir,
-    const ShadingData dstSd,
-    const ShadingData srcRcSd,
-    inout SampleGenerator sg,
-    float misWeight,
-    bool useResamplingMIS
-)
+
+float evalPdfBSDF(const ShadingData sd, const vec3 wi)
 {
-    if (srcReservoir.M == 0.0)
-        return false;
+    vec3 N = normalize(sd.N.xyz);
 
-    // ---------------------------------------
-    // Compute shifted integrand
-    // ---------------------------------------
-    float J;
-    float3 shiftedF = computeShiftedIntegrand(
-        dstSd,
-        srcRcSd,
-        srcReservoir.rcVertexWi[0],
-        srcReservoir.F,
-        srcReservoir.F, // already includes throughput
-        srcReservoir.cachedJacobian,
-        J
-    );
+    float cosTheta = max(dot(N, wi), 0.0);
 
-    if (all(lessThanEqual(shiftedF, float3(0.0))) || J <= 0.0)
-        return false;
-
-    // ---------------------------------------
-    // Merge
-    // ---------------------------------------
-    if (useResamplingMIS)
-    {
-        return dstReservoir.mergeWithResamplingMIS(
-            shiftedF,
-            J,
-            srcReservoir,
-            sg,
-            misWeight
-        );
-    }
-    else
-    {
-        return dstReservoir.merge(
-            shiftedF,
-            J,
-            srcReservoir,
-            sg,
-            misWeight
-        );
-    }
+    // Lambert cosine-weighted hemisphere PDF
+    return cosTheta / 3.14159265;
 }
 
-float3 computeShiftedIntegrand(
+// wrk
+
+
+vec3 computeShiftedIntegrand(
     const ShadingData dstSd,
     const ShadingData srcRcSd,
-    const float3 srcWi,
-    const float3 srcF,
-    const float3 srcThroughput,
-    const float3 cachedJacobian, // (prevPdf, currPdf, G)
+    const vec3 srcWi,
+    const vec3 srcF,
+    const vec3 cachedJacobian,
     out float outJacobian
 )
 {
     // ---------------------------------------
     // Reconstruct geometry term
     // ---------------------------------------
-    float3 dstToRc = srcRcSd.pos - dstSd.pos;
+    vec3 dstToRc = srcRcSd.posW.xyz - dstSd.posW.xyz;
     float dist2 = dot(dstToRc, dstToRc);
-    float3 wi = normalize(dstToRc);
+    vec3 wi = normalize(dstToRc);
 
-    float G = abs(dot(dstSd.normal, wi)) *
-              abs(dot(srcRcSd.normal, -wi)) / max(dist2, 1e-6);
+    float G = abs(dot(dstSd.N.xyz, wi)) *
+              abs(dot(srcRcSd.N.xyz, -wi)) / max(dist2, 1e-6);
 
     // ---------------------------------------
     // Evaluate BSDF at destination
     // ---------------------------------------
-    float3 f_dst = evalBSDF(dstSd, wi);
 
-    float dstPdf = evalBSDFPdf(dstSd, wi);
+
+
+    vec3 f_dst = evalBSDFCosine(dstSd, wi);
+
+    float dstPdf = evalPdfBSDF(dstSd, wi);
 
     // ---------------------------------------
     // Reconstruct source PDFs
@@ -330,250 +633,437 @@ float3 computeShiftedIntegrand(
     return srcF * J;
 }
 
-
-bool mergeReservoirWithResamplingMIS(
+//cls
+bool mergeInSamplePixel(
     inout PathReservoir dst,
-    PathReservoir src,
-    float3 shiftedF,
-    float J,
+    PathReservoir inReservoir,
+    inout uint rng
+)
+{
+    float w = inReservoir.weight;
+
+    dst.M += inReservoir.M;
+
+    if (isnan(w) || w == 0.0)
+        return false;
+
+    dst.weight += w;
+
+    // Accept?
+    if (nextFloat(rng) * dst.weight <= w)
+    {
+        dst.pathFlags = inReservoir.pathFlags;
+        dst.rcRandomSeed = inReservoir.rcRandomSeed;
+        dst.initRandomSeed = inReservoir.initRandomSeed;
+        dst.cachedJacobian = inReservoir.cachedJacobian;
+        dst.lightPdf = inReservoir.lightPdf;
+
+        dst.rcVertexWi[0] = inReservoir.rcVertexWi[0];
+        dst.rcVertexWi[1] = inReservoir.rcVertexWi[1];
+
+        dst.hitInfo = inReservoir.hitInfo;
+
+        dst.rcVertexIrradiance[0] = inReservoir.rcVertexIrradiance[0];
+        dst.rcVertexIrradiance[1] = inReservoir.rcVertexIrradiance[1];
+
+        dst.rcVertexBSDFLightSamplingIrradiance = inReservoir.rcVertexBSDFLightSamplingIrradiance;
+        dst.rcLightPdf = inReservoir.rcLightPdf;
+
+        dst.F = inReservoir.F;
+        return true;
+    }
+
+    return false;
+}
+
+//cls
+bool shiftAndMergeReservoir(
+    inout PathReservoir dstReservoir,
+    PathReservoir srcReservoir,
+    ShadingData dstSd,
+    ShadingData srcRcSd,
+    inout uint rng,
     float misWeight,
-    inout SampleGenerator sg
+    bool useResamplingMIS
 )
 {
-    return dst.mergeWithResamplingMIS(
-        shiftedF,
-        J,
-        src,
-        sg,
-        misWeight,
-        false
+    if (srcReservoir.M == 0.0)
+        return false;
+
+    // ---------------------------------------
+    // Compute shifted integrand
+    // ---------------------------------------
+    float J;
+    vec3 shiftedF = computeShiftedIntegrand(
+        dstSd,
+        srcRcSd,
+        srcReservoir.rcVertexWi[0].xyz,
+        srcReservoir.F.xyz,
+        srcReservoir.cachedJacobian.xyz,
+        J
     );
+
+    if (all(lessThanEqual(shiftedF, vec3(0.0))) || J <= 0.0)
+        return false;
+
+    // ---------------------------------------
+    // Merge
+    // ---------------------------------------
+    if (useResamplingMIS)
+    {
+        return PathReservoir_merge(
+            dstReservoir,
+            shiftedF,
+            J,
+            srcReservoir,
+            rng,
+            misWeight,
+            false
+        );
+    }
+    else
+    {
+        return mergeInSamplePixel(
+            dstReservoir,
+            srcReservoir,
+            rng
+        );
+    }
 }
 
-bool mergeReservoirNoResampling(
+//cls
+bool mergeWithResamplingMIS(
     inout PathReservoir dst,
-    PathReservoir src,
-    inout SampleGenerator sg
+    vec4 in_F,
+    float in_Jacobian,
+    PathReservoir inReservoir,
+    inout uint rng,
+    float misWeight,
+    bool forceAdd
 )
 {
-    return dst.mergeInSamplePixel(src, sg);
+    float w = PathReservoir_toScalar(in_F.xyz) * in_Jacobian * inReservoir.weight * misWeight;
+
+    dst.M += inReservoir.M;
+
+    if (isnan(w) || w == 0.0)
+        return false;
+
+    dst.weight += w;
+
+    // Accept?
+    if (forceAdd || nextFloat(rng) * dst.weight <= w)
+    {
+        dst.pathFlags = inReservoir.pathFlags;
+        dst.rcRandomSeed = inReservoir.rcRandomSeed;
+        dst.initRandomSeed = inReservoir.initRandomSeed;
+        dst.cachedJacobian = inReservoir.cachedJacobian;
+        dst.lightPdf = inReservoir.lightPdf;
+
+        dst.rcVertexWi[0] = inReservoir.rcVertexWi[0];
+        dst.rcVertexWi[1] = inReservoir.rcVertexWi[1];
+
+        dst.hitInfo = inReservoir.hitInfo;
+
+        dst.rcVertexIrradiance[0] = inReservoir.rcVertexIrradiance[0];
+        dst.rcVertexIrradiance[1] = inReservoir.rcVertexIrradiance[1];
+
+        dst.rcVertexBSDFLightSamplingIrradiance = inReservoir.rcVertexBSDFLightSamplingIrradiance;
+        dst.rcLightPdf = inReservoir.rcLightPdf;
+
+        dst.F = in_F;
+        return true;
+    }
+
+    return false;
 }
+
+
+
 // --------------------------------------------------
 // Resources
 // --------------------------------------------------
 
-layout(set = 0, binding = 6) readonly buffer vBuffer {
-    HitInfo h[];
-} vBuff;
-
-layout(binding = 1) uniform sampler2D temporalVbuffer
-{
-    HitInfo tH[];
-} tempVBuff; // prev frame temp buffer
-layout(binding = 2) uniform sampler2D motionVectors;
-//layout(binding = 3) uniform sampler2D directLighting;
-
-layout(binding = 4, rgba32f) uniform image2D outputColor;
-
-layout(std430, binding = 5) buffer OutputReservoirs {
-    PathReservoir outputReservoirs[];
-};
-
-layout(std430, binding = 6) buffer TemporalReservoirs {
-    PathReservoir temporalReservoirs[];
-};
-
-layout(std430, binding = 7) buffer Reconnections {
-    PixelReconnectionData reconnectionDataBuffer[];
-};
 
 // --------------------------------------------------
 
-layout(push_constant) uniform Push {
-    ivec2 frameDim;
-    int gNumSpatialRounds;
-    int gIsLastRound;
-    int gEnableTemporalReprojection;
-    float gTemporalHistoryLength;
-    int gNoResamplingForTemporalReuse;
-    int useDirectLighting;
-} params;
-
-// --------------------------------------------------
-
-bool isValidHitInfo(HitInfo p)
-{
-    return p.x != 0u;
-}
-
+//cls
 bool isValidScreenRegion(ivec2 pixel)
 {
     return all(greaterThanEqual(pixel, ivec2(0))) &&
-           all(lessThan(pixel, params.frameDim));
+           all(lessThan(pixel,gPathRetracePass.params.frameDim));
 }
 
+//cls
 uint getOffset(uvec2 p)
 {
-    return p.y * uint(params.frameDim.x) + p.x;
+    return p.y * uint(gPathRetracePass.params.frameDim.x) + p.x;
 }
 
-// --------------------------------------------------
 
+//cls
 void ReSTIR(uvec2 pixel)
 {
+    uint rng = initRNG(
+    pixel,
+    gPathRetracePass.params.seed,
+    uint(gPathRetracePass.gSpatialRoundId)
+    );
+
     uint centralOffset = getOffset(pixel);
 
-    PathReservoir dstReservoir = outputReservoirs[centralOffset];
+
+    PathReservoir dstReservoir = outputReservoirs[centralOffset]; // redundant but alas.
     PathReservoir centralReservoir = dstReservoir;
 
-    float currentM = dstReservoir.M;
+    float currentM = max(dstReservoir.M, 1.0);//oregano doesnt have clamping
+    vec3 initialColor = dstReservoir.F.xyz * dstReservoir.weight;
+    // -----------------------------------------
+    // Talbot init / prepare merging
+    // -----------------------------------------
+    bool Talbot = true;
+
+    if (Talbot)
+        PathReservoir_init(dstReservoir);
+    else
+        PathReservoir_prepareMerging(dstReservoir);
 
     // -----------------------------------------
-    // Load current + temporal pixels
+    // Load shading data
     // -----------------------------------------
+    HitInfo centralPacked;
+    ShadingData centralSd = getPixelShadingData(ivec2(pixel), centralPacked);
 
-    HitInfo centralHit;
-    centralHit.x = texelFetch(vbuffer, ivec2(pixel), 0).x;
-
-    if (!isValidHitInfo(centralHit))
+    if (!isValidHitInfo(centralPacked))
         return;
 
+    // -----------------------------------------
+    // Reproject
+    // -----------------------------------------
     vec2 motion = texelFetch(motionVectors, ivec2(pixel), 0).xy;
+
     ivec2 prevPixel = ivec2(pixel);
 
-    if (params.gEnableTemporalReprojection == 1)
+    if (gPathRetracePass.gEnableTemporalReprojection == 1)
     {
-        prevPixel = ivec2(vec2(pixel) + motion * vec2(params.frameDim));
+        vec2 jitter = nextVec2(rng);
+        prevPixel = ivec2(vec2(pixel) + motion * vec2(gPathRetracePass.params.frameDim) + jitter);
     }
 
     if (!isValidScreenRegion(prevPixel))
         return;
 
-    HitInfo temporalHit;
-    temporalHit.x = texelFetch(temporalVbuffer, prevPixel, 0).x;
+    HitInfo temporalPacked;
+    ShadingData temporalSd = getPixelTemporalShadingData(prevPixel, temporalPacked);
 
-    if (!isValidHitInfo(temporalHit))
+    if (!isValidHitInfo(temporalPacked))
         return;
 
     uint prevOffset = getOffset(uvec2(prevPixel));
-
     PathReservoir temporalReservoir = temporalReservoirs[prevOffset];
 
     temporalReservoir.M = min(
-        params.gTemporalHistoryLength * currentM,
+        gPathRetracePass.gTemporalHistoryLength * currentM,
         temporalReservoir.M
     );
 
     // -----------------------------------------
-    // TALBOT MIS
+    // Reconnection data (Hybrid shift)
+    // -----------------------------------------
+    ReconnectionData rcData;
+    ReconnectionData dummyRcData;
+
+
+
+    // -----------------------------------------
+    // TEMPORAL REUSE (TOGGLEABLE MIS)
     // -----------------------------------------
 
-    for (int i = -1; i <= 0; i++)
+
+    if (gPathRetracePass.useTalbotMIS == 1)
     {
-        float p_sum = 0.0;
-        float p_self = 0.0;
+        float dstJacobian;
 
-        PathReservoir tempDst = dstReservoir;
-
-        bool possible = false;
-        float dstJacobian = 1.0;
-
-        if (i == -1)
+        // =====================================
+        // TALBOT RMIS
+        // =====================================
+        for (int i = -1; i <= 0; i++)
         {
-            tempDst = outputReservoirs[centralOffset];
-            possible = tempDst.weight > 0.0;
-        }
-        else
-        {
-            ReconnectionData rcData;
+            float p_sum = 0.0;
+            float p_self = 0.0;
 
-            possible = shiftAndMergeReservoir(
-                dstJacobian,
-                centralHit,
-                /* centralSd */ ShadingData(),
-                tempDst,
-                /* temporalSd */ ShadingData(),
-                temporalReservoir,
-                rcData,
-                true,
-                false,
-                1.0,
-                true
-            );
-        }
+            PathReservoir tempDst = dstReservoir;
 
-        if (possible)
-        {
+            bool possible = false;
+
+            // ---------------------------------
+            // Candidate selection
+            // ---------------------------------
+            if (i == -1)
+            {
+                dstJacobian = 1.0;
+                tempDst = centralReservoir;
+                possible = tempDst.weight > 0.0;
+            }
+            else
+            {
+                rcData = reconnectionDataBuffer[centralOffset].data[1];
+
+                possible = shiftAndMergeReservoir(
+                    tempDst,
+                    temporalReservoir,
+                    centralSd,
+                    temporalSd,
+                    rng,
+                    1.0,
+                    true // hypothetical selection
+                );
+            }
+
+            if (!possible) continue;
+
+            // ---------------------------------
+            // MIS weight computation
+            // ---------------------------------
             for (int j = -1; j <= 0; j++)
             {
                 if (j == -1)
                 {
-                    float cur_p = PathReservoir_toScalar(tempDst.F) * currentM;
+                    float cur_p = PathReservoir_toScalar(tempDst.F.xyz) * currentM;
                     p_sum += cur_p;
+
                     if (i == -1) p_self = cur_p;
                 }
                 else
                 {
                     if (i == j)
                     {
-                        p_self = PathReservoir_toScalar(temporalReservoir.F)
-                                 / dstJacobian * temporalReservoir.M;
-                        p_sum += p_self;
+                        float val = PathReservoir_toScalar(temporalReservoir.F.xyz) / dstJacobian
+                                    * temporalReservoir.M;
+
+                        p_self = val;
+                        p_sum += val;
                         continue;
                     }
+                    rcData = reconnectionDataBuffer[centralOffset].data[0];
 
-                    float tJacobian;
-
-                    vec3 integrand = computeShiftedIntegrand(
-                        tJacobian,
-                        temporalHit,
-                        ShadingData(),
-                        ShadingData(),
-                        tempDst,
-                        ReconnectionData(),
-                        true,
-                        true
+                    float J;
+                    vec3 shiftedF = computeShiftedIntegrand(
+                        centralSd,
+                        temporalSd,
+                        temporalReservoir.rcVertexWi[0].xyz,
+                        temporalReservoir.F.xyz,
+                        temporalReservoir.cachedJacobian.xyz,
+                        J
                     );
 
-                    float p_ = PathReservoir_toScalar(integrand) * tJacobian;
-                    p_sum += p_ * temporalReservoir.M;
+                    float p = PathReservoir_toScalar(shiftedF) * J;
+                    p_sum += p * temporalReservoir.M;
                 }
+            }
+
+            float misWeight = (p_sum > 0.0) ? (p_self / p_sum) : 0.0;
+
+            PathReservoir neighbor = (i == -1) ? tempDst : temporalReservoir;
+
+            PathReservoir_merge(
+                dstReservoir,
+                tempDst.F.xyz,
+                dstJacobian,
+                neighbor,
+                rng,
+                misWeight,
+                false
+            );
+        }
+
+        if (dstReservoir.weight > 0.0)
+        {
+            PathReservoir_finalizeGRIS(dstReservoir);
+        }
+    }
+    else
+    {
+        // =====================================
+        // CONSTANT RMIS
+        // =====================================
+        float dstJacobian = 1.0;
+        bool selected = false;
+
+        // basic temporal merge
+        selected = shiftAndMergeReservoir(
+            dstReservoir,
+            temporalReservoir,
+            centralSd,
+            temporalSd,
+            rng,
+            1.0,
+            false
+        );
+
+        bool chooseCurrent = !selected;
+
+        // ---------------------------------
+        // MIS weight
+        // ---------------------------------
+        if (dstReservoir.weight > 0.0)
+        {
+            if (chooseCurrent)
+            {
+                float count = currentM;
+
+                float J;
+                vec3 shiftedF = computeShiftedIntegrand(
+                        centralSd,
+                        temporalSd,
+                        temporalReservoir.rcVertexWi[0].xyz,
+                        temporalReservoir.F.xyz,
+                        temporalReservoir.cachedJacobian.xyz,
+                        J
+                    );
+
+
+                float approxPdf = PathReservoir_toScalar(shiftedF) * J;
+
+                if (approxPdf > 0.0)
+                    count += temporalReservoir.M;
+
+                float misWeight = 1.0 / max(1.0, count);
+
+                dstReservoir.weight *= dstReservoir.M * misWeight;
+            }
+            else
+            {
+                float sum_pdf = PathReservoir_toScalar(temporalReservoir.F.xyz) / dstJacobian;
+
+                float misWeight =
+                    (PathReservoir_toScalar(temporalReservoir.F.xyz) / dstJacobian) /
+                    (sum_pdf * temporalReservoir.M +
+                     PathReservoir_toScalar(dstReservoir.F.xyz) * currentM);
+
+                dstReservoir.weight *= dstReservoir.M * misWeight;
             }
         }
 
-        float misWeight = (p_sum == 0.0) ? 0.0 : (p_self / p_sum);
-
-        PathReservoir neighbor =
-            (i == -1) ? tempDst : temporalReservoir;
-
-        mergeReservoirWithResamplingMIS(
-            tempDst.F,
-            dstJacobian,
-            dstReservoir,
-            tempDst,
-            neighbor,
-            misWeight
-        );
+        finalizeRIS(dstReservoir);
     }
 
     // -----------------------------------------
-    // Finalize + output
+    // Safety
     // -----------------------------------------
-
-    if (dstReservoir.weight < 0.0 ||
-        isnan(dstReservoir.weight) ||
-        isinf(dstReservoir.weight))
-    {
+    if (isnan(dstReservoir.weight))
         dstReservoir.weight = 0.0;
-    }
 
     outputReservoirs[centralOffset] = dstReservoir;
 
-    vec3 color = dstReservoir.F * dstReservoir.weight;
+    // -----------------------------------------
+    // Output color
+    // -----------------------------------------
+    vec3 color = dstReservoir.F.xyz * dstReservoir.weight;
 
-    if (params.gIsLastRound == 1)
+    if (gPathRetracePass.gIsLastRound == 1)
     {
-        if (params.useDirectLighting == 1)
+        if (gPathRetracePass.useDirectLighting == 1)
         {
             color += texelFetch(directLighting, ivec2(pixel), 0).rgb;
         }
@@ -590,7 +1080,7 @@ void main()
 {
     uvec2 pixel = gl_GlobalInvocationID.xy;
 
-    if (any(greaterThanEqual(pixel, uvec2(params.frameDim))))
+    if (any(greaterThanEqual(pixel, uvec2(gPathRetracePass.params.frameDim))))
         return;
 
     ReSTIR(pixel);

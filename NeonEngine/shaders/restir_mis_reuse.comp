@@ -102,13 +102,13 @@ struct ReconnectionData
     HitInfo rcPrevHit;
     vec4 rcPrevWo;
     vec4 pathThroughput;
-
-    void Init()
-    {
-        rcPrevWo = vec4(0.0);
-        pathThroughput = vec4(0.0);
-    }
 };
+
+void ReconnectionData_Init(out ReconnectionData rc)
+{
+    rc.rcPrevWo = vec4(0.0);
+    rc.pathThroughput = vec4(0.0);
+}
 
 const int RCDATA_PATH_NUM = 6;
 
@@ -170,8 +170,6 @@ struct Scene
 {
     CameraData camera;
 };
-
-Scene gScene;
 
 // ------------------------------------------------------------------
 // RNG (replacement for TinyUniformSampleGenerator)
@@ -318,7 +316,8 @@ void BPRComputeMISWeights(ivec2 pixel)
     float p_sum = 0.0;
     float p_self = 0.0;
 
-    PathReservoir centralReservoir = outputReservoirs[0];
+    uint idx = pixel.x + pixel.y * params.frameDim.x;
+    PathReservoir centralReservoir = outputReservoirs[idx];
 
     float p_sum_NEE = 0.0;
     float p_self_NEE = 0.0;
@@ -342,8 +341,8 @@ void BPRComputeMISWeights(ivec2 pixel)
 
     float misWeight = (p_sum == 0.0) ? 0.0 : (p_self / p_sum);
 
-    misWeightBuffer[0].rcBSDFMISWeight = misWeight;
-    misWeightBuffer[0].rcNEEMISWeight  =
+    misWeightBuffer[idx].rcBSDFMISWeight = misWeight;
+    misWeightBuffer[idx].rcNEEMISWeight  =
         (p_sum_NEE == 0.0) ? 0.0 : (p_self_NEE / p_sum_NEE);
 }
 
