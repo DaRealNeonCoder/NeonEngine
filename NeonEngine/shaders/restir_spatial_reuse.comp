@@ -790,7 +790,7 @@ ivec2 getNextNeighborPixel(uint startIndex, ivec2 pixel, int i)
 void ReSTIR(uvec2 pixel)
 {
     uint seed = gPathRetracePass.params.seed + uint(gPathRetracePass.gSpatialRoundId);
-    uint rng = initRNG(pixel, 0u, 1337u);
+    uint rng = initRNG(pixel, seed, 1337u);
 
     uint offset = getReservoirOffset(ivec2(pixel));
     PathReservoir dst = outputReservoirs.data[offset];
@@ -800,7 +800,6 @@ void ReSTIR(uvec2 pixel)
 
     if (!isValidHitInfo(packed)) return;
 
-    // Initialization matches original logic
     if(gPathRetracePass.pathSamplingMode == 1) // talbot, pairwise or pathreuse
     {
         PathReservoir_init(dst);
@@ -809,9 +808,10 @@ void ReSTIR(uvec2 pixel)
     {
         PathReservoir_prepareMerging(dst);
     }
-    float centralM = max(dst.M, 1.0);
+    float centralM = dst.M;
     int count = getNeighborCount();
-    uint start = uint(rand(seed) * float(NEIGHBOR_OFFSET_COUNT));
+    uint start = uint(nextFloat(rng) * float(NEIGHBOR_OFFSET_COUNT));
+    
     ReconnectionData dummyRcData;
     // --------------------------------------------------
     // TALBOT RMIS

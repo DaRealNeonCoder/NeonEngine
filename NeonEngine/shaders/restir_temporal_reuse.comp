@@ -816,8 +816,10 @@ void ReSTIR(uvec2 pixel)
     PathReservoir dstReservoir = outputReservoirs[centralOffset]; // redundant but alas.
     PathReservoir centralReservoir = dstReservoir;
 
-    float currentM = max(dstReservoir.M, 1.0);//oregano doesnt have clamping
+    float currentM = dstReservoir.M     
     vec3 initialColor = dstReservoir.F.xyz * dstReservoir.weight;
+
+
     // -----------------------------------------
     // Talbot init / prepare merging
     // -----------------------------------------
@@ -873,12 +875,11 @@ void ReSTIR(uvec2 pixel)
     ReconnectionData rcData;
     ReconnectionData dummyRcData;
 
-
-
     // -----------------------------------------
     // TEMPORAL REUSE (TOGGLEABLE MIS)
     // -----------------------------------------
 
+    //talbot multiple importance sampling is fine, RMIS branch is unconfirmed.
 
     if (gPathRetracePass.useTalbotMIS == 1)
     {
@@ -907,6 +908,8 @@ void ReSTIR(uvec2 pixel)
             }
             else
             {
+                //preform hybrid shift
+
                 rcData = reconnectionDataBuffer[centralOffset].data[1];
 
                 possible = shiftAndMergeReservoir(
@@ -945,6 +948,7 @@ void ReSTIR(uvec2 pixel)
                         p_sum += val;
                         continue;
                     }
+                    //hybrid, reference gave options
                     rcData = reconnectionDataBuffer[centralOffset].data[0];
 
                     float J;

@@ -648,10 +648,6 @@ vec3 traceRandomReplayPathHybridSimple(
 
 
 
-
-
-
-
 vec3 traceHybridShiftRays(
     RestirPathTracerParams params,
     bool usePrev,
@@ -685,88 +681,123 @@ vec3 traceHybridShiftRays(
 // ------------------------------------------------------------------
 // Core ReSTIR pass
 // ------------------------------------------------------------------
-
-//cls
-void ReSTIR(uvec2 pixel)
+void BPRComputeMISWeights(ivec2 pixel)
 {
-    uint rng = initRNG(pixel, 0u, 1337u);
+    uint sg = initRNG(uvec2(block), params.seed, uint(kCandidateSamples + 1 + gNumSpatialRounds));
+    
+    //rooks pattern
+    int blockShiftOffset;
+    
+    blockShiftOffset = 16;
 
-    uint centralOffset = getReservoirOffset(pixel);
+    ivec2 block = (pixel - blockShiftOffset + 16) / 16;
+
+    float patternSample = nextFloat(sg);
+    uint patternIndex = min(255u, uint(patternSample * 256.0));
+
+    ivec2 pixelInBlock = (pixel - blockShiftOffset + 16) % 16;
+    int pixelInBlockId = pixelInBlock.y * 16 + pixelInBlock.x;
+
+    int byteAddress = pixelInBlockId / 2;
+
+    uint word = nRooksPattern[
+        (patternIndex * 256u + 128u + 4u * uint(byteAddress / 4)) / 4u
+    ];//fix loading
+
+    int groupId =
+        int((word >> (8 * (byteAddress % 4)))
+              >> (4 * (pixelInBlockId % 2))) & 0xF;
+
+    ivec4 NRookQuery = ivec4(pixelInBlock, groupId, int(patternIndex));
+    // ------------------------------------------------------------
+    // Central reservoir
+    // ------------------------------------------------------------
+    uint centralOffset = params.getReservoirOffset(pixel);
     PathReservoir centralReservoir = outputReservoirs[centralOffset];
 
-    HitInfo centralPrimaryHitPacked;
-    ShadingData centralPrimarySd =
-        getPixelShadingData(ivec2(pixel), centralPrimaryHitPacked);
+    PackedHitInfo centralHitPacked;
+    ShadingData centralSd = getPixelShadingData(pixel, centralHitPacked);
 
-    if (!isValidPackedHitInfo(centralPrimaryHitPacked))
-        return;
-
-    vec2 motionVector = texelFetch(motionVectors, ivec2(pixel), 0).xy;
-
-    ivec2 prevPixel = ivec2(pixel);
-    bool foundTemporalSurface = true;
-
-    if (pc.gEnableTemporalReprojection != 0)
+    if (!isValidPackedHitInfo(centralHitPacked))
     {
-        vec2 jitter = nextVec2(rng) - 0.5;
-        prevPixel = ivec2(pixel + motionVector * vec2(pc.params.frameDim) + jitter);
+        misWeightBuffer[centralOffset].rcBSDFMISWeight = 0.0;
+        misWeightBuffer[centralOffset].rcNEEMISWeight  = 0.0; // when does this happen?
+        return;
     }
 
-    if (!isValidScreenRegion(prevPixel) || !foundTemporalSurface)
-        return;
+    ReconnectionData dummyRcData;
+    dummyRcData;
 
-    HitInfo temporalPrimaryHitPacked;
-    ShadingData temporalPrimarySd =
-        getPixelTemporalShadingData(prevPixel, temporalPrimaryHitPacked);
+    // ------------------------------------------------------------
+    // MIS accumulation
+    // ------------------------------------------------------------
+    float p_sum = 0.0;
+    float p_self = 0.0;
 
-    if (!isValidPackedHitInfo(temporalPrimaryHitPacked))
-        return;
+    float p_sum_NEE = 0.0;
+    float p_self_NEE = 0.0;
 
-    PathReservoir temporalReservoir =
-        temporalReservoirs[getReservoirOffset(uvec2(prevPixel))];
+    int neighborCount = getNeighborCount();
 
-    HitInfo dstRcPrevVertexHit;
-    HitInfo dstRcPrevVertexHit2;
-
-    vec3 dstRcPrevVertexWo;
-    vec3 dstRcPrevVertexWo2;
-
-    vec3 Tp;
-    vec3 Tp2;
-
-    if (rcVertexLength(centralReservoir) > 1)
+    for (int j = 0; j < neighborCount; ++j)
     {
-        Tp = traceHybridShiftRays(
-            pc.params,
-            true,
-            temporalPrimaryHitPacked,
-            temporalPrimarySd,
-            centralReservoir,
-            dstRcPrevVertexHit,
-            dstRcPrevVertexWo
-        );
+        if (j == pixelInBlock.x)
+        {
+            float p = PathReservoir_toScalar(centralReservoir.F) > 0.0 ? 1.0 : 0.0;
+            float p_NEE = PathReservoir_toScalar(centralReservoir.rcVertexIrradiance[1]) > 0.0 ? 1.0 : 0.0;
 
-        reconnectionDataBuffer[centralOffset].data[0].rcPrevHit = dstRcPrevVertexHit;
-        reconnectionDataBuffer[centralOffset].data[0].rcPrevWo = vec4(dstRcPrevVertexWo, 0.0);
-        reconnectionDataBuffer[centralOffset].data[0].pathThroughput = vec4(Tp, 0.0);
+            p_self = p;
+            p_self_NEE = p_NEE;
+
+            p_sum += p;
+            p_sum_NEE += p_NEE;
+        }
+        else
+        {
+            ivec2 neighborPixel =
+                getPathReuseNextNeighborPixel(NRookQuery, pixel, j);
+
+            if (!isValidScreenRegion(neighborPixel))
+                continue;
+
+            PackedHitInfo neighborHitPacked;
+            ShadingData neighborSd = getPixelShadingData(neighborPixel, neighborHitPacked);
+
+            if (!isValidPackedHitInfo(neighborHitPacked))
+                continue;
+
+            float jacobian = 0.0;
+            float neeOut = 0.0;
+
+            computeShiftedIntegrandExtraOutput(
+                params,
+                jacobian,
+                neeOut,
+                neighborHitPacked,
+                neighborSd,
+                centralSd,
+                centralReservoir,
+                dummyRcData,
+                true
+            );
+
+            float p = jacobian;
+            float p_NEE = neeOut;
+
+            p_sum += p;
+            p_sum_NEE += p_NEE;
+        }
     }
 
-    if (rcVertexLength(temporalReservoir) > 1)
-    {
-        Tp2 = traceHybridShiftRays(
-            pc.params,
-            false,
-            centralPrimaryHitPacked,
-            centralPrimarySd,
-            temporalReservoir,
-            dstRcPrevVertexHit2,
-            dstRcPrevVertexWo2
-        );
+    // ------------------------------------------------------------
+    // MIS weights
+    // ------------------------------------------------------------
+    float misWeight     = (p_sum == 0.0) ? 0.0 : (p_self / p_sum);
+    float misWeightNEE  = (p_sum_NEE == 0.0) ? 0.0 : (p_self_NEE / p_sum_NEE);
 
-        reconnectionDataBuffer[centralOffset].data[1].rcPrevHit = dstRcPrevVertexHit2;
-        reconnectionDataBuffer[centralOffset].data[1].rcPrevWo = vec4(dstRcPrevVertexWo2, 0.0);
-        reconnectionDataBuffer[centralOffset].data[1].pathThroughput = vec4(Tp2, 0.0);
-    }
+    misWeightBuffer[centralOffset].rcBSDFMISWeight = misWeight;
+    misWeightBuffer[centralOffset].rcNEEMISWeight  = misWeightNEE;
+
 }
 
 // ------------------------------------------------------------------

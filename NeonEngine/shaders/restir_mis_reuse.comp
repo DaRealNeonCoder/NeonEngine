@@ -306,46 +306,164 @@ ivec2 getPathReuseNextNeighborPixel(ivec4 NRookQuery, ivec2 pixel, int i)
     return pixel + ivec2((i % 4) - 2, (i / 4) - 2);
 }
 
-// ------------------------------------------------------------------
-// Core MIS computation
-// ------------------------------------------------------------------
+
+void PathReservoir_init(inout PathReservoir r)
+{
+    r.F = vec4(0.0);
+    r.cachedJacobian = vec4(0.0);
+
+    r.rcVertexWi[0] = vec4(0.0);
+    r.rcVertexWi[1] = vec4(0.0);
+
+    r.rcVertexIrradiance[0] = vec4(0.0);
+    r.rcVertexIrradiance[1] = vec4(0.0);
+
+    r.hitInfo.misc1.x = 0; // bary x
+    r.hitInfo.misc1.y = 0; // bary y
+
+    r.hitInfo.misc1.z = -1; // set Instance vert to invalid (the ref used the instance ID instead, Id imagine this is fine too :D )
+
+    r.rcVertexBSDFLightSamplingIrradiance = vec4(0.0);
+
+    r.M = 0.0;
+    r.weight = 0.0;
+
+    r.pathFlags = 0u;
+    r.rcRandomSeed = 0u;
+
+    r.lightPdf = 0.0;
+    r.initRandomSeed = 0u;
+    r.rcLightPdf = 0.0;
+}
+
+
+
+//cls
 void BPRComputeMISWeights(ivec2 pixel)
 {
-    uint seed = params.seed + uint(pixel.x + pixel.y * 4096);
+    // ------------------------------------------------------------
+    // NRooks / block setup (ver2 equivalent)
+    // ------------------------------------------------------------
+    uint rng = initRNG(uvec2(pixel), params.seed, uint(gSpatialRoundId));
 
+    int blockShiftOffset;
+    if (PathReusePattern(gSpatialReusePattern) == PathReusePattern_NRooks)
+        blockShiftOffset = 16;
+    else
+        blockShiftOffset = int(params.seed % 16u);
+
+    ivec2 block = (pixel - blockShiftOffset + 16) / 16;
+
+    // replaces TinyUniformSampleGenerator + sampleNext1D
+    uint sg = initRNG(uvec2(block), params.seed, uint(kCandidateSamples + 1 + gNumSpatialRounds));
+
+    float patternSample = nextFloat(sg);
+    uint patternIndex = min(255u, uint(patternSample * 256.0));
+
+    ivec2 pixelInBlock = (pixel - blockShiftOffset + 16) % 16;
+    int pixelInBlockId = pixelInBlock.y * 16 + pixelInBlock.x;
+
+    int byteAddress = pixelInBlockId / 2;
+
+    uint word = nRooksPattern[
+        (patternIndex * 256u + 128u + 4u * uint(byteAddress / 4)) / 4u
+    ];
+
+    int groupId =
+        int((word >> (8 * (byteAddress % 4)))
+              >> (4 * (pixelInBlockId % 2))) & 0xF;
+
+    ivec4 NRookQuery = ivec4(pixelInBlock, groupId, int(patternIndex));
+
+    // ------------------------------------------------------------
+    // Central reservoir
+    // ------------------------------------------------------------
+    uint centralOffset = params.getReservoirOffset(pixel);
+    PathReservoir centralReservoir = outputReservoirs[centralOffset];
+
+    PackedHitInfo centralHitPacked;
+    ShadingData centralSd = getPixelShadingData(pixel, centralHitPacked);
+
+    //should be fine.
+    if (!isValidPackedHitInfo(centralHitPacked))
+    {
+        return;
+    }
+
+    ReconnectionData dummyRcData;
+    PathReservoir_init(dummyRcData);
+
+    // ------------------------------------------------------------
+    // MIS accumulation
+    // ------------------------------------------------------------
     float p_sum = 0.0;
     float p_self = 0.0;
-
-    uint idx = pixel.x + pixel.y * params.frameDim.x;
-    PathReservoir centralReservoir = outputReservoirs[idx];
 
     float p_sum_NEE = 0.0;
     float p_self_NEE = 0.0;
 
-    for (int j = 0; j < int(NEIGHBOR_OFFSET_COUNT); ++j)
+    int neighborCount = getNeighborCount();
+
+    for (int j = 0; j < neighborCount; ++j)
     {
-        float r = rand(seed);
-
-        float p = r;
-        float p_NEE = r;
-
-        if (j == 0)
+        if (j == pixelInBlock.x)
         {
+            float p = PathReservoir_toScalar(centralReservoir.F) > 0.0 ? 1.0 : 0.0;
+            float p_NEE = PathReservoir_toScalar(centralReservoir.rcVertexIrradiance[1]) > 0.0 ? 1.0 : 0.0;
+
             p_self = p;
             p_self_NEE = p_NEE;
-        }
 
-        p_sum += p;
-        p_sum_NEE += p_NEE;
+            p_sum += p;
+            p_sum_NEE += p_NEE;
+        }
+        else
+        {
+            ivec2 neighborPixel =
+                getPathReuseNextNeighborPixel(NRookQuery, pixel, j);
+
+            if (!isValidScreenRegion(neighborPixel))
+                continue;
+
+            PackedHitInfo neighborHitPacked;
+            ShadingData neighborSd = getPixelShadingData(neighborPixel, neighborHitPacked);
+
+            if (!isValidPackedHitInfo(neighborHitPacked))
+                continue;
+
+            float jacobian = 0.0;
+            float neeOut = 0.0;
+
+            computeShiftedIntegrandExtraOutput(
+                params,
+                jacobian,
+                neeOut,
+                neighborHitPacked,
+                neighborSd,
+                centralSd,
+                centralReservoir,
+                dummyRcData,
+                true
+            );
+
+            float p = jacobian;
+            float p_NEE = neeOut;
+
+            p_sum += p;
+            p_sum_NEE += p_NEE;
+        }
     }
 
-    float misWeight = (p_sum == 0.0) ? 0.0 : (p_self / p_sum);
+    // ------------------------------------------------------------
+    // MIS weights
+    // ------------------------------------------------------------
+    float misWeight     = (p_sum == 0.0) ? 0.0 : (p_self / p_sum);
+    float misWeightNEE  = (p_sum_NEE == 0.0) ? 0.0 : (p_self_NEE / p_sum_NEE);
 
-    misWeightBuffer[idx].rcBSDFMISWeight = misWeight;
-    misWeightBuffer[idx].rcNEEMISWeight  =
-        (p_sum_NEE == 0.0) ? 0.0 : (p_self_NEE / p_sum_NEE);
+    misWeightBuffer[centralOffset].rcBSDFMISWeight = misWeight;
+    misWeightBuffer[centralOffset].rcNEEMISWeight  = misWeightNEE;
+
 }
-
 // ------------------------------------------------------------------
 // Entry
 // ------------------------------------------------------------------
