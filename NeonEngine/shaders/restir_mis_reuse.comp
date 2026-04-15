@@ -12,17 +12,6 @@ const uint kNeighborOffsetMask  = kNeighborOffsetCount - 1;
 // ------------------------------------------------------------------
 // UBO Params (stubbed struct)
 // ------------------------------------------------------------------
-struct RestirPathTracerParams
-{
-    ivec2 frameDim;
-    uint seed;
-    uint dummy;
-};
-
-layout(set = 0, binding = 0) uniform RestirPathTracerParamsUBO
-{
-    RestirPathTracerParams params;
-};
 
 // ------------------------------------------------------------------
 // Basic Types
@@ -35,11 +24,23 @@ struct Ray
     float tMax;
 };
 
+
+//cls
 struct ShadingData
 {
-    vec3 posW;
-    vec3 N;
-    vec3 V;
+    // --- Geometry (16-byte aligned each) ---
+    vec4 posW;        // xyz = position
+    vec4 N;           // xyz = shading normal
+    vec4 V;           // xyz = view direction
+
+    vec4 faceN;       // xyz = geometric normal
+
+    vec4 diffuse;     // xyz = albedo
+
+    uint materialID;
+    uint flags;
+    float NdotV;
+    float pad;     
 };
 
 // ------------------------------------------------------------------
@@ -50,32 +51,69 @@ struct HitInfo
     vec4 misc1;
 };
 
-struct PackedHitInfo
+
+
+bool isValidHitInfo(HitInfo packed)
 {
-    uvec4 data;
+    return packed.misc1.x != 0.0;
+}
+
+//wrk
+struct RestirPathTracerParams
+{
+    uvec2 frameDim;
+    uint seed;
 };
 
-bool isValidPackedHitInfo(uvec4 packed)
+layout(push_constant) uniform CB
 {
-    return packed.x != 0u;
-}
+    RestirPathTracerParams params;
 
-// Dummy unpack
-void unpack(out HitInfo hit, uvec4 packed)
-{
-    hit.misc1 = vec4(packed);
-}
+    int gSpatialRoundId;
+    int gNumSpatialRounds;
+    uint gSpatialReusePattern;
+
+    int gNeighborCount;
+    float gGatherRadius;
+
+    int gSmallWindowRadius;
+
+    bool gFeatureBasedRejection;
+
+    vec3 posW;
+    vec3 cameraW;
+    float nearZ;
+    float farZ;
+    
+
+
+} gPathRetracePass;
 
 // ------------------------------------------------------------------
 // Reservoir Types (stubs)
 // ------------------------------------------------------------------
+
 struct PathReservoir
 {
-    vec3 F;
-    float weight;
-    float M;
-    vec4 rcVertexIrradiance;
-    float cachedJacobian[2];
+    vec4 F; // cached integrand (always updated after a new path is chosen in RIS)
+    vec4 cachedJacobian; // saved previous vertex scatter PDF, scatter PDF, and geometry term at rcVertex (used when rcVertex is not v2)
+
+    vec4 rcVertexWi[2]; // incident direction on reconnection vertex
+    vec4 rcVertexIrradiance[2]; // sampled irradiance on reconnection vertex
+
+    HitInfo hitInfo;
+
+    vec4 rcVertexBSDFLightSamplingIrradiance;
+
+    float M; // this is a float, because temporal history length is allowed to be a fraction. 
+    float weight; // during RIS and when used as a "RisState", this is w_sum; during RIS when used as an incoming reseroivr or after RIS, this is 1/p(y) * 1/M * w_sum
+    uint pathFlags; // this is a path type indicator, see the struct definition for details
+    uint rcRandomSeed; // saved random seed after rcVertex (due to the need of blending half-vector reuse and random number replay)
+    
+    float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
+    uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
+    float rcLightPdf; 
+
 };
 
 struct PathReuseMISWeight
@@ -110,8 +148,28 @@ void ReconnectionData_Init(out ReconnectionData rc)
     rc.pathThroughput = vec4(0.0);
 }
 
+
+//wrk
+struct Material
+{
+    vec4 diffuseOpacity;     // xyz = albedo, w = opacity
+    vec4 specularRoughness;  // xyz = specular, w = roughness
+    vec4 emissive;           // xyz = emission
+    vec4 extraParams;        // whatever you want (metallic, etc.)
+};
 const int RCDATA_PATH_NUM = 6;
 
+layout(set = 0, binding = 6) readonly buffer vbuffer {
+    HitInfo h[];
+} vBuff;
+
+layout(set = 0, binding = 9) uniform sampler2D gWorldPosition;
+layout(set = 0, binding = 10) uniform sampler2D gWorldShadingNormal;
+layout(set = 0, binding = 11) uniform sampler2D gWorldFaceNormal;
+layout(set = 0, binding = 12) readonly buffer MaterialBuffer
+{
+    Material materials[];
+};
 struct PixelReconnectionData
 {
     ReconnectionData data[RCDATA_PATH_NUM];
@@ -143,6 +201,7 @@ layout(set = 0, binding = 2) readonly buffer RayDataBuffer
     RayData rayData[];
 };
 
+
 // ------------------------------------------------------------------
 // Scene / Camera Stub
 // ------------------------------------------------------------------
@@ -171,75 +230,72 @@ struct Scene
     CameraData camera;
 };
 
-// ------------------------------------------------------------------
-// RNG (replacement for TinyUniformSampleGenerator)
-// ------------------------------------------------------------------
-uint hash(uint x)
+
+//RAND
+//cls
+uint initRNG(uvec2 pixel, uint frame, uint extra)
 {
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
+    uint seed = pixel.x * 1973u + pixel.y * 9277u + frame * 26699u + extra * 104729u;
+    seed ^= (seed << 13);
+    seed ^= (seed >> 17);
+    seed ^= (seed << 5);
+    return seed;
 }
 
-float rand(inout uint state)
+//cls
+uint nextUInt(inout uint state)
 {
-    state = hash(state);
-    return float(state) / float(0xFFFFFFFFu);
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
 }
 
+//cls
+float nextFloat(inout uint state)
+{
+    return float(nextUInt(state)) * (1.0 / 4294967296.0); // 1 / 2^32
+}
+
+//cls
+vec2 nextVec2(inout uint state)
+{
+    return vec2(nextFloat(state), nextFloat(state));
+}
 // ------------------------------------------------------------------
 // Helpers
 // ------------------------------------------------------------------
+//cls
 bool isValidScreenRegion(ivec2 pixel)
 {
     return all(greaterThanEqual(pixel, ivec2(0))) &&
-           all(lessThan(pixel, params.frameDim));
+           all(lessThan(pixel, ivec2(gPathRetracePass.params.frameDim)));
 }
-
-// Dummy camera ray
-Ray computeRayPinhole(ivec2 pixel, ivec2 frameDim)
+//cls 
+Ray computeRayPinhole(uvec2 pixel, uvec2 frameDim)
 {
     Ray ray;
-    ray.origin = cam.posW;
-    ray.dir = normalize(vec3(pixel, 1.0)); // simplified
-    ray.tMin = 0.001;
-    ray.tMax = 1e30;
+
+    // Compute the normalized ray direction assuming a pinhole camera.
+    ray.origin = gPathRetracePass.posW;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(frameDim);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    ray.dir = normalize(vec3(ndc, 1.0));
+
+    float invCos = 1.f / dot(normalize(gPathRetracePass.cameraW), ray.dir);
+    ray.tMin = gPathRetracePass.nearZ * invCos;
+    ray.tMax = gPathRetracePass.farZ * invCos;
+
     return ray;
 }
 
-// Dummy shading loader
-ShadingData loadShadingData(PackedHitInfo hit, vec3 V, bool flag)
-{
-    ShadingData sd;
-    sd.posW = vec3(0.0);
-    sd.N = vec3(0.0, 1.0, 0.0);
-    sd.V = V;
-    return sd;
-}
-
-// Dummy triangle hit
-struct TriangleHit
-{
-    vec3 bary;
-    uint primId;
-};
-
-TriangleHit getTriangleHit(HitInfo hit)
-{
-    TriangleHit th;
-    th.bary = vec3(0.0);
-    th.primId = 0u;
-    return th;
-}
 
 // Dummy compute
 vec3 computeShiftedIntegrand_(
     RestirPathTracerParams params,
     inout float dstJacobian,
-    PackedHitInfo dstPrimaryHitPacked,
+    HitInfo dstPrimaryHitPacked,
     ShadingData dstPrimarySd,
     ShadingData srcPrimarySd,
     inout PathReservoir tempReservoir,
@@ -267,7 +323,7 @@ vec3 computeShiftedIntegrandExtraOutput(
     RestirPathTracerParams params,
     inout float dstJacobian,
     inout float output2,
-    PackedHitInfo dstPrimaryHitPacked,
+    HitInfo dstPrimaryHitPacked,
     ShadingData dstPrimarySd,
     ShadingData srcPrimarySd,
     PathReservoir srcReservoir,
@@ -299,7 +355,6 @@ vec3 computeShiftedIntegrandExtraOutput(
 // ------------------------------------------------------------------
 // N-rooks sampling helpers (simplified)
 // ------------------------------------------------------------------
-layout(set = 0, binding = 7) uniform sampler2D vbuffer;
 
 ivec2 getPathReuseNextNeighborPixel(ivec4 NRookQuery, ivec2 pixel, int i)
 {
@@ -307,6 +362,133 @@ ivec2 getPathReuseNextNeighborPixel(ivec4 NRookQuery, ivec2 pixel, int i)
 }
 
 
+
+//no idea
+vec3 perp_stark(vec3 n)
+{
+    return normalize(abs(n.z) < 0.999 ? cross(n, vec3(0,0,1)) : cross(n, vec3(0,1,0)));
+}
+//cls
+vec3 getPrimaryRayDir(uvec2 pixel, uvec2 frameDim)
+{
+    vec2 uv  = (vec2(pixel) + 0.5) / vec2(frameDim);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    // Simple pinhole (matches your computeRayPinhole)
+    vec3 dir = normalize(vec3(ndc, 1.0));
+
+    return dir;
+}
+
+//cls
+bool loadShadingData(
+    uvec2 pixel,
+    uvec2 frameDim,
+    out ShadingData sd,
+    out HitInfo hit
+)
+{
+    sd.posW = vec4(0.0);
+    sd.N = vec4(0.0);
+    sd.V = vec4(0.0);
+    sd.faceN = vec4(0.0);
+    sd.diffuse = vec4(0.0);
+    sd.materialID = 0u;
+    sd.flags = 0u;
+    sd.NdotV = 0.0;
+    sd.pad = 0.0;
+
+    vec3 rayDir = getPrimaryRayDir(pixel, frameDim);
+
+    // ------------------------------------------------------------------
+    // GBuffer fetch
+    // ------------------------------------------------------------------
+
+    vec4 worldPos = texelFetch(gWorldPosition, ivec2(pixel), 0);
+
+    if (worldPos.w == 0.0)
+        return false;
+
+    vec3 normal = normalize(texelFetch(gWorldShadingNormal, ivec2(pixel), 0).xyz);
+    vec3 faceNormal = normalize(texelFetch(gWorldFaceNormal, ivec2(pixel), 0).xyz);
+
+    uint materialID = uint(worldPos.w);
+
+    // ------------------------------------------------------------------
+    // Material fetch
+    // ------------------------------------------------------------------
+
+    Material mat = materials[materialID];
+
+    // ------------------------------------------------------------------
+    // Fill shading data
+    // ------------------------------------------------------------------
+
+    sd.posW   = vec4(worldPos.xyz, 1.0);
+    sd.N      = vec4(normal, 0.0);
+    sd.faceN  = vec4(faceNormal, 0.0);
+    sd.V      = vec4(normalize(-rayDir), 0.0);
+
+    sd.diffuse = vec4(mat.diffuseOpacity.xyz, 0.0);
+
+    sd.materialID = materialID;
+    sd.flags      = 0;
+
+    sd.NdotV = max(dot(normal, -rayDir), 0.0);
+
+    // ------------------------------------------------------------------
+    // VBuffer hit (optional, but you already have it)
+    // ------------------------------------------------------------------
+
+    uint idx = pixel.y * frameDim.x + pixel.x;
+    hit = vBuff.h[idx];
+
+    return true;
+}
+
+//cls
+bool isValidGeometry(ShadingData a, ShadingData b)
+{
+    if (!gPathRetracePass.gFeatureBasedRejection) return true;
+
+    vec3 camPos = vec3(0.0);
+
+    float d0 = distance(camPos, a.posW.xyz);
+    float d1 = distance(camPos, b.posW.xyz);
+
+    return dot(a.N, b.N) >= 0.5 &&
+           abs(d0 - d1) < 0.1 * d0;
+}
+
+
+//cls
+ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
+{
+    ShadingData sd;
+
+    Ray ray = computeRayPinhole(pixel,gPathRetracePass.params.frameDim);
+
+    uint idx = pixel.y *gPathRetracePass.params.frameDim.x + pixel.x;
+    PrimaryHitPacked = vBuff.h[idx];
+
+    if (isValidHitInfo(PrimaryHitPacked))
+    {
+        
+        ShadingData sd;
+        sd.posW = vec4(0.0);
+        sd.N = vec4(0.0);
+        sd.V = vec4(0.0);
+        sd.faceN = vec4(0.0);
+        sd.diffuse = vec4(0.0);
+        sd.materialID = 0u;
+        sd.flags = 0u;
+        sd.NdotV = 0.0;
+        sd.pad = 0.0;
+        bool valid = loadShadingData(uvec2(pixel), gPathRetracePass.params.frameDim, sd, PrimaryHitPacked);
+    }
+
+    return sd;
+}
 void PathReservoir_init(inout PathReservoir r)
 {
     r.F = vec4(0.0);
@@ -339,23 +521,33 @@ void PathReservoir_init(inout PathReservoir r)
 
 
 //cls
+uint getReservoirOffset(uvec2 pixel)
+{
+    return pixel.y * gPathRetracePass.params.frameDim.x + pixel.x;
+}
+//cls
+int getNeighborCount()
+{
+    return gPathRetracePass.gNeighborCount;
+}
+//cls
 void BPRComputeMISWeights(ivec2 pixel)
 {
     // ------------------------------------------------------------
     // NRooks / block setup (ver2 equivalent)
     // ------------------------------------------------------------
-    uint rng = initRNG(uvec2(pixel), params.seed, uint(gSpatialRoundId));
-
-    int blockShiftOffset;
-    if (PathReusePattern(gSpatialReusePattern) == PathReusePattern_NRooks)
-        blockShiftOffset = 16;
-    else
-        blockShiftOffset = int(params.seed % 16u);
+        int blockShiftOffset;
+    blockShiftOffset = 16;
 
     ivec2 block = (pixel - blockShiftOffset + 16) / 16;
 
+    uint seed = gPathRetracePass.params.seed + uint(gPathRetracePass.gSpatialRoundId);
+
+    uint sg = initRNG(uvec2(block), seed, 1337u);
+
+
+
     // replaces TinyUniformSampleGenerator + sampleNext1D
-    uint sg = initRNG(uvec2(block), params.seed, uint(kCandidateSamples + 1 + gNumSpatialRounds));
 
     float patternSample = nextFloat(sg);
     uint patternIndex = min(255u, uint(patternSample * 256.0));
@@ -378,21 +570,20 @@ void BPRComputeMISWeights(ivec2 pixel)
     // ------------------------------------------------------------
     // Central reservoir
     // ------------------------------------------------------------
-    uint centralOffset = params.getReservoirOffset(pixel);
+    uint centralOffset = getReservoirOffset(pixel);
     PathReservoir centralReservoir = outputReservoirs[centralOffset];
 
-    PackedHitInfo centralHitPacked;
+    HitInfo centralHitPacked;
     ShadingData centralSd = getPixelShadingData(pixel, centralHitPacked);
 
     //should be fine.
-    if (!isValidPackedHitInfo(centralHitPacked))
+    if (!isValidHitInfo(centralHitPacked))
     {
         return;
     }
 
     ReconnectionData dummyRcData;
-    PathReservoir_init(dummyRcData);
-
+    //dummyRcData.init;
     // ------------------------------------------------------------
     // MIS accumulation
     // ------------------------------------------------------------
@@ -408,8 +599,8 @@ void BPRComputeMISWeights(ivec2 pixel)
     {
         if (j == pixelInBlock.x)
         {
-            float p = PathReservoir_toScalar(centralReservoir.F) > 0.0 ? 1.0 : 0.0;
-            float p_NEE = PathReservoir_toScalar(centralReservoir.rcVertexIrradiance[1]) > 0.0 ? 1.0 : 0.0;
+            float p = PathReservoir_toScalar(centralReservoir.F.xyz) > 0.0 ? 1.0 : 0.0;
+            float p_NEE = PathReservoir_toScalar(centralReservoir.rcVertexIrradiance[1].xyz) > 0.0 ? 1.0 : 0.0;
 
             p_self = p;
             p_self_NEE = p_NEE;
@@ -425,17 +616,17 @@ void BPRComputeMISWeights(ivec2 pixel)
             if (!isValidScreenRegion(neighborPixel))
                 continue;
 
-            PackedHitInfo neighborHitPacked;
+            HitInfo neighborHitPacked;
             ShadingData neighborSd = getPixelShadingData(neighborPixel, neighborHitPacked);
 
-            if (!isValidPackedHitInfo(neighborHitPacked))
+            if (!isValidHitInfo(neighborHitPacked))
                 continue;
 
             float jacobian = 0.0;
             float neeOut = 0.0;
 
             computeShiftedIntegrandExtraOutput(
-                params,
+                gPathRetracePass.params,
                 jacobian,
                 neeOut,
                 neighborHitPacked,

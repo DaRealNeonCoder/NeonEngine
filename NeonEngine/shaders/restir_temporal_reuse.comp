@@ -816,7 +816,7 @@ void ReSTIR(uvec2 pixel)
     PathReservoir dstReservoir = outputReservoirs[centralOffset]; // redundant but alas.
     PathReservoir centralReservoir = dstReservoir;
 
-    float currentM = dstReservoir.M     
+    float currentM = dstReservoir.M;
     vec3 initialColor = dstReservoir.F.xyz * dstReservoir.weight;
 
 
