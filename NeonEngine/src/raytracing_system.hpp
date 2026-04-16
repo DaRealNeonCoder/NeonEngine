@@ -65,6 +65,7 @@ class RayTracingSystem {
       std::vector<RayTracingVertex> allVertex,
       std::vector<uint32_t> allIndicies,
       std::vector<LveMaterial> allMaterials,
+      std::vector<glm::vec4> allLightPos,
       uint32_t width,
       uint32_t height);
   ~RayTracingSystem();
@@ -75,7 +76,7 @@ class RayTracingSystem {
   void handleResize(
       uint32_t width, uint32_t height, const std::vector<VkDescriptorSet>& descriptorSets);
   void updateUniforms(uint32_t frameIndex, const glm::mat4& view, const glm::mat4& proj);
-  void createMaterialBuffer(std::vector<LveMaterial> materials);
+  void createMaterialBuffer(std::vector<LveMaterial> materials, std::vector<glm::vec4> allLightPos);
   void copyStorageImageToSwapChain(
       VkCommandBuffer commandBuffer,
       VkImage swapChainImage,

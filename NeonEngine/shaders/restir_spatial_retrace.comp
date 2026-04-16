@@ -157,9 +157,9 @@ vec2 nextVec2(inout uint state)
     return vec2(nextFloat(state), nextFloat(state));
 }
 
-layout(set = 0, binding = 6) readonly buffer vbuffer {
-    HitInfo h[];
-} vBuff;
+
+// BUFFERS
+
 
 layout(set = 0, binding = 1)   readonly buffer neighborOffsets{
     uint u[];
@@ -181,6 +181,10 @@ layout(set = 0, binding = 5) buffer TemporalReservoirs
 {
     PathReservoir temporalReservoirs[];
 };
+
+layout(set = 0, binding = 6) readonly buffer vbuffer {
+    HitInfo h[];
+} vBuff;
 
 layout(set = 0, binding = 7) buffer ReconnectionBuffer
 {

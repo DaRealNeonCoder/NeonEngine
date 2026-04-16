@@ -22,5 +22,7 @@ void main()
 {
     vec3 dir = normalize(gl_WorldRayDirectionEXT);
     vec2 uv  = directionToUV(dir);
-    payload.color.xyz += payload.throughput.xyz * texture(textureMaps[0], uv).rgb;
+    //payload.color.xyz += payload.throughput.xyz * texture(textureMaps[0], uv).rgb;
+    payload.color.xyz += payload.throughput.xyz * vec3(0.1,0.1,0.1);
+
 }

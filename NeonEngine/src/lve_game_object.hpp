@@ -49,10 +49,11 @@ class LveGameObject {
   id_t getId() { return id; }
 
   glm::vec3 color{1,0,0};
-
+  
 
   TransformComponent transform{};
 
+  bool isLight;
   // Optional pointer components
   std::shared_ptr<LveModel> model{};
   std::unique_ptr<PointLightComponent> pointLight = nullptr;

@@ -23,6 +23,7 @@ RayTracingSystem::RayTracingSystem(
     std::vector<RayTracingVertex> allVertex,
     std::vector<uint32_t> allIndicies,
     std::vector<LveMaterial> allMaterials,
+    std::vector<glm::vec4> allLightPos,
     uint32_t width,
     uint32_t height)
     : vulkanDevice{device3}, device{device3.device()} {
@@ -54,7 +55,7 @@ RayTracingSystem::RayTracingSystem(
 
   createStorageImage(storageImage, width, height);
 
-  createMaterialBuffer(allMaterials);
+  createMaterialBuffer(allMaterials, allLightPos);
   createBottomLevelAccelerationStructure();
   createTopLevelAccelerationStructure();
   createRayTracingPipeline(globalSetLayout);
@@ -86,6 +87,7 @@ struct PushData {
   glm::vec4 accum{0};
 };
 // Updated render function
+int temp;
 void RayTracingSystem::render(FrameInfo& frameInfo) {
   
    
@@ -124,11 +126,11 @@ void RayTracingSystem::render(FrameInfo& frameInfo) {
   VkStridedDeviceAddressRegionKHR callable{};
   PushData push{};
 
-  if (frameID == UINT32_MAX) {
-    frameID = 0;
+  if (temp == UINT32_MAX) {
+    temp = 0;
   }
-  push.accum.x = frameID;
-  frameID++;
+  push.accum.x = rand()/ 1000.0;
+  temp++;
   vkCmdPushConstants(
       frameInfo.commandBuffer,
       pipelineLayout,
@@ -596,18 +598,27 @@ uint64_t RayTracingSystem::getBufferDeviceAddress(VkBuffer buffer) {
   return vkGetBufferDeviceAddressKHR(device, &bufferDeviceAI);
 }
 
-void RayTracingSystem::createMaterialBuffer(std::vector<LveMaterial> materials) {
-
+// Currently lights are simple enough to be passed in like this.
+// Ideally we have a more flexible system for this typa stuff.
+// Assumes lights are first.
+void RayTracingSystem::createMaterialBuffer(std::vector<LveMaterial> materials, std::vector<glm::vec4> allLightPos)  {
 
     std::vector<RayTracingMaterial> materialsFinal;
-    RayTracingMaterial notRoughMat{};
-    notRoughMat.emission = glm::vec4{ 10,10,10,0.4 * 0.4 * 3.1415927 * 4 };
-    notRoughMat.position = glm::vec4{ 0,-10.0f,0,0.4f };
-    notRoughMat.albedo = glm::vec4{ 1 };
-    notRoughMat.misc.x = 0.5f;
 
-    materialsFinal.push_back(notRoughMat);
-    for (size_t i = 0; i < materials.size(); i++)
+    std::cout << "materials thang" << materials.size() << "\n";
+    std::cout <<"light thang" << allLightPos.size() << "\n";
+
+    for (size_t i = 0; i < allLightPos.size(); i++)
+    {
+        RayTracingMaterial lightMat{};
+        lightMat.emission = materials[i].emission;
+        lightMat.position = allLightPos[i];
+        lightMat.albedo = glm::vec4{ 1 };
+        lightMat.misc.x = 0.5f;
+        materialsFinal.push_back(lightMat);
+    }
+    
+    for (size_t i = allLightPos.size(); i < materials.size(); i++)
     {
         RayTracingMaterial mat{};
         mat.misc.x = 1.f;

@@ -75,8 +75,7 @@ struct RayUbo {
 
 	glm::mat4 prevView{1.f};
 
-	uint32_t width;
-	uint32_t height;
+	uint32_t lightNum;
 };
 
 

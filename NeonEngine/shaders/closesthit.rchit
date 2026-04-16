@@ -2,55 +2,12 @@
 #extension GL_EXT_ray_tracing : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
-// ReSTIR PT implementation adapted from https://github.com/DQLin/ReSTIR_PT/ 
-
-
 const int MAX_DEPTH = 3;
-
-struct HitInfo
-{
-    vec4 misc1;
-
-    /*
-
-        packed vector of the following: 
-        vec2 barycentrics;
-        uint primitveID; // The triangle we hit on the model. 
-                         // original implementation had another uint for the mesh instance ID, which imma ignore.
-    
-    */
-};
-
-//cls
-struct PathReservoir
-{
-    vec4 F; // cached integrand (always updated after a new path is chosen in RIS)
-    vec4 cachedJacobian; // saved previous vertex scatter PDF, scatter PDF, and geometry term at rcVertex (used when rcVertex is not v2)
-
-    vec4 rcVertexWi[2]; // incident direction on reconnection vertex
-    vec4 rcVertexIrradiance[2]; // sampled irradiance on reconnection vertex
-
-    HitInfo hitInfo;
-
-    vec4 rcVertexBSDFLightSamplingIrradiance;
-
-    float M; // this is a float, because temporal history length is allowed to be a fraction. 
-    float weight; // during RIS and when used as a "RisState", this is w_sum; during RIS when used as an incoming reseroivr or after RIS, this is 1/p(y) * 1/M * w_sum
-    uint pathFlags; // this is a path type indicator, see the struct definition for details
-    uint rcRandomSeed; // saved random seed after rcVertex (due to the need of blending half-vector reuse and random number replay)
-    
-    float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
-    uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
-    float rcLightPdf; 
-
-};
-
-
 
 struct RayPayload {
     vec4 color;
     vec4 throughput;
-    uvec4 misc; // x = seed, y = path depth. z = material type. w = path ID.
+    uvec4 misc;
 };
 
 layout(location = 0) rayPayloadInEXT RayPayload payload;
@@ -58,12 +15,26 @@ layout(location = 1) rayPayloadEXT float shadowPayload;
 
 layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
 
+
+//I should really be using separate ubos
+layout(set = 0, binding = 2, std140) uniform GlobalUbo {
+    mat4 projection;
+    mat4 view;
+    mat4 inverseProjection;
+    mat4 inverseView;
+    mat4 prevView;
+
+
+    int numLights;
+} ubo;
+
+
 hitAttributeEXT vec2 attribs;
 
 struct Material {
     vec4 emission;
     vec4 albedo;
-    vec4 position;// position of light, if light. hardcoded into the main material struc for now.
+    vec4 position;// position of light, if light. hardcoded for now.
     vec4 misc;
 };
 
@@ -78,7 +49,6 @@ struct RayTracingVertex {
     
 };
 
-
 layout(set = 0, binding = 3) readonly buffer MaterialBuffer {
     Material m[];
 } materials;
@@ -91,15 +61,7 @@ layout(set = 0, binding = 5) readonly buffer IndexBuffer {
     uint i[];
 } indices;
 
-layout(set = 0, binding = 6) buffer ReservoirBuffer {
-    PathReservoir p[];
-} reservoirs;
-
-layout(set = 0, binding = 7) uniform sampler2D textures[];  // unbounded array
-
-float luminance(vec3 c) {
-    return dot(c, vec3(0.2126, 0.7152, 0.0722));
-}
+layout(set = 0, binding = 6) uniform sampler2D textures[];  // unbounded array
 
 
 float random(inout uint seed) {
@@ -115,50 +77,6 @@ float fresnelSchlick(float cosTheta, float eta) {
     return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
 }
 
-
-void firstHit(uint rayId, vec2 bary, vec3 newDirection, vec3 directContribution)
-{
-    // Store incident direction at rc vertex
-    reservoirs.p[rayId].rcVertexWi[0] = vec4(newDirection, 0.0);
-
-    // Store irradiance at rc vertex (NEE + indirect)
-    reservoirs.p[rayId].rcVertexIrradiance[0] =
-        vec4(directContribution, 0.0);
-
-    // Store triangle + barycentrics for reconnection
-    reservoirs.p[rayId].hitInfo.misc1.z = float(gl_PrimitiveID);
-    reservoirs.p[rayId].hitInfo.misc1.x = bary.x;
-    reservoirs.p[rayId].hitInfo.misc1.y = bary.y;
-
-    // Save RNG state for replay
-    reservoirs.p[rayId].rcRandomSeed = payload.misc.x;
-}
-
-
-void pathTerminate(uint rayId)
-{
-    // Store final contribution
-    reservoirs.p[rayId].F = vec4(payload.color.xyz, 0.0);
-
-    // Target PDF = luminance
-    float targetPdf = dot(reservoirs.p[rayId].F.rgb,
-                          vec3(0.2126, 0.7152, 0.0722));
-
-    float risWeight = (targetPdf > 0.0) ? (1.0 / targetPdf) : 0.0;
-
-    // Update reservoir stats
-    reservoirs.p[rayId].M += 1.0;
-    reservoirs.p[rayId].weight += risWeight * targetPdf;
-}
-
-void finalizeRIS(inout PathReservoir r) {
-    float M = r.M;
-    float wSum = r.weight;
-    float pHat = luminance(r.F.rgb);
-
-    r.weight = (pHat > 0.0) ? (wSum / (M * pHat)) : 0.0;
-}
-// add the jacobian stuff we're missing
 
 vec3 sampleSphereLightMat(
     Material light,
@@ -235,7 +153,7 @@ void main() {
     vec3 worldPos = vec3(0);
     vec3 offsetPos = vec3(0);
 
-    Material mat = materials.m[v0.materialIndex + 1]; // dodo hack but alas (light is the first material)
+    Material mat = materials.m[v0.materialIndex]; 
 
 
     if (length(mat.emission.xyz) > 0.0) {
@@ -245,26 +163,21 @@ void main() {
                 1.0
             );
         }
-        pathTerminate(payload.misc.w);
         return;
     }
 
 
     if (payload.misc.y >= uint(MAX_DEPTH)) return;
 
-    float maxThroughput = max(
-    payload.throughput.r,
-    max(payload.throughput.g, payload.throughput.b)
-    );
 
+    float maxThroughput = max(
+        payload.throughput.r,
+        max(payload.throughput.g, payload.throughput.b)
+    );
 
     if (payload.misc.y > 2u) {
         float q = max(0.05, 1.0 - maxThroughput);
-        if (random(payload.misc.x) < q)
-        {
-            pathTerminate(payload.misc.w);
-            return;
-        }
+        if (random(payload.misc.x) < q) return;
         payload.throughput /= (1.0 - q);
     }
 
@@ -309,8 +222,13 @@ void main() {
         newDirection = normalize(mix(specularDir, diffuseDir, rough));
 
         // NEE — use throughput BEFORE albedo is applied
-        Material lightMat = materials.m[0];
+
+
+        //now with infinite lights :DDDD
+        Material lightMat = materials.m[int(random(payload.misc.x) * float(ubo.numLights))];
         vec3 lightDir;
+        
+        float lightPickPDF = 1.0/float(ubo.numLights);
         float lightPDF;
 
         vec3 Le = sampleSphereLightMat(
@@ -336,8 +254,6 @@ void main() {
                 offsetPos, 0.001,
                 lightDir, shadowDist, 1
             );
-        
-        vec3 direct = vec3(0.0);
 
         if (shadowPayload > 0.5) {
             vec3 brdf = mat.albedo.xyz * INV_PI;
@@ -347,26 +263,10 @@ void main() {
                 brdf *
                 Le *
                 cosTheta /
-                lightPDF;
+                (lightPDF * lightPickPDF);
 
             payload.color += vec4(direct, 1.0);
-
- 
-         }
-                        // make sure this is valid not so sure rn.
-        if (payload.misc.y == 1u) {
-            firstHit(
-                payload.misc.w,
-                barycentrics.xy,
-                newDirection,
-                direct
-            );      
-
-
         }
-
-
-
         }
 
         // Apply albedo AFTER NEE, for the indirect bounce

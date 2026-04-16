@@ -122,16 +122,6 @@ struct PathReuseMISWeight
     float rcNEEMISWeight;
 };
 
-layout(set = 0, binding = 3) buffer OutputReservoirs
-{
-    PathReservoir outputReservoirs[];
-};
-
-layout(set = 0, binding = 4) buffer MISWeightBuffer
-{
-    PathReuseMISWeight misWeightBuffer[];
-};
-
 // ------------------------------------------------------------------
 // Reconnection Data
 // ------------------------------------------------------------------
@@ -158,6 +148,26 @@ struct Material
     vec4 extraParams;        // whatever you want (metallic, etc.)
 };
 const int RCDATA_PATH_NUM = 6;
+struct PixelReconnectionData
+{
+    ReconnectionData data[RCDATA_PATH_NUM];
+};
+
+struct RayData
+{
+    vec4 misc1;
+};
+
+// BUFFERS
+layout(set = 0, binding = 3) buffer OutputReservoirs
+{
+    PathReservoir outputReservoirs[];
+};
+
+layout(set = 0, binding = 4) buffer MISWeightBuffer
+{
+    PathReuseMISWeight misWeightBuffer[];
+};
 
 layout(set = 0, binding = 6) readonly buffer vbuffer {
     HitInfo h[];
@@ -170,64 +180,20 @@ layout(set = 0, binding = 12) readonly buffer MaterialBuffer
 {
     Material materials[];
 };
-struct PixelReconnectionData
-{
-    ReconnectionData data[RCDATA_PATH_NUM];
-};
 
 layout(set = 0, binding = 5) readonly buffer ReconnectionDataBuffer
 {
     PixelReconnectionData reconnectionDataBuffer[];
 };
 
-// ------------------------------------------------------------------
-// N-Rooks Pattern Buffer
-// ------------------------------------------------------------------
 layout(set = 0, binding = 6) readonly buffer NRooksPatternBuffer
 {
     uint nRooksPattern[];
 };
 
-// ------------------------------------------------------------------
-// Ray Data Buffer
-// ------------------------------------------------------------------
-struct RayData
-{
-    vec4 misc1;
-};
-
 layout(set = 0, binding = 2) readonly buffer RayDataBuffer
 {
     RayData rayData[];
-};
-
-
-// ------------------------------------------------------------------
-// Scene / Camera Stub
-// ------------------------------------------------------------------
-struct CameraData
-{
-    vec3 posW;
-    vec3 prevPosW;
-    vec3 cameraW;
-    vec3 prevCameraW;
-    float nearZ;
-    float farZ;
-    float prevNearZ;
-    float prevFarZ;
-};
-
-layout(set = 0, binding = 1) uniform CameraUBO
-{
-    CameraData cam;
-};
-
-// ------------------------------------------------------------------
-// Scene Globals (stub)
-// ------------------------------------------------------------------
-struct Scene
-{
-    CameraData camera;
 };
 
 

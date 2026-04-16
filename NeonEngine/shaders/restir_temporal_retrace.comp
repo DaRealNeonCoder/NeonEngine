@@ -97,17 +97,27 @@ struct Material
     vec4 emissive;           // xyz = emission
     vec4 extraParams;        // whatever you want (metallic, etc.)
 };
+struct RayTracingVertex {
+    vec4 pos;
+    vec4 normal;
+    vec4 uv;
+    uint materialIndex;
+    uint pad1;
+    uint pad2; 
+    uint pad3; 
+    
+};
 
-
-layout(set = 0, binding = 6) readonly buffer vBuffer {
-    HitInfo h[];
-} vBuff;
+// BUFFERS
 
 layout(binding = 1) readonly buffer temporalVbuffer
 {
     HitInfo tH[];
 } tempVBuff; // prev frame temp buffer
 
+layout(set = 0, binding = 2) readonly buffer vBuffer {
+    HitInfo h[];
+} vBuff;
 layout(set = 0, binding = 3) uniform sampler2D motionVectors;
 
 layout(set = 0, binding = 4) buffer NRooksPatternBuffer
@@ -136,25 +146,12 @@ layout(set = 0, binding = 9) uniform sampler2D gWorldPosition;
 layout(set = 0, binding = 10) uniform sampler2D gWorldShadingNormal;
 layout(set = 0, binding = 11) uniform sampler2D gWorldFaceNormal;
 
-
 layout(set = 0, binding = 12) readonly buffer MaterialBuffer
 {
     Material materials[];
 };
 
 layout(set = 0, binding = 13) uniform accelerationStructureEXT topLevelAS;
-
-struct RayTracingVertex {
-    vec4 pos;
-    vec4 normal;
-    vec4 uv;
-    uint materialIndex;
-    uint pad1;
-    uint pad2; 
-    uint pad3; 
-    
-};
-
 
 layout(set = 0, binding = 14) readonly buffer VertexBuffer {
     RayTracingVertex v[];
@@ -214,7 +211,7 @@ layout(push_constant) uniform PushConstants
     float nearZ;
     float farZ;
 
-} pc;
+} gPathRetracePass;
 
 
 
@@ -231,7 +228,7 @@ bool isValidPackedHitInfo(HitInfo packed)
 bool isValidScreenRegion(ivec2 pixel)
 {
     return all(greaterThanEqual(pixel, ivec2(0))) &&
-           all(lessThan(pixel, ivec2(pc.params.frameDim)));
+           all(lessThan(pixel, ivec2(gPathRetracePass.params.frameDim)));
 }
 
 //cls
@@ -287,15 +284,15 @@ Ray computeRayPinhole(uvec2 pixel, uvec2 frameDim)
     Ray ray;
 
     // Compute the normalized ray direction assuming a pinhole camera.
-    ray.origin = pc.posW;
+    ray.origin = gPathRetracePass.posW;
     vec2 uv = (vec2(pixel) + 0.5) / vec2(frameDim);
     vec2 ndc = uv * 2.0 - 1.0;
 
     ray.dir = normalize(vec3(ndc, 1.0));
 
-    float invCos = 1.f / dot(normalize(pc.cameraW), ray.dir);
-    ray.tMin = pc.nearZ * invCos;
-    ray.tMax = pc.farZ * invCos;
+    float invCos = 1.f / dot(normalize(gPathRetracePass.cameraW), ray.dir);
+    ray.tMin = gPathRetracePass.nearZ * invCos;
+    ray.tMax = gPathRetracePass.farZ * invCos;
 
     return ray;
 }
@@ -371,9 +368,9 @@ ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
 {
     ShadingData sd;
 
-    Ray ray = computeRayPinhole(pixel, pc.params.frameDim);
+    Ray ray = computeRayPinhole(pixel, gPathRetracePass.params.frameDim);
 
-    uint idx = pixel.y *pc.params.frameDim.x + pixel.x;
+    uint idx = pixel.y *gPathRetracePass.params.frameDim.x + pixel.x;
     PrimaryHitPacked = vBuff.h[idx];
 
     if (isValidPackedHitInfo(PrimaryHitPacked))
@@ -389,7 +386,7 @@ ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
         sd.flags = 0u;
         sd.NdotV = 0.0;
         sd.pad = 0.0;
-        bool valid = loadShadingData(uvec2(pixel), pc.params.frameDim, sd, PrimaryHitPacked);
+        bool valid = loadShadingData(uvec2(pixel), gPathRetracePass.params.frameDim, sd, PrimaryHitPacked);
     }
 
     return sd;
@@ -400,9 +397,9 @@ ShadingData getPixelTemporalShadingData(ivec2 pixel, out HitInfo PrimaryHitPacke
 {
     ShadingData sd;
 
-    Ray ray = computeRayPinhole(pixel,pc.params.frameDim);
+    Ray ray = computeRayPinhole(pixel,gPathRetracePass.params.frameDim);
 
-    uint idx = pixel.y * pc.params.frameDim.x + pixel.x;
+    uint idx = pixel.y * gPathRetracePass.params.frameDim.x + pixel.x;
     PrimaryHitPacked = tempVBuff.tH[idx];
 
     if (isValidPackedHitInfo(PrimaryHitPacked))
@@ -418,7 +415,7 @@ ShadingData getPixelTemporalShadingData(ivec2 pixel, out HitInfo PrimaryHitPacke
         sd.flags = 0u;
         sd.NdotV = 0.0;
         sd.pad = 0.0;
-        bool valid = loadShadingData(uvec2(pixel), pc.params.frameDim, sd, PrimaryHitPacked);
+        bool valid = loadShadingData(uvec2(pixel), gPathRetracePass.params.frameDim, sd, PrimaryHitPacked);
     }
 
     return sd;
@@ -426,7 +423,7 @@ ShadingData getPixelTemporalShadingData(ivec2 pixel, out HitInfo PrimaryHitPacke
 //cls
 uint getReservoirOffset(uvec2 pixel)
 {
-    return pixel.y * pc.params.frameDim.x + pixel.x;
+    return pixel.y * gPathRetracePass.params.frameDim.x + pixel.x;
 }
 
 
@@ -594,7 +591,7 @@ vec3 traceRandomReplayPathHybridSimple(
         // You need a version of this that works from HitInfo
         bool valid = loadShadingData(
             uvec2(0), // placeholder — you actually need hit-based fetch
-            pc.params.frameDim,
+            gPathRetracePass.params.frameDim,
             sdHit,
             tmp
         );
@@ -665,7 +662,7 @@ vec3 traceHybridShiftRays(
         return vec3(0.0);
 
     Ray ray;
-    ray.origin = pc.posW; // camera
+    ray.origin = gPathRetracePass.posW; // camera
     ray.dir    = -dstPrimarySd.V.xyz;
     ray.tMin   = 0.0;
     ray.tMax   = 1e30;
@@ -707,10 +704,10 @@ void ReSTIR(uvec2 pixel)
     ivec2 prevPixel = ivec2(pixel);
     bool foundTemporalSurface = true;
 
-    if (pc.gEnableTemporalReprojection != 0)
+    if (gPathRetracePass.gEnableTemporalReprojection != 0)
     {
         vec2 jitter = nextVec2(rng) - 0.5;
-        prevPixel = ivec2(pixel + motionVector * vec2(pc.params.frameDim) + jitter);
+        prevPixel = ivec2(pixel + motionVector * vec2(gPathRetracePass.params.frameDim) + jitter);
     }
 
     if (!isValidScreenRegion(prevPixel) || !foundTemporalSurface)
@@ -738,7 +735,7 @@ void ReSTIR(uvec2 pixel)
     if (rcVertexLength(centralReservoir) > 1)
     {
         Tp = traceHybridShiftRays(
-            pc.params,
+            gPathRetracePass.params,
             true,
             temporalPrimaryHitPacked,
             temporalPrimarySd,
@@ -755,7 +752,7 @@ void ReSTIR(uvec2 pixel)
     if (rcVertexLength(temporalReservoir) > 1)
     {
         Tp2 = traceHybridShiftRays(
-            pc.params,
+            gPathRetracePass.params,
             false,
             centralPrimaryHitPacked,
             centralPrimarySd,
@@ -776,7 +773,7 @@ void ReSTIR(uvec2 pixel)
 
 void execute(uvec2 pixel)
 {
-    if (any(greaterThanEqual(pixel, uvec2(pc.params.frameDim))))
+    if (any(greaterThanEqual(pixel, uvec2(gPathRetracePass.params.frameDim))))
         return;
 
     ReSTIR(pixel);

@@ -28,6 +28,8 @@ namespace lve {
 RayTracingApp::RayTracingApp() {
 int numFrames = LveSwapChain::MAX_FRAMES_IN_FLIGHT;
 int totalSetsNeeded = 2 * numFrames; // withShadow + noShadow per frame
+//this should not be here.
+srand(static_cast<unsigned>(time(nullptr)));
 
 globalPool =
     LveDescriptorPool::Builder(lveDevice)
@@ -52,6 +54,7 @@ RayTracingApp::~RayTracingApp() {}
 
 void RayTracingApp::run() {
     std::cout << "Pass 1 \n";
+
 
     auto currentTime = std::chrono::high_resolution_clock::now();
     char title[128];
@@ -278,14 +281,18 @@ void RayTracingApp::run() {
     
     
 
+
     LveTexture text = {};
+    /*
     LveTexture::AllocatedImage environmentLighting =
         text.loadHDR("C:\\Users\\ZyBros\\Downloads\\qwantani_dusk_2_puresky_4k.hdr", lveDevice);
 
+    */
     std::vector<VkDescriptorImageInfo> textureInfos;
     std::vector<LveMaterial> materials;
-
-    textureInfos.push_back(text.getDescriptor(environmentLighting));
+    std::vector<glm::vec4> positions;
+    int numLights;
+    //textureInfos.push_back(text.getDescriptor(environmentLighting));
     int x = 0;
     for (auto& kv : gameObjects) {
         auto& obj = kv.second;
@@ -298,12 +305,21 @@ void RayTracingApp::run() {
             textureInfos.push_back(text.getDescriptor(texture));
         }
         materials.push_back(obj.model->getMaterial());
+        if (obj.isLight)
+        {
+            float radiusOfLight = 0.1f;
+            positions.push_back(glm::vec4(obj.transform.translation, radiusOfLight));
+            std::cout << "LIHGT id at: " << x << "is :" << obj.getId() << "\n";
+
+        }
         std::cout << "gameobj id at: "<< x << "is :" <<obj.getId() <<"\n";
         x++;
     }
 
     
     std::cout << "SIZE OF MATERIAL STUC" << materials.size() << "\n";
+    std::cout << "SIZE OF light pos STUC" << positions.size() << "\n";
+    numLights = positions.size();
     // ---- Ray tracing system ----
     RayTracingSystem rayTracingSystem{
         lveDevice,
@@ -312,6 +328,7 @@ void RayTracingApp::run() {
         vertices,
         indices,
         materials,
+        positions,
         lveRenderer.getSwapChainExtents().width,
         lveRenderer.getSwapChainExtents().height };
 
@@ -449,7 +466,6 @@ void RayTracingApp::run() {
 
             VkDescriptorImageInfo outputInfo = rayTracingSystem.getStorageImageDescriptor(i);
             // outputInfo.imageLayout should be VK_IMAGE_LAYOUT_GENERAL
-            VkDescriptorImageInfo textureImageInfo = text.getDescriptor(environmentLighting);
             LveDescriptorWriter(*computeSetLayout, *globalPool)
                 .writeImage(0, &posInfo)
                 .writeImage(1, &normalInfo)
@@ -516,7 +532,7 @@ void RayTracingApp::run() {
             rayTracingSystem.handleResize(lveRenderer.getSwapChainExtents().width,
             lveRenderer.getSwapChainExtents().height,
             globalDescriptorSets);
-            rayTracingSystem.resetFrameId(); 
+            //rayTracingSystem.resetFrameId(); vesiginal; no longer is our temporal accumulation bound to by space. 
             recreateGBuffer(gBufferRenderPass, gBuffers, gBufferFramebuffer, rayTracingRast, lveRenderer.getSwapChainExtents());
             Trip = false;
             recreateComputeDescriptors();
@@ -530,9 +546,7 @@ void RayTracingApp::run() {
             ubo.view = camera.getView();
             ubo.inverseView = camera.getInverseView();
             ubo.prevView = prevView; // use THIS frame's saved prev
-            ubo.height = lveRenderer.getSwapChainExtents().height;
-            ubo.width = lveRenderer.getSwapChainExtents().width;
-
+            ubo.lightNum = numLights;
             std::this_thread::sleep_for(std::chrono::milliseconds(0));
             uboBuffers[frameIndex]->writeToBuffer(&ubo);
             uboBuffers[frameIndex]->flush();
@@ -634,7 +648,7 @@ void RayTracingApp::run() {
                         rayTracingSystem.handleResize(lveRenderer.getSwapChainExtents().width,
                         lveRenderer.getSwapChainExtents().height,
                         globalDescriptorSets);
-                    rayTracingSystem.resetFrameId();
+                    //rayTracingSystem.resetFrameId();
                     recreateGBuffer(gBufferRenderPass, gBuffers, gBufferFramebuffer, rayTracingRast, lveRenderer.getSwapChainExtents());
                     recreateComputeDescriptors();
                     Trip = false;
@@ -731,23 +745,83 @@ void RayTracingApp::transitionHistoryToGeneral(VkCommandBuffer cmd, VkImage imag
     );
 }
 
+glm::vec3 hsvToRgb(float h, float s, float v) {
+    float c = v * s;
+    float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+    float m = v - c;
 
+    glm::vec3 rgb;
+    if (h < 60.0f)      rgb = { c, x, 0.0f };
+    else if (h < 120.0f) rgb = { x, c, 0.0f };
+    else if (h < 180.0f) rgb = { 0.0f, c, x };
+    else if (h < 240.0f) rgb = { 0.0f, x, c };
+    else if (h < 300.0f) rgb = { x, 0.0f, c };
+    else                 rgb = { c, 0.0f, x };
 
+    return rgb + glm::vec3(m);
+}
+
+glm::vec3 randomBrightColor() {
+    float h = static_cast<float>(rand()) / RAND_MAX * 360.0f;
+    float s = 0.9f;
+    float v = 1.0f;
+    return hsvToRgb(h, s, v);
+}
+// because of the way the system is setup lights have to be created first, otherwise
+// the materials would decouple.
 void RayTracingApp::buildCornellBox() {
+
+
+
     LveMaterial defaultWall{};
 
     LveMaterial greenWall{};
-    greenWall.albedo = { 0.f, 1.f, 0.f, 1.f };
-
+    greenWall.albedo = { 1.f, 1.f, 1.f, 1.f };
+    //should be gren
     LveMaterial redWall{};
-    redWall.albedo = { 1.f, 0.f, 0.f, 1.f };
+    redWall.albedo = { 1.f, 1.f, 1.f, 1.f };
+    //should be reed (stole the e)
+    int numLights = 50;
+    float ringRadius = 4.0f;
+    float y = -3.0f;
+    float radiusOfLightSphere = 0.1f;
 
+    for (int i = 0; i < numLights; i++) {
+        float angle = (2.0f * 3.1415927f * i) / numLights;
+
+        float x = cos(angle) * ringRadius * static_cast<float>(rand()) * 2.0f / RAND_MAX;
+        float z = sin(angle) * ringRadius * static_cast<float>(rand())  * 2.0f / RAND_MAX;
+
+        glm::vec3 color = glm::vec4(1);//replaced with random bright color
+
+        LveMaterial lightMat{};
+        lightMat.emission = glm::vec4{
+            color * 30.f,
+            radiusOfLightSphere * radiusOfLightSphere * 3.1415927f * 4
+        };
+
+        std::shared_ptr<LveModel> lightSphere = LveModel::createModelFromFile(
+            lveDevice,
+            "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\sphere.obj");
+
+        lightSphere->setMaterial(lightMat);
+
+        auto light = LveGameObject::createGameObject();
+        light.model = lightSphere;
+        light.transform.translation = { x, y, z };
+        float sphereRad = radiusOfLightSphere * 0.75;
+        light.transform.scale = { sphereRad , sphereRad , sphereRad };
+        light.isLight = true;
+
+        gameObjects.emplace(light.getId(), std::move(light));
+    }
     // Floor
     std::shared_ptr<LveModel> floorModel = LveModel::createModelFromFile(
         lveDevice,
         "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
     floorModel->setMaterial(defaultWall);
     auto cube = LveGameObject::createGameObject();
+    cube.isLight = false;
     cube.model = floorModel;
     cube.transform.translation = { 0.f, -0.5f, 0.f };
     cube.transform.scale = { 0.58f, 0.04f, 0.5f };
@@ -760,6 +834,7 @@ void RayTracingApp::buildCornellBox() {
     rightWallModel->setMaterial(redWall);
     cube = LveGameObject::createGameObject();
     cube.model = rightWallModel;
+    cube.isLight = false;
     cube.transform.translation = { 0.54f, -1.f, 0.f };
     cube.transform.scale = { 0.04f, 0.46f, 0.5f };
     gameObjects.emplace(cube.getId(), std::move(cube));
@@ -771,6 +846,7 @@ void RayTracingApp::buildCornellBox() {
     leftWallModel->setMaterial(greenWall);
     cube = LveGameObject::createGameObject();
     cube.model = leftWallModel;
+    cube.isLight = false;
     cube.transform.translation = { -0.54f, -1.f, 0.f };
     cube.transform.scale = { 0.04f, 0.46f, 0.5f };
     gameObjects.emplace(cube.getId(), std::move(cube));
@@ -782,21 +858,14 @@ void RayTracingApp::buildCornellBox() {
     backWallModel->setMaterial(defaultWall);
     cube = LveGameObject::createGameObject();
     cube.model = backWallModel;
+    cube.isLight = false;
     cube.transform.translation = { 0.f, -1.f, 0.5f };
     cube.transform.scale = { 0.5f, 0.5f, 0.04f };
     gameObjects.emplace(cube.getId(), std::move(cube));
 
-    return;
-    // Far back wall
-    std::shared_ptr<LveModel> farWallModel = LveModel::createModelFromFile(
-        lveDevice,
-        "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
-    farWallModel->setMaterial(defaultWall);
-    cube = LveGameObject::createGameObject();
-    cube.model = farWallModel;
-    cube.transform.translation = { 0.f, -1.f, 5.0f };
-    cube.transform.scale = { 5.f, 5.f, 0.04f };
-    gameObjects.emplace(cube.getId(), std::move(cube));
+
+
+
 }
 
 void RayTracingApp::loadScene1_MCDay() {
@@ -819,6 +888,8 @@ void RayTracingApp::loadScene1_MCDay() {
 }
 
 void RayTracingApp::loadScene2_CornellDragon() {
+    buildCornellBox();
+
     std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
         lveDevice,
         "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\Dragon_lowPoly.obj");
@@ -830,10 +901,11 @@ void RayTracingApp::loadScene2_CornellDragon() {
     obj.transform.scale = { 1, 1, 1 };
     gameObjects.emplace(obj.getId(), std::move(obj));
 
-    buildCornellBox();
 }
 
 void RayTracingApp::loadScene3_CornellCar() {
+    buildCornellBox();
+
     std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
         lveDevice,
         "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\car.obj");
@@ -845,10 +917,11 @@ void RayTracingApp::loadScene3_CornellCar() {
     obj.transform.scale = { 0.35f, 0.35f, 0.35f };
     gameObjects.emplace(obj.getId(), std::move(obj));
 
-    buildCornellBox();
 }
 
 void RayTracingApp::loadScene4_CornellKnight() {
+    buildCornellBox();
+
     std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
         lveDevice,
         "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\Knight.obj");
@@ -860,10 +933,11 @@ void RayTracingApp::loadScene4_CornellKnight() {
     obj.transform.scale = { 0.23f, 0.23f, 0.23f };
     gameObjects.emplace(obj.getId(), std::move(obj));
 
-    buildCornellBox();
 }
 
 void RayTracingApp::loadScene5_DebugCube() {
+    buildCornellBox();
+
     std::shared_ptr<LveModel> lveModel = LveModel::createModelFromFile(
         lveDevice,
         "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\models\\cube.obj");
@@ -872,10 +946,11 @@ void RayTracingApp::loadScene5_DebugCube() {
     obj.model = lveModel;
     obj.transform.translation = { 0.f, -0.557f, 0.f };
     obj.transform.rotation = { 0.f, glm::radians(-0.f), 0.f };
-    obj.transform.scale = { 0.35f, 0.35f, 0.35f };
+    obj.transform.scale = { 0.1f, 0.1f, 0.1f };
+    obj.isLight = false;
+
     gameObjects.emplace(obj.getId(), std::move(obj));
 
-    buildCornellBox();
 }
 void RayTracingApp::loadGameObjects() {
     const int ACTIVE_SCENE = 5; 
