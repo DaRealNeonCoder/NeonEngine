@@ -88,6 +88,18 @@ struct FrameInfo {
   LveGameObject::Map &gameObjects;
 };
 
+
+struct ReSTIRFrameInfo {
+	int frameIndex;
+	float frameTime;
+	VkCommandBuffer commandBuffer;
+	LveCamera& camera;
+	VkDescriptorSet globalDescriptorSet;
+	LveGameObject::Map& gameObjects;
+	uint32_t width;
+	uint32_t height;
+};
+
 struct RayFrameInfo {
 	int frameIndex;
 	float frameTime;

@@ -2,6 +2,8 @@
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_buffer_reference : enable
 #extension GL_EXT_ray_query : require
+#extension GL_EXT_ray_tracing : enable
+
 //TODO: stop using glsl broski
 // ------------------------------------------------------------------
 // Constants (TEMP — replace with your real values)
@@ -156,52 +158,6 @@ vec2 nextVec2(inout uint state)
 {
     return vec2(nextFloat(state), nextFloat(state));
 }
-
-
-// BUFFERS
-
-
-layout(set = 0, binding = 1)   readonly buffer neighborOffsets{
-    uint u[];
-}nO;
-
-layout(set = 0, binding = 2) buffer NRooksPatternBuffer
-{
-    uint nRooksPattern[];
-};
-
-layout(set = 0, binding = 3, rgba32f) uniform image2D outputColor;
-
-layout(set = 0, binding = 4) buffer OutputReservoirs
-{
-    PathReservoir outputReservoirs[];
-};
-
-layout(set = 0, binding = 5) buffer TemporalReservoirs
-{
-    PathReservoir temporalReservoirs[];
-};
-
-layout(set = 0, binding = 6) readonly buffer vbuffer {
-    HitInfo h[];
-} vBuff;
-
-layout(set = 0, binding = 7) buffer ReconnectionBuffer
-{
-    PixelReconnectionData reconnectionDataBuffer[];
-};
-
-layout(set = 0, binding = 8) uniform sampler2D gWorldPosition;
-layout(set = 0, binding = 9) uniform sampler2D gWorldShadingNormal;
-layout(set = 0, binding = 10) uniform sampler2D gWorldFaceNormal;
-
-layout(set = 0, binding = 11) readonly buffer MaterialBuffer
-{
-    Material materials[];
-};
-
-layout(set = 0, binding = 12) uniform accelerationStructureEXT topLevelAS;
-
 struct RayTracingVertex {
     vec4 pos;
     vec4 normal;
@@ -212,16 +168,82 @@ struct RayTracingVertex {
     uint pad3; 
     
 };
+ struct PathReuseMISWeight
+  {
+      float rcBSDFMISWeight;
+      float rcNEEMISWeight;
+
+      float pad1;
+      float pad2;
+  };
+
+struct RayData
+{
+    vec4 misc1;
+};
+// --- Core GBuffer / Geometry ---
+layout(set = 0, binding = 0) readonly buffer vBuffer {
+    HitInfo h[];
+} vBuff;
+
+layout(set = 0, binding = 1) readonly buffer temporalVbuffer {
+    HitInfo tH[];
+} tempVBuff; // previous frame
+
+// --- Sampling / Patterns ---
+layout(set = 0, binding = 2) readonly buffer NRooksPatternBuffer {
+    uint nRooksPattern[];
+};
+
+// Neighbor offsets
+layout(set = 0, binding = 3) readonly buffer neighborOffsets {
+    uint u[];
+} nO;
+
+// --- Reservoirs ---
+layout(set = 0, binding = 4) buffer OutputReservoirs {
+    PathReservoir outputReservoirs[];
+};
+
+layout(set = 0, binding = 5) buffer TemporalReservoirs {
+    PathReservoir temporalReservoirs[];
+};
+
+// --- Reconnection / Reuse ---
+layout(set = 0, binding = 6) buffer ReconnectionBuffer {
+    PixelReconnectionData reconnectionDataBuffer[];
+};
+
+layout(set = 0, binding = 7) buffer MISWeightBuffer {
+    PathReuseMISWeight misWeightBuffer[];
+};
+// --- Materials ---
+layout(set = 0, binding = 8) readonly buffer MaterialBuffer {
+    Material materials[];
+};
 
 
-layout(set = 0, binding = 13) readonly buffer VertexBuffer {
+layout(set = 0, binding = 9) readonly buffer VertexBuffer {
     RayTracingVertex v[];
 } vertices;
 
-layout(set = 0, binding = 14) readonly buffer IndexBuffer {
+layout(set = 0, binding = 10) readonly buffer IndexBuffer {
     uint i[];
 } indices;
-// ------------------------------------------------------------------
+
+layout(set = 0, binding = 11) uniform accelerationStructureEXT topLevelAS;
+
+// --- Textures ---
+layout(set = 0, binding = 12) uniform sampler2D gWorldPosition;
+layout(set = 0, binding = 13) uniform sampler2D gWorldShadingNormal;
+layout(set = 0, binding = 14) uniform sampler2D gWorldFaceNormal;
+
+layout(set = 0, binding = 15) uniform sampler2D motionVectors;
+layout(set = 0, binding = 16, rgba32f) uniform image2D directLighting;
+
+
+// --- Output ---
+layout(set = 0, binding = 17, rgba32f) uniform image2D outputColor;
 
 const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
 const uint kNeighborOffsetMask  = kNeighborOffsetCount - 1;
@@ -790,6 +812,8 @@ layout(local_size_x = 16, local_size_y = 16) in;
 //cls
 void main()
 {
+return;
+
     uvec2 pixel = gl_GlobalInvocationID.xy;
 
     if (any(greaterThanEqual(pixel, gPathRetracePass.params.frameDim)))

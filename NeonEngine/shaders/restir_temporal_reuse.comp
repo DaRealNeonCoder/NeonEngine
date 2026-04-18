@@ -1,5 +1,7 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_ray_query : require
 
 // should have all the code 
 
@@ -197,44 +199,94 @@ struct PixelReconnectionData
 {
     ReconnectionData data[RCDATA_PATH_NUM];
 };
+struct RayTracingVertex {
+    vec4 pos;
+    vec4 normal;
+    vec4 uv;
+    uint materialIndex;
+    uint pad1;
+    uint pad2; 
+    uint pad3; 
+    
+};
+ struct PathReuseMISWeight
+  {
+      float rcBSDFMISWeight;
+      float rcNEEMISWeight;
 
+      float pad1;
+      float pad2;
+  };
 
-// BUFFERS 
+struct RayData
+{
+    vec4 misc1;
+};
+// --- Core GBuffer / Geometry ---
 layout(set = 0, binding = 0) readonly buffer vBuffer {
     HitInfo h[];
 } vBuff;
 
-layout(binding = 1) readonly buffer temporalVbuffer
-{
+layout(set = 0, binding = 1) readonly buffer temporalVbuffer {
     HitInfo tH[];
-} tempVBuff; // prev frame temporal buffer
+} tempVBuff; // previous frame
 
-layout(binding = 2) uniform sampler2D motionVectors;
-layout(binding = 3) uniform sampler2D directLighting;
-//do smth bout ts.
+// --- Sampling / Patterns ---
+layout(set = 0, binding = 2) readonly buffer NRooksPatternBuffer {
+    uint nRooksPattern[];
+};
 
-layout(binding = 4, rgba32f) uniform image2D outputColor;
+// Neighbor offsets
+layout(set = 0, binding = 3) readonly buffer neighborOffsets {
+    uint u[];
+} nO;
 
-layout(std430, binding = 5) buffer OutputReservoirs {
+// --- Reservoirs ---
+layout(set = 0, binding = 4) buffer OutputReservoirs {
     PathReservoir outputReservoirs[];
 };
 
-layout(std430, binding = 6) buffer TemporalReservoirs {
+layout(set = 0, binding = 5) buffer TemporalReservoirs {
     PathReservoir temporalReservoirs[];
 };
 
-layout(std430, binding = 7) buffer Reconnections {
+// --- Reconnection / Reuse ---
+layout(set = 0, binding = 6) buffer ReconnectionBuffer {
     PixelReconnectionData reconnectionDataBuffer[];
 };
 
-layout(set = 0, binding = 8) uniform sampler2D gWorldPosition;
-layout(set = 0, binding = 9) uniform sampler2D gWorldShadingNormal;
-layout(set = 0, binding = 10) uniform sampler2D gWorldFaceNormal;
+layout(set = 0, binding = 7) buffer MISWeightBuffer {
+    PathReuseMISWeight misWeightBuffer[];
+};
 
-layout(set = 0, binding = 11) readonly buffer MaterialBuffer
-{
+// --- Materials ---
+layout(set = 0, binding = 8) readonly buffer MaterialBuffer {
     Material materials[];
 };
+
+
+layout(set = 0, binding = 9) readonly buffer VertexBuffer {
+    RayTracingVertex v[];
+} vertices;
+
+layout(set = 0, binding = 10) readonly buffer IndexBuffer {
+    uint i[];
+} indices;
+
+layout(set = 0, binding = 11) uniform accelerationStructureEXT topLevelAS;
+
+// --- Textures ---
+layout(set = 0, binding = 12) uniform sampler2D gWorldPosition;
+layout(set = 0, binding = 13) uniform sampler2D gWorldShadingNormal;
+layout(set = 0, binding = 14) uniform sampler2D gWorldFaceNormal;
+
+layout(set = 0, binding = 15) uniform sampler2D motionVectors;
+layout(set = 0, binding = 16, rgba32f) uniform image2D directLighting;
+
+
+// --- Output ---
+layout(set = 0, binding = 17, rgba32f) uniform image2D outputColor;
+
 
 //wrk
 vec3 perp_stark(vec3 n)
@@ -1070,7 +1122,7 @@ void ReSTIR(uvec2 pixel)
     {
         if (gPathRetracePass.useDirectLighting == 1)
         {
-            color += texelFetch(directLighting, ivec2(pixel), 0).rgb;
+            color += imageLoad(directLighting, ivec2(pixel)).rgb;
         }
 
         vec4 prev = imageLoad(outputColor, ivec2(pixel));
@@ -1083,6 +1135,7 @@ void ReSTIR(uvec2 pixel)
 
 void main()
 {
+return;
     uvec2 pixel = gl_GlobalInvocationID.xy;
 
     if (any(greaterThanEqual(pixel, uvec2(gPathRetracePass.params.frameDim))))

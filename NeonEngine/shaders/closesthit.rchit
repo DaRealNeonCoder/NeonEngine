@@ -237,8 +237,8 @@ void main() {
     );
 
     vec2 uv = v0.uv.xy * barycentrics.x
-        + v1.uv.xy * barycentrics.y
-        + v2.uv.xy * barycentrics.z;
+            + v1.uv.xy * barycentrics.y
+            + v2.uv.xy * barycentrics.z;
 
     normal = faceforward(normal, gl_WorldRayDirectionEXT, normal);
 

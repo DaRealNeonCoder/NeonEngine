@@ -1,5 +1,6 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : enable
+#extension GL_EXT_ray_query : require
 
 // ------------------------------------------------------------
 #define NEIGHBOR_OFFSET_COUNT 256
@@ -101,15 +102,17 @@ vec2 nextVec2(inout uint state)
 struct PixelReconnectionData
 {
     ReconnectionData data[RCDATA_PATH_NUM];
-    vec4 padding[RCDATA_PAD_SIZE];
+    //vec4 padding[RCDATA_PAD_SIZE];
 };
 
-//cls
-struct PathReuseMISWeight
-{
-    float rcBSDFMISWeight;
-    float rcNEEMISWeight;
-};
+ struct PathReuseMISWeight
+  {
+      float rcBSDFMISWeight;
+      float rcNEEMISWeight;
+
+      float pad1;
+      float pad2;
+  };
 
 //cls
 struct ShadingData
@@ -267,36 +270,61 @@ struct Material
 };
 // ------------------------------------------------------------
 // RESOURCES
-
-layout(set = 0, binding = 1) readonly buffer vbuffer {
+// --- Core GBuffer / Geometry ---
+layout(set = 0, binding = 0) readonly buffer vBuffer {
     HitInfo h[];
 } vBuff;
 
-layout(binding = 2) uniform sampler1D neighborOffsets;
+layout(set = 0, binding = 1) readonly buffer temporalVbuffer {
+    HitInfo tH[];
+} tempVBuff; // previous frame
 
-layout(std430, binding = 3) buffer NRooksPattern {
-    uint data[];
-} nRooksPattern;
+// --- Sampling / Patterns ---
+layout(set = 0, binding = 2) readonly buffer NRooksPatternBuffer {
+    uint nRooksPattern[];
+};
 
-layout(rgba32f, binding = 4) uniform image2D outputColor;
+// Neighbor offsets
+layout(set = 0, binding = 3) readonly buffer neighborOffsets {
+    uint u[];
+} nO;
 
-layout(std430, binding = 5) readonly buffer OutputReservoirs {
-    PathReservoir data[];
-} outputReservoirs;
+// --- Reservoirs ---
+layout(set = 0, binding = 4) buffer OutputReservoirs {
+    PathReservoir outputReservoirs[];
+};
 
-layout(std430, binding = 6) buffer TemporalReservoirs {
-    PathReservoir data[];
-} temporalReservoirs;
+layout(set = 0, binding = 5) buffer TemporalReservoirs {
+    PathReservoir temporalReservoirs[];
+};
 
-layout(set = 0, binding = 9) uniform sampler2D gWorldPosition;
-layout(set = 0, binding = 10) uniform sampler2D gWorldShadingNormal;
-layout(set = 0, binding = 11) uniform sampler2D gWorldFaceNormal;
+// --- Reconnection / Reuse ---
+layout(set = 0, binding = 6) buffer ReconnectionBuffer {
+    PixelReconnectionData reconnectionDataBuffer[];
+};
 
+layout(set = 0, binding = 7) buffer MISWeightBuffer {
+    PathReuseMISWeight misWeightBuffer[];
+};
 
-layout(set = 0, binding = 12) readonly buffer MaterialBuffer
-{
+// --- Materials ---
+layout(set = 0, binding = 8) readonly buffer MaterialBuffer {
     Material materials[];
 };
+
+
+// --- Textures ---
+layout(set = 0, binding = 12) uniform sampler2D gWorldPosition;
+layout(set = 0, binding = 13) uniform sampler2D gWorldShadingNormal;
+layout(set = 0, binding = 14) uniform sampler2D gWorldFaceNormal;
+
+layout(set = 0, binding = 15) uniform sampler2D motionVectors;
+layout(set = 0, binding = 16, rgba32f) uniform image2D directLighting;
+
+
+// --- Output ---
+layout(set = 0, binding = 17, rgba32f) uniform image2D outputColor;
+
 // ------------------------------------------------------------
 // HELPERS
 
@@ -779,21 +807,27 @@ int getNeighborCount()
     return gPathRetracePass.gNeighborCount;
 }
 
-//cls
+//wrk
 ivec2 getNextNeighborPixel(uint startIndex, ivec2 pixel, int i)
 {
     uint idx = (startIndex + uint(i)) & kNeighborOffsetMask;
-    vec2 offset = texelFetch(neighborOffsets, int(idx), 0).xy;
+    uint packed = nO.u[idx];
+
+    // Unpack two signed 8-bit (or 16-bit) offsets from the uint
+    vec2 offset = vec2(
+        float(int(packed & 0xFFFF)),
+        float(int(packed >> 16))
+    );
+
     return pixel + ivec2(offset * gPathRetracePass.gGatherRadius);
 }
-
 void ReSTIR(uvec2 pixel)
 {
     uint seed = gPathRetracePass.params.seed + uint(gPathRetracePass.gSpatialRoundId);
     uint rng = initRNG(pixel, seed, 1337u);
 
     uint offset = getReservoirOffset(ivec2(pixel));
-    PathReservoir dst = outputReservoirs.data[offset];
+    PathReservoir dst = outputReservoirs[offset];
 
     HitInfo packed;
     ShadingData central = getPixelShadingData(ivec2(pixel), packed);
@@ -829,7 +863,7 @@ void ReSTIR(uvec2 pixel)
             if (!isValidScreenRegion(neighborPixel)) continue;
 
             uint no = getReservoirOffset(neighborPixel);
-            PathReservoir neighborReservoir = outputReservoirs.data[no];
+            PathReservoir neighborReservoir = outputReservoirs[no];
 
             HitInfo neighborPacked;
             ShadingData neighborSd = getPixelShadingData(neighborPixel, neighborPacked);
@@ -904,7 +938,7 @@ void ReSTIR(uvec2 pixel)
                     if (!isValidScreenRegion(tneighborPixel)) continue;
 
                     uint to = getReservoirOffset(tneighborPixel);
-                    PathReservoir tneighborReservoir = outputReservoirs.data[to];
+                    PathReservoir tneighborReservoir = outputReservoirs[to];
 
                     HitInfo tPacked;
                     ShadingData tSd = getPixelShadingData(tneighborPixel, tPacked);
@@ -967,7 +1001,7 @@ void ReSTIR(uvec2 pixel)
             if (!isValidScreenRegion(np)) continue;
 
             uint no = getReservoirOffset(np);
-            PathReservoir src = outputReservoirs.data[no];
+            PathReservoir src = outputReservoirs[no];
 
             HitInfo npPacked;
             ShadingData nsd = getPixelShadingData(np, npPacked);
@@ -1005,7 +1039,7 @@ void ReSTIR(uvec2 pixel)
             prev + vec4(color, 1.0));
     }
 
-    temporalReservoirs.data[offset] = dst;
+    temporalReservoirs[offset] = dst;
 }
 
 // ------------------------------------------------------------
@@ -1014,6 +1048,7 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 void main()
 {
+return;
     uvec2 pixel = gl_GlobalInvocationID.xy;
 
     if (any(greaterThanEqual(pixel, uvec2(gPathRetracePass.params.frameDim))))

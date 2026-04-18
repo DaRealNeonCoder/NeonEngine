@@ -182,6 +182,8 @@ void LveDevice::createLogicalDevice() {
   accelerationStructureFeatures.accelerationStructure = VK_TRUE;
   accelerationStructureFeatures.pNext = &rayTracingPipelineFeatures;
 
+
+
   VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{};
   descriptorIndexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
   descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
@@ -189,12 +191,17 @@ void LveDevice::createLogicalDevice() {
   descriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
   descriptorIndexingFeatures.pNext = &accelerationStructureFeatures;  
 
+  VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{};
+  rayQueryFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+  rayQueryFeatures.rayQuery = VK_TRUE;
+  rayQueryFeatures.pNext = &descriptorIndexingFeatures;  // insert before descriptorIndexing
+
   VkPhysicalDeviceFeatures2 deviceFeatures2{};
   deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
   deviceFeatures2.features.samplerAnisotropy = VK_TRUE;
   deviceFeatures2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
   deviceFeatures2.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
-  deviceFeatures2.pNext = &descriptorIndexingFeatures; 
+  deviceFeatures2.pNext = &rayQueryFeatures;
 
 
 

@@ -112,9 +112,12 @@ class LveDevice {
       VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,  // often required by AS
       VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,       // required by AS
       VK_KHR_SPIRV_1_4_EXTENSION_NAME,                 // required by ray tracing pipeline
+      VK_KHR_RAY_QUERY_EXTENSION_NAME, 
       VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME  ,
       
       // required by SPIRV 1.4
   };
+
+  //TODO: organize this stuff. Requirements for a device should vary app by app.
 };
 }  // namespace lve

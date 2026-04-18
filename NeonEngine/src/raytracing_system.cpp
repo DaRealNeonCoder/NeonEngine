@@ -20,6 +20,7 @@ RayTracingSystem::RayTracingSystem(
     LveDevice& device3,
     VkFormat format,
     VkDescriptorSetLayout globalSetLayout, 
+    VkDescriptorSetLayout restirSetLayout,
     std::vector<RayTracingVertex> allVertex,
     std::vector<uint32_t> allIndicies,
     std::vector<LveMaterial> allMaterials,
@@ -58,8 +59,12 @@ RayTracingSystem::RayTracingSystem(
   createMaterialBuffer(allMaterials, allLightPos);
   createBottomLevelAccelerationStructure();
   createTopLevelAccelerationStructure();
+  createReSTIRBuffers(width, height);
   createRayTracingPipeline(globalSetLayout);
   createShaderBindingTable();
+
+  createComputePipelineLayout(restirSetLayout);
+  createComputePipelines();
 }
 
 // Updated destructor
@@ -175,6 +180,9 @@ void RayTracingSystem::handleResize(
 
     vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
   }
+
+
+  resizeReSTIRBuffers(width, height);
 }
 
 void RayTracingSystem::copyStorageImageToSwapChain(
@@ -591,6 +599,14 @@ VkDescriptorImageInfo RayTracingSystem::getStorageImageDescriptor(uint32_t frame
 
   return imageInfo;
 }
+
+VkDescriptorImageInfo RayTracingSystem::getDirectLightingDescriptor() const {
+    VkDescriptorImageInfo info{};
+    info.imageView = directLightingImage.view;
+    info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    info.sampler = VK_NULL_HANDLE;  
+    return info;
+}
 uint64_t RayTracingSystem::getBufferDeviceAddress(VkBuffer buffer) {
   VkBufferDeviceAddressInfoKHR bufferDeviceAI{};
   bufferDeviceAI.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -776,6 +792,195 @@ void RayTracingSystem::createTopLevelAccelerationStructure() {
   deleteScratchBuffer(scratchBuffer);
 }
 
+void RayTracingSystem::createReSTIRBuffers(uint32_t width, uint32_t height) {
+    uint32_t pixelCount = width * height;
+
+    auto makeDeviceLocal = [&](VkDeviceSize elemSize, uint32_t count) {
+        return std::make_unique<LveBuffer>(
+            vulkanDevice,
+            elemSize,
+            count,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    };
+
+    auto makeDeviceLocal2 = [&](VkDeviceSize elemSize, uint32_t count) {
+        return std::make_unique<LveBuffer>(
+            vulkanDevice,
+            elemSize,
+            count,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    };
+
+    auto makeHostVisible = [&](VkDeviceSize elemSize, uint32_t count) {
+        return std::make_unique<LveBuffer>(
+            vulkanDevice,
+            elemSize,
+            count,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    };
+
+    // =====================================================
+    // GBUFFER / VISIBILITY (binding 0, 1)
+    // =====================================================
+    vBuffer = makeDeviceLocal(sizeof(HitInfo), pixelCount);         // binding 0
+    temporalVBuffer = makeDeviceLocal(sizeof(HitInfo), pixelCount);         // binding 1
+
+    // =====================================================
+    // SAMPLING / PATTERNS (binding 2, 3)
+    // =====================================================
+    nRooksPatternBuffer = makeDeviceLocal2(sizeof(uint32_t), 65536);    // binding 2
+    neighborOffsetBuffer = makeDeviceLocal2(sizeof(uint32_t), NEIGHBOR_OFFSET_COUNT); // binding 3
+
+    // =====================================================
+    // RESERVOIRS (binding 4, 5)
+    // =====================================================
+    outputReservoirBuffer = makeDeviceLocal(sizeof(PathReservoir), pixelCount); // binding 4
+    temporalReservoirBuffer = makeDeviceLocal(sizeof(PathReservoir), pixelCount); // binding 5
+
+    // =====================================================
+    // RECONNECTION / REUSE (binding 6, 7)
+    // =====================================================
+    reconnectionBuffer = makeDeviceLocal(sizeof(PixelReconnectionData), pixelCount); // binding 6
+    misWeightBuffer = makeDeviceLocal(sizeof(PathReuseMISWeight), pixelCount);    // binding 7
+
+    // =====================================================
+    // UPLOAD STAGING (for bindings 2, 3 that need CPU->GPU transfer)
+    // =====================================================
+    stagingNRooks = makeHostVisible(sizeof(uint32_t), 65536);
+    stagingNeighborOffsets = makeHostVisible(sizeof(uint32_t), NEIGHBOR_OFFSET_COUNT);
+
+    //upload rooks buffer
+    {
+    // Load from file, same as Falcor reference
+    FILE* f = nullptr;
+    fopen_s(&f, "C:\\users\\zybros\\Downloads\\NeonEngine\\NeonEngine\\misc\\16RooksPattern256.txt", "r");
+    if (!f) throw std::runtime_error("Failed to open 16RooksPattern256.txt");
+
+    std::vector<uint8_t> nRookArray(65536);
+    for (int i = 0; i < 8192; i++) {
+        for (int j = 0; j < 8; j++) {
+            int temp1, temp2;
+            fscanf_s(f, "%d %d", &temp1, &temp2);
+            nRookArray[8 * i + j] = (uint8_t)((temp2 << 4) | temp1);
+        }
+    }
+    fclose(f);
+
+    stagingNRooks->map();
+    stagingNRooks->writeToBuffer(nRookArray.data());
+
+    VkCommandBuffer cmd = vulkanDevice.beginSingleTimeCommands();
+
+    VkBufferCopy copyRegion{};
+    copyRegion.size = 65536;
+
+    vkCmdCopyBuffer(cmd, stagingNRooks->getBuffer(), nRooksPatternBuffer->getBuffer(), 1, &copyRegion);
+
+    vulkanDevice.endSingleTimeCommands(cmd);
+
+}
+    /*
+    
+    Since your direct lighting pass writes every pixel, just drop VK_IMAGE_USAGE_TRANSFER_DST_BIT from the usage flags and forget about it. The shader handles it.
+
+    */
+    //directLightingImage
+    {
+        directLightingImage.width = width;
+        directLightingImage.height = height;
+
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;  // rgba32f to match shader
+        imageInfo.extent = { width, height, 1 };
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT
+            | VK_IMAGE_USAGE_TRANSFER_DST_BIT  // for clearing
+            | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        vulkanDevice.createImageWithInfo(
+            imageInfo,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            directLightingImage.image,
+            directLightingImage.memory);
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = directLightingImage.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 1;
+
+        if (vkCreateImageView(
+            vulkanDevice.device(), &viewInfo, nullptr, &directLightingImage.view) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create direct lighting image view!");
+        }
+
+        // Transition to GENERAL for shader read/write
+        VkCommandBuffer cmd = vulkanDevice.beginSingleTimeCommands();
+
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = directLightingImage.image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT
+            | VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(
+            cmd,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            0, 0, nullptr, 0, nullptr,
+            1, &barrier);
+
+        vulkanDevice.endSingleTimeCommands(cmd);
+    
+    }
+}
+
+void RayTracingSystem::resizeReSTIRBuffers(uint32_t width, uint32_t height) {
+    // Wait for GPU to finish before destroying anything
+    vkDeviceWaitIdle(vulkanDevice.device());
+
+    // Destroy the direct lighting image manually (not a unique_ptr)
+    if (directLightingImage.view != VK_NULL_HANDLE) {
+        vkDestroyImageView(vulkanDevice.device(), directLightingImage.view, nullptr);
+        directLightingImage.view = VK_NULL_HANDLE;
+    }
+    if (directLightingImage.image != VK_NULL_HANDLE) {
+        vkDestroyImage(vulkanDevice.device(), directLightingImage.image, nullptr);
+        directLightingImage.image = VK_NULL_HANDLE;
+    }
+    if (directLightingImage.memory != VK_NULL_HANDLE) {
+        vkFreeMemory(vulkanDevice.device(), directLightingImage.memory, nullptr);
+        directLightingImage.memory = VK_NULL_HANDLE;
+    }
+
+    // Buffers are unique_ptrs — reassignment destroys the old ones automatically
+    createReSTIRBuffers(width, height);
+}
+
 void RayTracingSystem::createAccelerationStructureBuffer(
     AccelerationStructure& accelerationStructure,
     const VkAccelerationStructureBuildSizesInfoKHR& buildSizeInfo) {
@@ -923,6 +1128,7 @@ void RayTracingSystem::createRayTracingPipeline(VkDescriptorSetLayout globalSetL
   }
 }
 
+
 void RayTracingSystem::createShaderBindingTable() {
   if (shaderGroups.empty()) {
     throw std::runtime_error("Shader groups are empty! Pipeline may have failed to create.");
@@ -999,10 +1205,221 @@ void RayTracingSystem::createShaderBindingTable() {
 
 VkAccelerationStructureKHR RayTracingSystem::getTLAS() const { return topLevelAS.handle; }
 
+
+
+void RayTracingSystem::runShaders(ReSTIRFrameInfo& frameInfo) {
+
+    const uint32_t localSizeX = 8;
+    const uint32_t localSizeY = 8;
+    uint32_t groupsX = (frameInfo.width +localSizeX - 1) / localSizeX;
+    uint32_t groupsY = (frameInfo.height + localSizeY - 1) / localSizeY;
+
+    // Shared lambda for barriers between passes
+    auto makeImageBarrier = [&](VkImage image,
+        VkAccessFlags src, VkAccessFlags dst,
+        VkImageLayout oldLayout, VkImageLayout newLayout)
+    {
+        VkImageMemoryBarrier b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        b.srcAccessMask = src;
+        b.dstAccessMask = dst;
+        b.oldLayout = oldLayout;
+        b.newLayout = newLayout;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = image;
+        b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        return b;
+    };
+
+    auto makeBufferBarrier = [&](VkBuffer buf,
+        VkAccessFlags src, VkAccessFlags dst)
+    {
+        VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+        b.srcAccessMask = src;
+        b.dstAccessMask = dst;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.buffer = buf;
+        b.offset = 0;
+        b.size = VK_WHOLE_SIZE;
+        return b;
+    };
+
+    auto computeBarrier = [&](std::vector<VkBufferMemoryBarrier> bufBarriers,
+        std::vector<VkImageMemoryBarrier>  imgBarriers)
+    {
+        vkCmdPipelineBarrier(
+            frameInfo.commandBuffer,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,
+            0, nullptr,
+            (uint32_t)bufBarriers.size(), bufBarriers.data(),
+            (uint32_t)imgBarriers.size(), imgBarriers.data());
+    };
+
+
+    // Bind descriptor set once — shared across all passes
+    vkCmdBindDescriptorSets(
+        frameInfo.commandBuffer,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        restirPipelineLayout,
+        0, 1, &frameInfo.globalDescriptorSet,
+        0, nullptr);
+
+
+    // =====================================================
+    // PASS 0 — MIS Weights
+    // (must run before temporal so UCW / target PDFs are ready)
+    // =====================================================
+
+    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, misWeightsPipeline);
+    vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
+
+    computeBarrier(
+        { makeBufferBarrier(outputReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+        {});
+
+
+    // =====================================================
+    // PASS 1 — Temporal Retrace
+    // (re-evaluate last frame's samples in current geometry)
+    // =====================================================
+
+    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, temporalRetracePipeline);
+    vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
+
+    computeBarrier(
+        { makeBufferBarrier(outputReservoirBuffer->getBuffer(),         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
+          makeBufferBarrier(temporalReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+        {});
+
+
+    // =====================================================
+    // PASS 2 — Temporal Reuse
+    // (merge current reservoir with reprojected temporal)
+    // =====================================================
+
+    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, temporalReusePipeline);
+    vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
+
+    computeBarrier(
+        { makeBufferBarrier(outputReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+        {});
+
+
+    // =====================================================
+    // PASS 3 — Spatial Retrace
+    // (re-evaluate neighbours' samples at this pixel's surface)
+    // =====================================================
+
+    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, spatialRetracePipeline);
+    vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
+
+    
+    computeBarrier(
+        { makeBufferBarrier(outputReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+        {});
+
+
+    // =====================================================
+    // PASS 4 — Spatial Reuse
+    // (merge neighbours into final reservoir)
+    // =====================================================
+
+    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, spatialReusePipeline);
+    vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
+
+    // Final barrier — downstream shading reads the resolved reservoir
+    computeBarrier(
+        { makeBufferBarrier(outputReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+        {});
+}
+
+
+
+void RayTracingSystem::createComputePipelineLayout(VkDescriptorSetLayout setLayout) {
+
+    VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    layoutInfo.setLayoutCount = 1;
+    layoutInfo.pSetLayouts = &setLayout;
+    layoutInfo.pushConstantRangeCount = 0;
+    layoutInfo.pPushConstantRanges = nullptr;
+
+    if (vkCreatePipelineLayout(vulkanDevice.device(), &layoutInfo, nullptr, &restirPipelineLayout) != VK_SUCCESS) {
+        throw std::runtime_error("ReSTIR PT: failed to create pipeline layout");
+    }
+}
+
+static VkPipeline createSingleComputePipeline(
+    LveDevice& device,
+    VkPipelineLayout layout,
+    VkShaderModule   shaderModule)
+{
+    VkPipelineShaderStageCreateInfo stageInfo{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageInfo.module = shaderModule;
+    stageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+    pipelineInfo.stage = stageInfo;
+    pipelineInfo.layout = layout;
+
+    VkPipeline pipeline;
+    if (vkCreateComputePipelines(device.device(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
+        throw std::runtime_error("ReSTIR PT: failed to create compute pipeline");
+    }
+    return pipeline;
+}
+
+void RayTracingSystem::createComputePipelines() {
+    const std::string shaderBase = "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\";
+
+    //  shader modules
+    temporalRetraceModule = LvePipeline::loadShaderModule((shaderBase + "restir_temporal_retrace.comp.spv").c_str(), vulkanDevice.device());
+    temporalReuseModule = LvePipeline::loadShaderModule((shaderBase + "restir_temporal_reuse.comp.spv").c_str(), vulkanDevice.device());
+    spatialRetraceModule = LvePipeline::loadShaderModule((shaderBase + "restir_spatial_retrace.comp.spv").c_str(), vulkanDevice.device());
+    spatialReuseModule = LvePipeline::loadShaderModule((shaderBase + "restir_spatial_reuse.comp.spv").c_str(), vulkanDevice.device());
+    misWeightsModule = LvePipeline::loadShaderModule((shaderBase + "restir_mis_reuse.comp.spv").c_str(), vulkanDevice.device());
+
+    //pipelines
+    temporalRetracePipeline = createSingleComputePipeline(vulkanDevice, restirPipelineLayout, temporalRetraceModule);
+    temporalReusePipeline = createSingleComputePipeline(vulkanDevice, restirPipelineLayout, temporalReuseModule);
+    spatialRetracePipeline = createSingleComputePipeline(vulkanDevice, restirPipelineLayout, spatialRetraceModule);
+    spatialReusePipeline = createSingleComputePipeline(vulkanDevice, restirPipelineLayout, spatialReuseModule);
+    misWeightsPipeline = createSingleComputePipeline(vulkanDevice, restirPipelineLayout, misWeightsModule);
+}
+
+/*
+void ReSTIRpt::DestroyPipelines() {
+    // Pipelines
+    vkDestroyPipeline(device.device(), temporalRetracePipeline, nullptr);
+    vkDestroyPipeline(device.device(), temporalReusePipeline, nullptr);
+    vkDestroyPipeline(device.device(), spatialRetracePipeline, nullptr);
+    vkDestroyPipeline(device.device(), spatialReusePipeline, nullptr);
+    vkDestroyPipeline(device.device(), misWeightsPipeline, nullptr);
+
+    // Shader modules — safe to destroy after pipeline creation
+    vkDestroyShaderModule(device.device(), temporalRetraceModule, nullptr);
+    vkDestroyShaderModule(device.device(), temporalReuseModule, nullptr);
+    vkDestroyShaderModule(device.device(), spatialRetraceModule, nullptr);
+    vkDestroyShaderModule(device.device(), spatialReuseModule, nullptr);
+    vkDestroyShaderModule(device.device(), misWeightsModule, nullptr);
+
+    // Layout
+    vkDestroyPipelineLayout(device.device(), restirPipelineLayout, nullptr);
+}
+*/
+
 void RayTracingSystem::VK_CHECK_RESULT(VkResult f) {
   VkResult res = (f);
   if (res != VK_SUCCESS) {
     std::cout << std::endl << std::endl << "Fatal: VkResult is " << f << std::endl;
   }
 }  // namespace lve
+
+
+
+
+
 }  // namespace lve

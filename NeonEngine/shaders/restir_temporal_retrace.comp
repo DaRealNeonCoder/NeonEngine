@@ -1,6 +1,7 @@
 #version 460
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_ray_query : require
+#extension GL_EXT_ray_tracing : enable
 
 // ------------------------------------------------------------------
 // Structs
@@ -78,7 +79,7 @@ struct ReconnectionData
 struct PixelReconnectionData
 {
     ReconnectionData data[RCDATA_PATH_NUM];
-    vec4 padding[RCDATA_PAD_SIZE];
+    //vec4 padding[RCDATA_PAD_SIZE];
 };
 
 
@@ -107,59 +108,83 @@ struct RayTracingVertex {
     uint pad3; 
     
 };
+ struct PathReuseMISWeight
+  {
+      float rcBSDFMISWeight;
+      float rcNEEMISWeight;
 
-// BUFFERS
+      float pad1;
+      float pad2;
+  };
 
-layout(binding = 1) readonly buffer temporalVbuffer
+struct RayData
 {
-    HitInfo tH[];
-} tempVBuff; // prev frame temp buffer
-
-layout(set = 0, binding = 2) readonly buffer vBuffer {
+    vec4 misc1;
+};
+// --- Core GBuffer / Geometry ---
+layout(set = 0, binding = 0) readonly buffer vBuffer {
     HitInfo h[];
 } vBuff;
-layout(set = 0, binding = 3) uniform sampler2D motionVectors;
 
-layout(set = 0, binding = 4) buffer NRooksPatternBuffer
-{
+layout(set = 0, binding = 1) readonly buffer temporalVbuffer {
+    HitInfo tH[];
+} tempVBuff; // previous frame
+
+// --- Sampling / Patterns ---
+layout(set = 0, binding = 2) readonly buffer NRooksPatternBuffer {
     uint nRooksPattern[];
 };
 
-layout(set = 0, binding = 5, rgba32f) uniform image2D outputColor;
+// Neighbor offsets
+layout(set = 0, binding = 3) readonly buffer neighborOffsets {
+    uint u[];
+} nO;
 
-layout(set = 0, binding = 6) buffer OutputReservoirsBuffer
-{
+// --- Reservoirs ---
+layout(set = 0, binding = 4) buffer OutputReservoirs {
     PathReservoir outputReservoirs[];
 };
 
-layout(set = 0, binding = 7) buffer TemporalReservoirsBuffer
-{
+layout(set = 0, binding = 5) buffer TemporalReservoirs {
     PathReservoir temporalReservoirs[];
 };
 
-layout(set = 0, binding = 8) buffer ReconnectionBuffer
-{
+// --- Reconnection / Reuse ---
+layout(set = 0, binding = 6) buffer ReconnectionBuffer {
     PixelReconnectionData reconnectionDataBuffer[];
 };
 
-layout(set = 0, binding = 9) uniform sampler2D gWorldPosition;
-layout(set = 0, binding = 10) uniform sampler2D gWorldShadingNormal;
-layout(set = 0, binding = 11) uniform sampler2D gWorldFaceNormal;
-
-layout(set = 0, binding = 12) readonly buffer MaterialBuffer
-{
+layout(set = 0, binding = 7) buffer MISWeightBuffer {
+    PathReuseMISWeight misWeightBuffer[];
+};// --- Materials ---
+layout(set = 0, binding = 8) readonly buffer MaterialBuffer {
     Material materials[];
 };
 
-layout(set = 0, binding = 13) uniform accelerationStructureEXT topLevelAS;
 
-layout(set = 0, binding = 14) readonly buffer VertexBuffer {
+layout(set = 0, binding = 9) readonly buffer VertexBuffer {
     RayTracingVertex v[];
 } vertices;
 
-layout(set = 0, binding = 15) readonly buffer IndexBuffer {
+layout(set = 0, binding = 10) readonly buffer IndexBuffer {
     uint i[];
 } indices;
+
+layout(set = 0, binding = 11) uniform accelerationStructureEXT topLevelAS;
+
+// --- Textures ---
+layout(set = 0, binding = 12) uniform sampler2D gWorldPosition;
+layout(set = 0, binding = 13) uniform sampler2D gWorldShadingNormal;
+layout(set = 0, binding = 14) uniform sampler2D gWorldFaceNormal;
+
+layout(set = 0, binding = 15) uniform sampler2D motionVectors;
+layout(set = 0, binding = 16, rgba32f) uniform image2D directLighting;
+
+
+// --- Output ---
+layout(set = 0, binding = 17, rgba32f) uniform image2D outputColor;
+
+
 
 // ------------------------------------------------------------------
 // Constants
@@ -785,6 +810,8 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 void main()
 {
+return;
+
     uvec2 pixel = gl_GlobalInvocationID.xy;
     execute(pixel);
 }
