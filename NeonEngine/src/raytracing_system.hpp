@@ -58,6 +58,8 @@ struct RayTracingMaterial {
 
 class RayTracingSystem {
  public:
+     std::unique_ptr<LveBuffer> debugBuffer;
+
      explicit RayTracingSystem(
          LveDevice& device3,
          VkFormat format,
@@ -103,7 +105,9 @@ class RayTracingSystem {
   VkDescriptorBufferInfo getLightBufferDescriptor() const {
       return lightBuffer->descriptorInfo();
   }
-
+  VkDescriptorBufferInfo getDebugBufferDescriptor() const {
+      return debugBuffer->descriptorInfo();
+  }
   VkDescriptorBufferInfo getVBufferDescriptor() const {
     return vBuffer->descriptorInfo();
 }
@@ -202,6 +206,7 @@ what
   std::unique_ptr<LveBuffer> misWeightBuffer;
   std::unique_ptr<LveBuffer> rayDataBuffer;
 
+
   std::unique_ptr<LveBuffer> stagingNRooks;
   std::unique_ptr<LveBuffer> stagingNeighborOffsets;
 
@@ -281,6 +286,11 @@ what
   const int NEIGHBOR_OFFSET_COUNT = 16;
   static constexpr int RCDATA_PATH_NUM = 16;
 
+  struct RestirPushConstants
+  {
+      int gSpatialRoundId;
+      int gIsLastRound;
+  };
   //restir strucs
   struct HitInfo
   {

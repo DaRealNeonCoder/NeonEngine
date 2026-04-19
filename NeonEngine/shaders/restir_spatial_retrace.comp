@@ -239,42 +239,63 @@ layout(set = 0, binding = 13) uniform sampler2D gWorldShadingNormal;
 layout(set = 0, binding = 14) uniform sampler2D gWorldFaceNormal;
 
 layout(set = 0, binding = 15) uniform sampler2D motionVectors;
-layout(set = 0, binding = 16, rgba32f) uniform image2D directLighting;
+layout(set = 0, binding = 16, rgba8) uniform image2D directLighting;
 
 
 // --- Output ---
-layout(set = 0, binding = 17, rgba32f) uniform image2D outputColor;
+layout(set = 0, binding = 17, rgba8) uniform image2D outputColor;
+
+layout(set = 0, binding = 18) uniform ReSTIRUbo
+{
+    // Base params
+    RestirPathTracerParams params;
+
+    // Spatial
+    int   gSpatialRoundId;
+    int   gNumSpatialRounds;
+    uint  gSpatialReusePattern;
+    int   gNeighborCount;
+
+    float gGatherRadius;
+    int   gSmallWindowRadius;
+    int   gFeatureBasedRejection;
+    int   gIsLastRound;
+
+    // Temporal
+    int   gEnableTemporalReprojection;
+    float gTemporalHistoryLength;
+    int   gNoResamplingForTemporalReuse;
+    float _pad0;
+
+    // Camera / geometry
+    vec3  posW;
+    float _pad1;
+    vec3  cameraW;
+    float _pad2;
+    
+    float nearZ;
+    float farZ;
+    int   useDirectLighting;
+    int   useTalbotMIS;
+
+    int   restirMISkind;
+    int   pathSamplingMode;
+
+    int pad1;
+    int pad2;
+
+} gPathRetracePass;
+
+layout(set = 0, binding = 19) buffer DebugBuffer {
+    float d[];
+} debugVals;
+
 
 const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
 const uint kNeighborOffsetMask  = kNeighborOffsetCount - 1;
 
 // ------------------------------------------------------------------
 
-
-//wrk
-layout(push_constant) uniform CB
-{
-    RestirPathTracerParams params;
-
-    int gSpatialRoundId;
-    int gNumSpatialRounds;
-    uint gSpatialReusePattern;
-
-    int gNeighborCount;
-    float gGatherRadius;
-
-    int gSmallWindowRadius;
-
-    bool gFeatureBasedRejection;
-
-    vec3 posW;
-    vec3 cameraW;
-    float nearZ;
-    float farZ;
-    
-
-
-} gPathRetracePass;
 
 //cls 
 Ray computeRayPinhole(uvec2 pixel, uvec2 frameDim)
@@ -406,7 +427,7 @@ bool loadShadingData(
 //cls
 bool isValidGeometry(ShadingData a, ShadingData b)
 {
-    if (!gPathRetracePass.gFeatureBasedRejection) return true;
+    if (gPathRetracePass.gFeatureBasedRejection == 0) return true;
 
     vec3 camPos = vec3(0.0);
 
@@ -812,8 +833,6 @@ layout(local_size_x = 16, local_size_y = 16) in;
 //cls
 void main()
 {
-return;
-
     uvec2 pixel = gl_GlobalInvocationID.xy;
 
     if (any(greaterThanEqual(pixel, gPathRetracePass.params.frameDim)))

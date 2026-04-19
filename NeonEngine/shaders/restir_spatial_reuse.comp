@@ -149,32 +149,117 @@ struct Ray
     float tMin;
     float tMax;
 };
+
+
 //wrk
-layout(push_constant) uniform CB
+struct Material
 {
+    vec4 diffuseOpacity;     // xyz = albedo, w = opacity
+    vec4 specularRoughness;  // xyz = specular, w = roughness
+    vec4 emissive;           // xyz = emission
+    vec4 extraParams;        // whatever you want (metallic, etc.)
+};
+// ------------------------------------------------------------
+// RESOURCES
+// --- Core GBuffer / Geometry ---
+layout(set = 0, binding = 0) readonly buffer vBuffer {
+    HitInfo h[];
+} vBuff;
+
+layout(set = 0, binding = 1) readonly buffer temporalVbuffer {
+    HitInfo tH[];
+} tempVBuff; // previous frame
+
+// --- Sampling / Patterns ---
+layout(set = 0, binding = 2) readonly buffer NRooksPatternBuffer {
+    uint nRooksPattern[];
+};
+
+// Neighbor offsets
+layout(set = 0, binding = 3) readonly buffer neighborOffsets {
+    uint u[];
+} nO;
+
+// --- Reservoirs ---
+layout(set = 0, binding = 4) buffer OutputReservoirs {
+    PathReservoir outputReservoirs[];
+};
+
+layout(set = 0, binding = 5) buffer TemporalReservoirs {
+    PathReservoir temporalReservoirs[];
+};
+
+// --- Reconnection / Reuse ---
+layout(set = 0, binding = 6) buffer ReconnectionBuffer {
+    PixelReconnectionData reconnectionDataBuffer[];
+};
+
+layout(set = 0, binding = 7) buffer MISWeightBuffer {
+    PathReuseMISWeight misWeightBuffer[];
+};
+
+// --- Materials ---
+layout(set = 0, binding = 8) readonly buffer MaterialBuffer {
+    Material materials[];
+};
+
+
+// --- Textures ---
+layout(set = 0, binding = 12) uniform sampler2D gWorldPosition;
+layout(set = 0, binding = 13) uniform sampler2D gWorldShadingNormal;
+layout(set = 0, binding = 14) uniform sampler2D gWorldFaceNormal;
+
+layout(set = 0, binding = 15) uniform sampler2D motionVectors;
+layout(set = 0, binding = 16, rgba8) uniform image2D directLighting;
+
+
+// --- Output ---
+layout(set = 0, binding = 17, rgba8) uniform image2D outputColor;
+layout(set = 0, binding = 18) uniform ReSTIRUbo
+{
+    // Base params
     RestirPathTracerParams params;
 
-    int gSpatialRoundId;
-    int gNumSpatialRounds;
-    uint gSpatialReusePattern;
+    // Spatial
+    int   gSpatialRoundId;
+    int   gNumSpatialRounds;
+    uint  gSpatialReusePattern;
+    int   gNeighborCount;
 
-    int gNeighborCount;
     float gGatherRadius;
+    int   gSmallWindowRadius;
+    int   gFeatureBasedRejection;
+    int   gIsLastRound;
 
-    int gSmallWindowRadius;
+    // Temporal
+    int   gEnableTemporalReprojection;
+    float gTemporalHistoryLength;
+    int   gNoResamplingForTemporalReuse;
+    float _pad0;
 
-    bool gFeatureBasedRejection;
-    bool gIsLastRound;
-
-    vec3 posW;
-    vec3 cameraW;
+    // Camera / geometry
+    vec3  posW;
+    float _pad1;
+    vec3  cameraW;
+    float _pad2;
+    
     float nearZ;
     float farZ;
 
-    int restirMISkind;
-    int pathSamplingMode;
+    // Lighting / sampling
+    int   useDirectLighting;
+    int   useTalbotMIS;
+    int   restirMISkind;
+    int   pathSamplingMode;
 
 } gPathRetracePass;
+
+layout(set = 0, binding = 19) buffer DebugBuffer {
+    float d[];
+} debugVals;
+
+// ------------------------------------------------------------
+// HELPERS
 
 
 //cls 
@@ -259,74 +344,6 @@ float computeWeight(vec3 color, bool binarize)
     return weight;
 }
 
-
-//wrk
-struct Material
-{
-    vec4 diffuseOpacity;     // xyz = albedo, w = opacity
-    vec4 specularRoughness;  // xyz = specular, w = roughness
-    vec4 emissive;           // xyz = emission
-    vec4 extraParams;        // whatever you want (metallic, etc.)
-};
-// ------------------------------------------------------------
-// RESOURCES
-// --- Core GBuffer / Geometry ---
-layout(set = 0, binding = 0) readonly buffer vBuffer {
-    HitInfo h[];
-} vBuff;
-
-layout(set = 0, binding = 1) readonly buffer temporalVbuffer {
-    HitInfo tH[];
-} tempVBuff; // previous frame
-
-// --- Sampling / Patterns ---
-layout(set = 0, binding = 2) readonly buffer NRooksPatternBuffer {
-    uint nRooksPattern[];
-};
-
-// Neighbor offsets
-layout(set = 0, binding = 3) readonly buffer neighborOffsets {
-    uint u[];
-} nO;
-
-// --- Reservoirs ---
-layout(set = 0, binding = 4) buffer OutputReservoirs {
-    PathReservoir outputReservoirs[];
-};
-
-layout(set = 0, binding = 5) buffer TemporalReservoirs {
-    PathReservoir temporalReservoirs[];
-};
-
-// --- Reconnection / Reuse ---
-layout(set = 0, binding = 6) buffer ReconnectionBuffer {
-    PixelReconnectionData reconnectionDataBuffer[];
-};
-
-layout(set = 0, binding = 7) buffer MISWeightBuffer {
-    PathReuseMISWeight misWeightBuffer[];
-};
-
-// --- Materials ---
-layout(set = 0, binding = 8) readonly buffer MaterialBuffer {
-    Material materials[];
-};
-
-
-// --- Textures ---
-layout(set = 0, binding = 12) uniform sampler2D gWorldPosition;
-layout(set = 0, binding = 13) uniform sampler2D gWorldShadingNormal;
-layout(set = 0, binding = 14) uniform sampler2D gWorldFaceNormal;
-
-layout(set = 0, binding = 15) uniform sampler2D motionVectors;
-layout(set = 0, binding = 16, rgba32f) uniform image2D directLighting;
-
-
-// --- Output ---
-layout(set = 0, binding = 17, rgba32f) uniform image2D outputColor;
-
-// ------------------------------------------------------------
-// HELPERS
 
 
 //cls
@@ -1032,11 +1049,14 @@ void ReSTIR(uvec2 pixel)
     // --------------------------------------------------
     color = (dst.F * dst.weight).xyz;
 
-    if (gPathRetracePass.gIsLastRound)
+    if (gPathRetracePass.gIsLastRound == 1)
     {
         vec4 prev = imageLoad(outputColor, ivec2(pixel));
         imageStore(outputColor, ivec2(pixel),
             prev + vec4(color, 1.0));
+
+
+
     }
 
     temporalReservoirs[offset] = dst;
@@ -1048,11 +1068,10 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 void main()
 {
-return;
     uvec2 pixel = gl_GlobalInvocationID.xy;
 
     if (any(greaterThanEqual(pixel, uvec2(gPathRetracePass.params.frameDim))))
         return;
-
+    
     ReSTIR(pixel);
 }

@@ -51,6 +51,11 @@ struct RayPayload {
     vec4 color;
     vec4 throughput;
     uvec4 misc; // x = seed, y = path depth. z = material type. w = path ID.
+
+
+    HitInfo rcHitInfo;  // Information about the reconnection vertex
+    float pathPdf;      // Accumulated PDF of the path bounces
+    bool rcVertexFound;
 };
 
 layout(location = 0) rayPayloadInEXT RayPayload payload;
@@ -105,7 +110,12 @@ layout(set = 0, binding = 6) buffer ReservoirBuffer {
     PathReservoir p[];
 } reservoirs;
 
-layout(set = 0, binding = 7) uniform sampler2D textures[];  // unbounded array
+
+layout(set = 0, binding = 7) buffer DebugBuffer {
+    float d[];
+} debugVals;
+
+layout(set = 0, binding = 8) uniform sampler2D textures[];  // unbounded array
 
 float luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -125,40 +135,42 @@ float fresnelSchlick(float cosTheta, float eta) {
     return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
 }
 
-
-void firstHit(uint rayId, vec2 bary, vec3 newDirection, vec3 directContribution)
+void firstHit(uint rayId, vec2 bary, vec3 newDirection, float lightPdf, uint initialSeed)
 {
-    // Store incident direction at rc vertex
+    // 1. Store the initial seed (from the very first bounce)
+    reservoirs.p[rayId].initRandomSeed = initialSeed;
+
+    // 2. Store the specific light PDF used at this vertex (NEE)
+    reservoirs.p[rayId].rcLightPdf = lightPdf;
+
+    // 3. Incident direction at reconnection vertex
     reservoirs.p[rayId].rcVertexWi[0] = vec4(newDirection, 0.0);
 
-    // Store irradiance at rc vertex (NEE + indirect)
-    reservoirs.p[rayId].rcVertexIrradiance[0] =
-        vec4(directContribution, 0.0);
-
-    // Store triangle + barycentrics for reconnection
+    // 4. Triangle + barycentrics for reconnection
     reservoirs.p[rayId].hitInfo.misc1.z = float(gl_PrimitiveID);
     reservoirs.p[rayId].hitInfo.misc1.x = bary.x;
     reservoirs.p[rayId].hitInfo.misc1.y = bary.y;
 
-    // Save RNG state for replay
+    // 5. Save CURRENT RNG state for path replay (suffix)
     reservoirs.p[rayId].rcRandomSeed = payload.misc.x;
 }
+void pathTerminate(uint rayId) {
+    // F is the total contribution (Le + Direct + Indirect)
+    reservoirs.p[rayId].F = vec4(payload.color.xyz, 1.0);
+    
+    float pHat = luminance(payload.color.xyz);
+    float pSource = payload.pathPdf;
 
-
-void pathTerminate(uint rayId)
-{
-    // Store final contribution
-    reservoirs.p[rayId].F = vec4(payload.color.xyz, 0.0);
-
-    // Target PDF = luminance
-    float targetPdf = dot(reservoirs.p[rayId].F.rgb,
-                          vec3(0.2126, 0.7152, 0.0722));
-
-    float risWeight = (targetPdf > 0.0) ? (1.0 / targetPdf) : 0.0;
-
-    // Update reservoir stats
-    reservoirs.p[rayId].M += 1.0;
-    reservoirs.p[rayId].weight += risWeight * targetPdf;
+    reservoirs.p[rayId].M = 1.0;
+    
+    if (pSource > 0.0 && pHat > 0.0) {
+        // Initial weight for RIS: w = pHat / pSource
+        // Then normalized weight for reservoir: W = w / (M * pHat) -> 1 / pSource
+        reservoirs.p[rayId].weight = 1.0 / pSource;
+    } else {
+        reservoirs.p[rayId].weight = 0.0;
+        reservoirs.p[rayId].F = vec4(0.0);
+    }
 }
 
 void finalizeRIS(inout PathReservoir r) {
@@ -167,6 +179,38 @@ void finalizeRIS(inout PathReservoir r) {
     float pHat = luminance(r.F.rgb);
 
     r.weight = (pHat > 0.0) ? (wSum / (M * pHat)) : 0.0;
+}
+
+
+void updateInitialReservoir(uint pixelIndex, RayPayload payload) {
+    PathReservoir res;
+    
+    // 1. Calculate the target function F (Luminance of the path)
+    vec3 pathContribution = payload.color.rgb;
+    float p_hat = length(pathContribution); // Using luminance/length as target
+    
+    // 2. Calculate the source PDF
+    // This is the product of all bounce PDFs recorded in payload.pathPdf
+    float p_source = payload.pathPdf;
+
+    // 3. RIS Update
+    res.M = 1.0; 
+    res.F = vec4(pathContribution, 1.0);
+    
+    // w_sum = p_hat / p_source
+    float weightSum = (p_source > 0.0) ? (p_hat / p_source) : 0.0;
+    
+    // Since this is the initial sample, weight = w_sum / (M * p_hat)
+    // Which simplifies to 1/p_source
+    res.weight = (p_hat > 0.0) ? (weightSum / p_hat) : 0.0;
+
+    // 4. Store Reconnection Data
+    res.hitInfo = payload.rcHitInfo;
+    // Store seeds, incident directions, etc. as per your struct
+    res.rcRandomSeed = payload.misc.x; 
+
+    // 5. Write to buffer
+    reservoirs.p[pixelIndex] = res;
 }
 // add the jacobian stuff we're missing
 
@@ -262,6 +306,8 @@ void main() {
 
     if (payload.misc.y >= uint(MAX_DEPTH)) return;
 
+    uint seedAtStart = payload.misc.x;
+
     float maxThroughput = max(
     payload.throughput.r,
     max(payload.throughput.g, payload.throughput.b)
@@ -273,9 +319,11 @@ void main() {
         if (random(payload.misc.x) < q)
         {
             pathTerminate(payload.misc.w);
+
             return;
         }
         payload.throughput /= (1.0 - q);
+
     }
 
 
@@ -321,17 +369,21 @@ void main() {
         //now with infinite lights :DDDD  (not really but you know what i mean)
         
         Material lightMat = materials.m[int(random(payload.misc.x) * float(ubo.numLights))];
+
+        // 1. SAMPLE BSDF
+        // (Your existing diffuse/specular mixing code)
+        float bsdfPdf = INV_PI * abs(dot(normal, newDirection)); 
+        payload.pathPdf *= bsdfPdf; // Accumulate path probability
+
+        // 2. NEE (Next Event Estimation)
+        float lightPickPDF = 1.0 / float(ubo.numLights);
+        float lightPDF; // Area PDF from sampleSphereLightMat
         vec3 lightDir;
-        
-        float lightPickPDF = 1.0/float(ubo.numLights);
 
-        float lightPDF;
-
-        vec3 Le = sampleSphereLightMat(
-            lightMat, offsetPos, payload.misc.x, lightDir, lightPDF
-        );
+        vec3 Le = sampleSphereLightMat(lightMat, offsetPos, payload.misc.x, lightDir, lightPDF);
 
         float cosTheta = dot(normal, lightDir);
+        float combinedLightPdf = lightPDF * lightPickPDF;
 
         if (cosTheta > 0.0 && lightPDF > 0.0) {
 
@@ -368,13 +420,14 @@ void main() {
  
          }
                         // make sure this is valid not so sure rn.
-        if (payload.misc.y == 1u) {
-            firstHit(
-                payload.misc.w,
-                barycentrics.xy,
-                newDirection,
-                direct
-            );      
+       if (payload.misc.y == 1u) {
+                firstHit(
+                    payload.misc.w, 
+                    barycentrics.xy, 
+                    newDirection, 
+                    combinedLightPdf, // Capture rcLightPdf
+                    seedAtStart       // Capture initRandomSeed
+                );
 
 
         }

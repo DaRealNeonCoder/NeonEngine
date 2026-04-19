@@ -2,12 +2,21 @@
 #extension GL_EXT_ray_tracing : enable
 #extension GL_EXT_shader_image_load_formatted : enable
 
+struct HitInfo
+{
+    vec4 misc1;
+};
+
 struct RayPayload {
     vec4 color;
     vec4 throughput;
-    uvec4 misc;   // seed, depth
-};
+    uvec4 misc; // x = seed, y = path depth. z = material type. w = path ID.
 
+
+    HitInfo rcHitInfo;  // Information about the reconnection vertex
+    float pathPdf;      // Accumulated PDF of the path bounces
+    bool rcVertexFound;
+};
 
 layout(binding = 0, set = 0) uniform accelerationStructureEXT topLevelAS;
 layout(binding = 1, set = 0) uniform image2D image;
@@ -60,6 +69,7 @@ void main()
     // Vary seed per frame to get different samples
     uint baseSeed = uint(pixelCoord.x * 1973 + pixelCoord.y * 9277 + pc.frameID.x * 26699) | 1u;
     
+
     for (int i = 0; i < SPP; i++) {
         payload.color = vec4(0.0);
         payload.throughput = vec4(1.0); 
@@ -75,6 +85,7 @@ void main()
         vec4 jitteredTarget = ubo.inverseProjection * vec4(jitteredD.x, jitteredD.y, 1, 1);
         vec4 jitteredDirection = ubo.inverseView * vec4(normalize(jitteredTarget.xyz), 0);
         
+        payload.pathPdf = 1.0;
         traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT | gl_RayFlagsCullBackFacingTrianglesEXT, 
                     0xff, 0, 0, 0, origin.xyz, tmin, jitteredDirection.xyz, tmax, 0);
         sum += payload.color.xyz;

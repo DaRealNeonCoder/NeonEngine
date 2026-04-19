@@ -852,6 +852,14 @@ void RayTracingSystem::createReSTIRBuffers(uint32_t width, uint32_t height) {
     stagingNRooks = makeHostVisible(sizeof(uint32_t), 65536);
     stagingNeighborOffsets = makeHostVisible(sizeof(uint32_t), NEIGHBOR_OFFSET_COUNT);
 
+    debugBuffer = std::make_unique<LveBuffer>(
+        vulkanDevice,
+        sizeof(float),
+        10000,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    debugBuffer->map();
+
     //upload rooks buffer
     {
     // Load from file, same as Falcor reference
@@ -1206,15 +1214,28 @@ void RayTracingSystem::createShaderBindingTable() {
 VkAccelerationStructureKHR RayTracingSystem::getTLAS() const { return topLevelAS.handle; }
 
 
-
 void RayTracingSystem::runShaders(ReSTIRFrameInfo& frameInfo) {
-
     const uint32_t localSizeX = 8;
     const uint32_t localSizeY = 8;
-    uint32_t groupsX = (frameInfo.width +localSizeX - 1) / localSizeX;
+    uint32_t groupsX = (frameInfo.width + localSizeX - 1) / localSizeX;
     uint32_t groupsY = (frameInfo.height + localSizeY - 1) / localSizeY;
 
-    // Shared lambda for barriers between passes
+    const uint32_t kSpatialRounds = 3; // tune as needed
+
+
+    auto makeBufferBarrier = [&](VkBuffer buf, VkAccessFlags src, VkAccessFlags dst)
+    {
+        VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+        b.srcAccessMask = src;
+        b.dstAccessMask = dst;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.buffer = buf;
+        b.offset = 0;
+        b.size = VK_WHOLE_SIZE;
+        return b;
+    };
+
     auto makeImageBarrier = [&](VkImage image,
         VkAccessFlags src, VkAccessFlags dst,
         VkImageLayout oldLayout, VkImageLayout newLayout)
@@ -1231,20 +1252,6 @@ void RayTracingSystem::runShaders(ReSTIRFrameInfo& frameInfo) {
         return b;
     };
 
-    auto makeBufferBarrier = [&](VkBuffer buf,
-        VkAccessFlags src, VkAccessFlags dst)
-    {
-        VkBufferMemoryBarrier b{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
-        b.srcAccessMask = src;
-        b.dstAccessMask = dst;
-        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.buffer = buf;
-        b.offset = 0;
-        b.size = VK_WHOLE_SIZE;
-        return b;
-    };
-
     auto computeBarrier = [&](std::vector<VkBufferMemoryBarrier> bufBarriers,
         std::vector<VkImageMemoryBarrier>  imgBarriers)
     {
@@ -1258,8 +1265,19 @@ void RayTracingSystem::runShaders(ReSTIRFrameInfo& frameInfo) {
             (uint32_t)imgBarriers.size(), imgBarriers.data());
     };
 
+    auto pushConstants = [&](uint32_t roundId, bool isLastRound)
+    {
+        RestirPushConstants pc{};
+        pc.gSpatialRoundId = roundId;
+        pc.gIsLastRound = isLastRound ? 1 : 0;
+        vkCmdPushConstants(
+            frameInfo.commandBuffer,
+            restirPipelineLayout,           
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0, sizeof(pc), &pc);
+    };
 
-    // Bind descriptor set once — shared across all passes
+
     vkCmdBindDescriptorSets(
         frameInfo.commandBuffer,
         VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1267,84 +1285,96 @@ void RayTracingSystem::runShaders(ReSTIRFrameInfo& frameInfo) {
         0, 1, &frameInfo.globalDescriptorSet,
         0, nullptr);
 
+    // =========================================================================
+    // PASS 1 — Temporal Reuse
 
-    // =====================================================
-    // PASS 0 — MIS Weights
-    // (must run before temporal so UCW / target PDFs are ready)
-    // =====================================================
-
-    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, misWeightsPipeline);
-    vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
-
-    computeBarrier(
-        { makeBufferBarrier(outputReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
-        {});
-
-
-    // =====================================================
-    // PASS 1 — Temporal Retrace
-    // (re-evaluate last frame's samples in current geometry)
-    // =====================================================
-
-    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, temporalRetracePipeline);
-    vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
-
-    computeBarrier(
-        { makeBufferBarrier(outputReservoirBuffer->getBuffer(),         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
-          makeBufferBarrier(temporalReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
-        {});
-
-
-    // =====================================================
-    // PASS 2 — Temporal Reuse
-    // (merge current reservoir with reprojected temporal)
-    // =====================================================
-
+    pushConstants(0, false);
     vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, temporalReusePipeline);
     vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
 
     computeBarrier(
-        { makeBufferBarrier(outputReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+        { makeBufferBarrier(outputReservoirBuffer->getBuffer(),
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
         {});
 
-
-    // =====================================================
-    // PASS 3 — Spatial Retrace
-    // (re-evaluate neighbours' samples at this pixel's surface)
-    // =====================================================
-
-    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, spatialRetracePipeline);
-    vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
-
-    
-    computeBarrier(
-        { makeBufferBarrier(outputReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
-        {});
-
-
-    // =====================================================
-    // PASS 4 — Spatial Reuse
-    // (merge neighbours into final reservoir)
-    // =====================================================
+    // =========================================================================
+    // PASS 2 — Spatial Reuse  (multiple rounds)
 
     vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, spatialReusePipeline);
+
+    for (uint32_t round = 0; round < kSpatialRounds; ++round)
+    {
+        const bool isLastSpatialRound = (round == kSpatialRounds - 1);
+        pushConstants(round, isLastSpatialRound);
+
+        vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
+
+        computeBarrier(
+            { makeBufferBarrier(outputReservoirBuffer->getBuffer(),
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+            {});
+    }
+
+    // =========================================================================
+    // PASS 3 — Temporal Path Retrace
+
+    pushConstants(0, false);
+    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, temporalRetracePipeline);
+    vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
+
+    computeBarrier(
+        { makeBufferBarrier(outputReservoirBuffer->getBuffer(),
+              VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
+          makeBufferBarrier(temporalReservoirBuffer->getBuffer(),
+              VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+        {});
+
+    // =========================================================================
+    // PASS 4 — Spatial Path Retrace  (multiple rounds, mirrors spatial reuse)
+    // =========================================================================
+
+    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, spatialRetracePipeline);
+
+    for (uint32_t round = 0; round < kSpatialRounds; ++round)
+    {
+        const bool isLastSpatialRound = (round == kSpatialRounds - 1);
+        pushConstants(round, isLastSpatialRound);
+
+        vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
+
+        computeBarrier(
+            { makeBufferBarrier(outputReservoirBuffer->getBuffer(),
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+            {});
+    }
+
+    // =========================================================================
+    // PASS 5 — MIS Weights
+    // =========================================================================
+
+    pushConstants(0, true); // gIsLastRound=1 signals final normalization
+    vkCmdBindPipeline(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, misWeightsPipeline);
     vkCmdDispatch(frameInfo.commandBuffer, groupsX, groupsY, 1);
 
     // Final barrier — downstream shading reads the resolved reservoir
     computeBarrier(
-        { makeBufferBarrier(outputReservoirBuffer->getBuffer(), VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
+        { makeBufferBarrier(outputReservoirBuffer->getBuffer(),
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT) },
         {});
 }
 
-
-
 void RayTracingSystem::createComputePipelineLayout(VkDescriptorSetLayout setLayout) {
+
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(RestirPushConstants); // your merged struct
 
     VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     layoutInfo.setLayoutCount = 1;
     layoutInfo.pSetLayouts = &setLayout;
-    layoutInfo.pushConstantRangeCount = 0;
-    layoutInfo.pPushConstantRanges = nullptr;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushConstantRange;
 
     if (vkCreatePipelineLayout(vulkanDevice.device(), &layoutInfo, nullptr, &restirPipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("ReSTIR PT: failed to create pipeline layout");

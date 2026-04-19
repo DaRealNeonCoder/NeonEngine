@@ -66,6 +66,53 @@ struct alignas(16) WaterPhysUbo {
   float pad5;      // 4
 };
 
+//wrk
+struct RestirPathTracerParams
+{
+	glm::uvec2 frameDim;
+	uint32_t seed;
+};
+
+
+struct ReSTIRUbo
+{
+    // Base params
+    RestirPathTracerParams params;
+
+    // Spatial
+    int   gSpatialRoundId;
+    int   gNumSpatialRounds;
+    uint32_t  gSpatialReusePattern;
+    int   gNeighborCount;
+
+    float gGatherRadius;
+    int   gSmallWindowRadius;
+    int   gFeatureBasedRejection;
+    int   gIsLastRound;
+
+    // Temporal
+    int   gEnableTemporalReprojection;
+    float gTemporalHistoryLength;
+    int   gNoResamplingForTemporalReuse;
+    float _pad0;
+
+    // Camera / geometry
+    glm::vec3  posW;
+    float _pad1;
+    glm::vec3  cameraW;
+    float _pad2;
+
+    float nearZ;
+    float farZ;
+
+    // Lighting / sampling
+    int   useDirectLighting;
+    int   useTalbotMIS;
+    int   restirMISkind;
+    int   pathSamplingMode;
+
+};
+
 
 struct RayUbo {
 	glm::mat4 projection{1.f};

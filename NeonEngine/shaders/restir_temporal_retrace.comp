@@ -121,6 +121,12 @@ struct RayData
 {
     vec4 misc1;
 };
+//wrk
+struct RestirPathTracerParams
+{
+    uvec2 frameDim;
+    uint seed;
+};
 // --- Core GBuffer / Geometry ---
 layout(set = 0, binding = 0) readonly buffer vBuffer {
     HitInfo h[];
@@ -178,11 +184,56 @@ layout(set = 0, binding = 13) uniform sampler2D gWorldShadingNormal;
 layout(set = 0, binding = 14) uniform sampler2D gWorldFaceNormal;
 
 layout(set = 0, binding = 15) uniform sampler2D motionVectors;
-layout(set = 0, binding = 16, rgba32f) uniform image2D directLighting;
+layout(set = 0, binding = 16, rgba8) uniform image2D directLighting;
 
 
 // --- Output ---
-layout(set = 0, binding = 17, rgba32f) uniform image2D outputColor;
+layout(set = 0, binding = 17, rgba8) uniform image2D outputColor;
+
+
+
+layout(set = 0, binding = 18) uniform ReSTIRUbo
+{
+    // Base params
+    RestirPathTracerParams params;
+
+    // Spatial
+    int   gSpatialRoundId;
+    int   gNumSpatialRounds;
+    uint  gSpatialReusePattern;
+    int   gNeighborCount;
+
+    float gGatherRadius;
+    int   gSmallWindowRadius;
+    int   gFeatureBasedRejection;
+    int   gIsLastRound;
+
+    // Temporal
+    int   gEnableTemporalReprojection;
+    float gTemporalHistoryLength;
+    int   gNoResamplingForTemporalReuse;
+    float _pad0;
+
+    // Camera / geometry
+    vec3  posW;
+    float _pad1;
+    vec3  cameraW;
+    float _pad2;
+    
+    float nearZ;
+    float farZ;
+
+    // Lighting / sampling
+    int   useDirectLighting;
+    int   useTalbotMIS;
+    int   restirMISkind;
+    int   pathSamplingMode;
+
+} gPathRetracePass;
+layout(set = 0, binding = 19) buffer DebugBuffer {
+    float d[];
+} debugVals;
+
 
 
 
@@ -202,41 +253,6 @@ const uint kNeighborOffsetMask  = kNeighborOffsetCount - 1;
 // Push constants
 // ------------------------------------------------------------------
 
-//wrk
-struct RestirPathTracerParams
-{
-    uvec2 frameDim;
-    uint seed;
-};
-
-layout(push_constant) uniform PushConstants
-{
-    int  gNumSpatialRounds;
-    int  gEnableTemporalReprojection;
-
-    float gTemporalHistoryLength;
-    int   gNoResamplingForTemporalReuse;
-
-    //wrk
-    RestirPathTracerParams params;
-
-    int gSpatialRoundId;
-
-    uint gSpatialReusePattern;
-
-    int gNeighborCount;
-    float gGatherRadius;
-
-    int gSmallWindowRadius;
-
-    bool gFeatureBasedRejection;
-
-    vec3 posW;
-    vec3 cameraW;
-    float nearZ;
-    float farZ;
-
-} gPathRetracePass;
 
 
 
@@ -810,8 +826,6 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 void main()
 {
-return;
-
     uvec2 pixel = gl_GlobalInvocationID.xy;
     execute(pixel);
 }

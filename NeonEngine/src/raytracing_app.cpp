@@ -38,7 +38,7 @@ globalPool =
                      VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
                      LveSwapChain::MAX_FRAMES_IN_FLIGHT)
         .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 2)
-        .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 2)
+        .addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 3)
         .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 18)
         .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, LveSwapChain::MAX_FRAMES_IN_FLIGHT * 25)
 
@@ -117,7 +117,8 @@ void RayTracingApp::run() {
         .addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
         .addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
         .addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
-        .addBindlessBinding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, 10)
+        .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+        .addBindlessBinding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, 10)
         .build();
 
     auto restirSetLayout = LveDescriptorSetLayout::Builder(lveDevice)
@@ -138,6 +139,9 @@ void RayTracingApp::run() {
         .addBinding(14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_ALL)                                            // gWorldFaceNormal
         .addBinding(15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_ALL)                                            // motionVectors
         .addBinding(16, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_ALL)                                                     // directLighting
+        .addBinding(17, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_ALL)                                                     // directLighting
+        .addBinding(18, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_ALL)                                                     // TemporalReservoirs
+        .addBinding(19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)               // debugbuffer
         .build();
 
 
@@ -307,13 +311,16 @@ void RayTracingApp::run() {
     /*
     LveTexture::AllocatedImage environmentLighting =
         text.loadHDR("C:\\Users\\ZyBros\\Downloads\\qwantani_dusk_2_puresky_4k.hdr", lveDevice);
-
+       
     */
+    LveTexture::AllocatedImage environmentLighting =
+        text.loadHDR("C:\\Users\\ZyBros\\Downloads\\rogland_clear_night_1k.hdr", lveDevice);
+
     std::vector<VkDescriptorImageInfo> textureInfos;
     std::vector<LveMaterial> materials;
     std::vector<glm::vec4> positions;
     int numLights;
-    //textureInfos.push_back(text.getDescriptor(environmentLighting));
+    textureInfos.push_back(text.getDescriptor(environmentLighting));
     int x = 0;
     for (auto& kv : gameObjects) {
         auto& obj = kv.second;
@@ -354,8 +361,17 @@ void RayTracingApp::run() {
         lveRenderer.getSwapChainExtents().width,
         lveRenderer.getSwapChainExtents().height };
 
+    std::vector<std::unique_ptr<LveBuffer>> restirUbo(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
-
+    for (int i = 0; i < restirUbo.size(); i++) {
+        restirUbo[i] = std::make_unique<LveBuffer>(
+            lveDevice,
+            sizeof(ReSTIRUbo),
+            1,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        restirUbo[i]->map();
+    }
 
 
 
@@ -373,8 +389,10 @@ void RayTracingApp::run() {
         asInfo.pAccelerationStructures = &tlas;
         auto materialBufferInfo = rayTracingSystem.getMaterialBufferDescriptor();
         auto vertexBufferInfo = rayTracingSystem.getVertexBufferDescriptor();
-        auto indexBufferInfo = rayTracingSystem.getIndexBufferDescriptor();
 
+        auto indexBufferInfo = rayTracingSystem.getIndexBufferDescriptor();
+        
+        auto debugBufferInfo = rayTracingSystem.getDebugBufferDescriptor();
 
 
 
@@ -452,6 +470,7 @@ void RayTracingApp::run() {
         auto restirVertexInfo = rayTracingSystem.getVertexBufferDescriptor();
         auto restirIndexInfo = rayTracingSystem.getIndexBufferDescriptor();
         auto directLightingInfo = rayTracingSystem.getStorageImageDescriptor(i);
+        auto restirBufferInfo = restirUbo[i]->descriptorInfo();
 
         VkDescriptorImageInfo restirPosInfo{};
         restirPosInfo.sampler = rayTracingRast.gBufferSampler;
@@ -487,6 +506,9 @@ void RayTracingApp::run() {
             .writeImage(14, &restirFaceNormalInfo)      //restir for some reason doesnt even use this. imma remove later.
             .writeImage(15, &restirMotionInfo)
             .writeImage(16, &directLightingInfo)
+            .writeImage(17, &storageImageInfo)
+            .writeBuffer(18, &restirBufferInfo)
+            .writeBuffer(19, &debugBufferInfo)
             .build(restirDescriptorSets[i]);
 
         LveDescriptorWriter(*rayTracingSetLayout, *globalPool)
@@ -496,8 +518,9 @@ void RayTracingApp::run() {
             .writeBuffer(3, &materialBufferInfo)
             .writeBuffer(4, &vertexBufferInfo)
             .writeBuffer(5, &indexBufferInfo)
-            .writeBuffer(6, &outputReservoirInfo)   // <-- was writeImage
-            .writeImageArray(7, textureInfos)   // <-- was writeImage
+            .writeBuffer(6, &outputReservoirInfo)  
+            .writeBuffer(7, &debugBufferInfo)   
+            .writeImageArray(8, textureInfos)   
             .build(globalDescriptorSets[i]);
     }
 
@@ -578,6 +601,39 @@ void RayTracingApp::run() {
     bool Trip = false;
     bool firstFrameDone = false;
 
+
+    ReSTIRUbo ubo2{};
+    //wrk
+    ubo2.params.frameDim.x = lveRenderer.getSwapChainExtents().width;
+    ubo2.params.frameDim.y = lveRenderer.getSwapChainExtents().height;
+
+    ubo2.params.seed = 10;
+
+    // Temporal
+    ubo2.gEnableTemporalReprojection = 1;
+    ubo2.gTemporalHistoryLength = 16;
+    ubo2.gNoResamplingForTemporalReuse = -0; //no use
+    
+
+
+    // Lighting / sampling
+    ubo2.useDirectLighting = 1;
+    ubo2.useTalbotMIS = 1;
+    ubo2.restirMISkind = 1;
+    ubo2.pathSamplingMode = 1;
+    ubo2.gNumSpatialRounds = 3;
+
+    ubo2.gSpatialReusePattern = 1;
+    ubo2.gNeighborCount = 16;
+    ubo2.gGatherRadius = 10.f;//idk
+    ubo2.gSmallWindowRadius = 16;//idk
+
+    ubo2.gFeatureBasedRejection = 1;
+
+    restirUbo[0]->writeToBuffer(&ubo2);
+    restirUbo[0]->flush();
+
+
     while (!lveWindow.shouldClose()) {
         glfwPollEvents();
 
@@ -598,6 +654,14 @@ void RayTracingApp::run() {
             fpsTimer = 0.0f;
             frameCount = 0;
         }
+
+        ubo2.posW = camera.getPosition();//idk
+        ubo2.cameraW = glm::vec3(camera.getInverseView()[2]); // MIGHT CHANGE
+        ubo2.nearZ = 0.01f;
+        ubo2.farZ = 1000.f;
+
+        restirUbo[0]->writeToBuffer(&ubo2);
+        restirUbo[0]->flush();
 
         bool hasMoved = false;
         cameraController.moveWithMouseLook(lveWindow.getGLFWwindow(), frameTime, viewerObject, hasMoved);
@@ -629,7 +693,6 @@ void RayTracingApp::run() {
 
             prevView = ubo.view; // save for next time THIS frameIndex runs
 
-
             if (hasMoved) rayTracingSystem.resetFrameId();
             if (!Trip) {
                 Trip = true;
@@ -659,8 +722,6 @@ void RayTracingApp::run() {
         rayTracingRast.barrierGBufferToCompute(commandBuffer, gBuffers);
         // ---- Barrier: storageImage ray tracing write -> compute shader read/write ----
         rayTracingRast.barrierStorageToCompute(commandBuffer, rayTracingSystem.getStorageImage());
-    
-        //RESTIRPASS
 
         ReSTIRFrameInfo frameInfo{
             frameIndex, frameTime, commandBuffer, camera,
@@ -672,7 +733,6 @@ void RayTracingApp::run() {
 
         //need barriers here eventually.
         
-        //DENOISING pass
         //temporal
         rayTracingRast.renderCompute(
             commandBuffer,
@@ -717,10 +777,6 @@ void RayTracingApp::run() {
                 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
         }
 
-
-
-
-
         // ---- Copy storageImage to swapchain ----
         rayTracingSystem.copyStorageImageToSwapChain(
             commandBuffer,
@@ -731,17 +787,29 @@ void RayTracingApp::run() {
 
 
 
-                    lveRenderer.endFrame([&]() {
-                        rayTracingSystem.handleResize(lveRenderer.getSwapChainExtents().width,
-                        lveRenderer.getSwapChainExtents().height,
-                        globalDescriptorSets);
-                    //rayTracingSystem.resetFrameId();
-                    recreateGBuffer(gBufferRenderPass, gBuffers, gBufferFramebuffer, rayTracingRast, lveRenderer.getSwapChainExtents());
+        if (frameCount % 1000 == 0) {  // Only readback occasionally
+            vkDeviceWaitIdle(lveDevice.device());
 
-                    recreateComputeDescriptors();
-                    Trip = false;
+            float* data = (float*)rayTracingSystem.debugBuffer->getMappedMemory();
+            for (int i = 0; i < 20; ++i) {
 
-                        });
+                if (data[i] != -1) {
+                    std::cout << "debug val for " << i << ": " << data[i] << std::endl;
+                }
+            }
+
+        }
+        lveRenderer.endFrame([&]() {
+            rayTracingSystem.handleResize(lveRenderer.getSwapChainExtents().width,
+            lveRenderer.getSwapChainExtents().height,
+            globalDescriptorSets);
+        //rayTracingSystem.resetFrameId();
+        recreateGBuffer(gBufferRenderPass, gBuffers, gBufferFramebuffer, rayTracingRast, lveRenderer.getSwapChainExtents());
+
+        recreateComputeDescriptors();
+        Trip = false;
+
+            });
 
                 }
             }
