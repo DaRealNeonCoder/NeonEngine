@@ -73,7 +73,7 @@ struct PathReservoir
     float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
     uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
     float rcLightPdf; 
-
+    float padding;
 };
 //cls
 struct ReconnectionData
@@ -100,13 +100,12 @@ struct RestirPathTracerParams
 //wrk
 int rcVertexLength(PathReservoir r)
 {
-    return int(0); // placeholder
+    return int(15); // placeholder
 }
 
 // ------------------------------------------------------------------
 // External functions (decl only)
 // ------------------------------------------------------------------
-
 
 
 
@@ -245,11 +244,9 @@ layout(set = 0, binding = 16, rgba8) uniform image2D directLighting;
 // --- Output ---
 layout(set = 0, binding = 17, rgba8) uniform image2D outputColor;
 
+
 layout(set = 0, binding = 18) uniform ReSTIRUbo
 {
-    // Base params
-    RestirPathTracerParams params;
-
     // Spatial
     int   gSpatialRoundId;
     int   gNumSpatialRounds;
@@ -280,11 +277,14 @@ layout(set = 0, binding = 18) uniform ReSTIRUbo
 
     int   restirMISkind;
     int   pathSamplingMode;
+    int   pad4;
+    int   pad5;
 
-    int pad1;
-    int pad2;
+        // Base params
+    RestirPathTracerParams params;
 
 } gPathRetracePass;
+
 
 layout(set = 0, binding = 19) buffer DebugBuffer {
     float d[];
@@ -452,7 +452,6 @@ ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
     if (isValidPackedHitInfo(PrimaryHitPacked))
     {
         
-        ShadingData sd;
         sd.posW = vec4(0.0);
         sd.N = vec4(0.0);
         sd.V = vec4(0.0);
@@ -757,6 +756,8 @@ ivec2 getNextNeighborPixel(uint startIndex, ivec2 pixel, int i)
 //cls
 void ReSTIR(uvec2 pixel)
 {
+   debugVals.d[0] = 10;
+
     uint seed = gPathRetracePass.params.seed + uint(gPathRetracePass.gSpatialRoundId);
     uint rng = initRNG(pixel, seed, 1337u);
 
@@ -769,15 +770,19 @@ void ReSTIR(uvec2 pixel)
         getPixelShadingData(ivec2(pixel), centralPacked);
 
     if (!isValidPackedHitInfo(centralPacked)) return;
+   debugVals.d[1] = 12;
 
     int neighborCount = getNeighborCount();
     uint startIndex = uint(nextFloat(rng) * kNeighborOffsetCount);
 
     for (int i = 0; i < neighborCount; ++i)
     {
+   debugVals.d[3] = 24;
+
         ivec2 np = getNextNeighborPixel(startIndex, ivec2(pixel), i);
 
         if (!isValidScreenRegion(np)) continue;
+   debugVals.d[4] = 48;
 
         uint neighborOffset = getReservoirOffset(uvec2(np));
         PathReservoir neighborReservoir = outputReservoirs[neighborOffset];
@@ -786,6 +791,10 @@ void ReSTIR(uvec2 pixel)
         ShadingData neighborSd = getPixelShadingData(np, neighborPacked);
 
         if (!isValidPackedHitInfo(neighborPacked)) continue;
+        
+   debugVals.d[5] = 510;
+
+
         if (!isValidGeometry(centralSd, neighborSd)) continue;
 
         HitInfo dstHit;
@@ -793,6 +802,8 @@ void ReSTIR(uvec2 pixel)
         vec3 Tp;
         if (rcVertexLength(centralReservoir) > 1)
         {
+            debugVals.d[6] = 9;
+
             vec3 Tp = traceHybridShiftRays(
                 gPathRetracePass.params,
                 false,
@@ -807,22 +818,6 @@ void ReSTIR(uvec2 pixel)
             reconnectionDataBuffer[centralOffset].data[2 * i].rcPrevWo  = vec4(dstWo, 0.0);
             reconnectionDataBuffer[centralOffset].data[2 * i].pathThroughput = vec4(Tp, 0.0);
         }
-         if (rcVertexLength(neighborReservoir) > 1)
-        {
-            vec3 Tp2 = traceHybridShiftRays(
-                gPathRetracePass.params,
-                false,
-                centralPacked,
-                centralSd,
-                neighborReservoir,
-                dstHit,
-                dstWo
-            );
-
-            reconnectionDataBuffer[centralOffset].data[2 * i + 1].rcPrevHit = dstHit;
-            reconnectionDataBuffer[centralOffset].data[2 * i + 1].rcPrevWo  = vec4(dstWo, 0.0);
-            reconnectionDataBuffer[centralOffset].data[2 * i + 1].pathThroughput = vec4(Tp2, 0.0);
-        }
     }
 }
 
@@ -830,13 +825,11 @@ void ReSTIR(uvec2 pixel)
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-//cls
-void main()
-{
-    uvec2 pixel = gl_GlobalInvocationID.xy;
+void main(){uvec2 pixel = gl_GlobalInvocationID.xy;
 
-    if (any(greaterThanEqual(pixel, gPathRetracePass.params.frameDim)))
-        return;
+if (any(greaterThanEqual(pixel, gPathRetracePass.params.frameDim)))
+    return;
 
-    ReSTIR(pixel);
+ReSTIR(pixel);
+
 }

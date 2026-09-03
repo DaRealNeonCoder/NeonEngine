@@ -831,6 +831,10 @@ void RayTracingSystem::createReSTIRBuffers(uint32_t width, uint32_t height) {
     // =====================================================
     // SAMPLING / PATTERNS (binding 2, 3)
     // =====================================================
+
+
+
+
     nRooksPatternBuffer = makeDeviceLocal2(sizeof(uint32_t), 65536);    // binding 2
     neighborOffsetBuffer = makeDeviceLocal2(sizeof(uint32_t), NEIGHBOR_OFFSET_COUNT); // binding 3
 
@@ -838,6 +842,7 @@ void RayTracingSystem::createReSTIRBuffers(uint32_t width, uint32_t height) {
     // RESERVOIRS (binding 4, 5)
     // =====================================================
     outputReservoirBuffer = makeDeviceLocal(sizeof(PathReservoir), pixelCount); // binding 4
+    std::cout << pixelCount <<  "TTHIS IS THE PIXEL COUNT" << std::endl;
     temporalReservoirBuffer = makeDeviceLocal(sizeof(PathReservoir), pixelCount); // binding 5
 
     // =====================================================
@@ -862,6 +867,26 @@ void RayTracingSystem::createReSTIRBuffers(uint32_t width, uint32_t height) {
 
     //upload rooks buffer
     {
+
+        /*
+        
+          std::string fullpath;
+    findFileInDataDirectories("16RooksPattern256.txt", fullpath);
+    FILE* f = fopen(fullpath.c_str(), "r");
+
+    std::vector<byte> NRookArray(65536);
+    for (int i = 0; i < 8192; i++)
+    {
+        for (int j = 0; j < 8; j++)
+        {
+            int temp1, temp2;
+            fscanf(f, "%d %d", &temp1, &temp2);
+            NRookArray[8 * i + j] = (temp2 << 4) | temp1;
+        }
+    }
+    fclose(f);
+        
+        */
     // Load from file, same as Falcor reference
     FILE* f = nullptr;
     fopen_s(&f, "C:\\users\\zybros\\Downloads\\NeonEngine\\NeonEngine\\misc\\16RooksPattern256.txt", "r");

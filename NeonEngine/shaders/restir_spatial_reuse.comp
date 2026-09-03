@@ -51,7 +51,7 @@ struct PathReservoir
     float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
     uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
     float rcLightPdf; 
-
+    float padding;
 };
 
 //cls
@@ -137,8 +137,8 @@ struct RestirPathTracerParams
 {
     uvec2 frameDim;
     uint seed;
+    int pad;
 };
-
 
 
 //cls
@@ -215,11 +215,9 @@ layout(set = 0, binding = 16, rgba8) uniform image2D directLighting;
 
 // --- Output ---
 layout(set = 0, binding = 17, rgba8) uniform image2D outputColor;
+
 layout(set = 0, binding = 18) uniform ReSTIRUbo
 {
-    // Base params
-    RestirPathTracerParams params;
-
     // Spatial
     int   gSpatialRoundId;
     int   gNumSpatialRounds;
@@ -245,12 +243,16 @@ layout(set = 0, binding = 18) uniform ReSTIRUbo
     
     float nearZ;
     float farZ;
-
-    // Lighting / sampling
     int   useDirectLighting;
     int   useTalbotMIS;
+
     int   restirMISkind;
     int   pathSamplingMode;
+    int   pad4;
+    int   pad5;
+
+        // Base params
+    RestirPathTracerParams params;
 
 } gPathRetracePass;
 
@@ -321,6 +323,9 @@ void PathReservoir_init(inout PathReservoir r)
     r.lightPdf = 0.0;
     r.initRandomSeed = 0u;
     r.rcLightPdf = 0.0;
+
+    debugVals.d[17] = r.M + 1;
+
 }
 //cls
 void PathReservoir_prepareMerging(inout PathReservoir r)
@@ -470,7 +475,6 @@ ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
     if (isValidHitInfo(PrimaryHitPacked))
     {
         
-        ShadingData sd;
         sd.posW = vec4(0.0);
         sd.N = vec4(0.0);
         sd.V = vec4(0.0);
@@ -794,6 +798,8 @@ bool shiftAndMergeReservoir(
     // ---------------------------------------
     if (useResamplingMIS)
     {
+    debugVals.d[21] = 22;
+
         return PathReservoir_merge(
             dstReservoir,
             shiftedF,
@@ -843,17 +849,32 @@ void ReSTIR(uvec2 pixel)
     uint seed = gPathRetracePass.params.seed + uint(gPathRetracePass.gSpatialRoundId);
     uint rng = initRNG(pixel, seed, 1337u);
 
-    uint offset = getReservoirOffset(ivec2(pixel));
+    uint offset = getReservoirOffset(ivec2(pixel));//get res offset doesnt work. I believe it returns out of bounds.
     PathReservoir dst = outputReservoirs[offset];
 
     HitInfo packed;
     ShadingData central = getPixelShadingData(ivec2(pixel), packed);
 
-    if (!isValidHitInfo(packed)) return;
+    debugVals.d[9] =  gPathRetracePass.params.frameDim.x;
+    debugVals.d[10] =  gPathRetracePass.params.frameDim.y;
 
+    debugVals.d[15] =  offset;
+    debugVals.d[16] =  outputReservoirs.length();
+
+
+    if (!isValidHitInfo(packed))
+        return;
+
+
+    debugVals.d[12] = dst.M;
+    debugVals.d[13] = dst.weight; // sometimes works?
+
+    //this one
     if(gPathRetracePass.pathSamplingMode == 1) // talbot, pairwise or pathreuse
     {
         PathReservoir_init(dst);
+    debugVals.d[14] = 109;
+
     }
     else
     {
@@ -863,16 +884,20 @@ void ReSTIR(uvec2 pixel)
     int count = getNeighborCount();
     uint start = uint(nextFloat(rng) * float(NEIGHBOR_OFFSET_COUNT));
     
+    debugVals.d[11] = count;
+   
     ReconnectionData dummyRcData;
     // --------------------------------------------------
     // TALBOT RMIS
     // --------------------------------------------------
 
     vec3 color = vec3(0.0);
-    if (gPathRetracePass.restirMISkind == 1) // ReSTIRMISKind::Talbot = 1
+    if (gPathRetracePass.restirMISkind == 1) // ReSTIRMISKind::Talbot = 1, it is this one.
     {
         for (int i = -1; i < count; ++i)
         {
+    debugVals.d[18] = 808;
+
             ivec2 neighborPixel = (i == -1)
                 ? ivec2(pixel)
                 : getNextNeighborPixel(start, ivec2(pixel), i);
@@ -887,6 +912,8 @@ void ReSTIR(uvec2 pixel)
 
             if (!isValidHitInfo(neighborPacked)) continue;
             if (!isValidGeometry(central, neighborSd)) continue;
+
+    debugVals.d[19] = 809;
 
             float p_sum = 0.0;
             float p_self = 0.0;
@@ -906,9 +933,14 @@ void ReSTIR(uvec2 pixel)
                 float J = 1.0;
                 tempDstReservoir = neighborReservoir;
                 possibleToBeSelected = (neighborReservoir.weight > 0.0);
+
+    debugVals.d[20] = 810;
+
             }
             else
             {
+    debugVals.d[20] = 20;
+
                 possibleToBeSelected = shiftAndMergeReservoir(
                     tempDstReservoir,
                     neighborReservoir,
@@ -973,6 +1005,7 @@ void ReSTIR(uvec2 pixel)
                         tneighborReservoir.cachedJacobian.xyz,
                         tJ
                     );
+
 
 
                     float p_ = computeWeight(tIntegrand, false) * tJ;
@@ -1054,11 +1087,9 @@ void ReSTIR(uvec2 pixel)
         vec4 prev = imageLoad(outputColor, ivec2(pixel));
         imageStore(outputColor, ivec2(pixel),
             prev + vec4(color, 1.0));
-
-
-
     }
 
+    debugVals.d[37] = 29;
     temporalReservoirs[offset] = dst;
 }
 
@@ -1068,10 +1099,14 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 void main()
 {
+    
     uvec2 pixel = gl_GlobalInvocationID.xy;
+
 
     if (any(greaterThanEqual(pixel, uvec2(gPathRetracePass.params.frameDim))))
         return;
     
     ReSTIR(pixel);
+            debugVals.d[8] = 29;
+
 }

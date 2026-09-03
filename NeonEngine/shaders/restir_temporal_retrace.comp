@@ -65,7 +65,7 @@ struct PathReservoir
     float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
     uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
     float rcLightPdf; 
-
+    float padding;
 };
 //cls
 struct ReconnectionData
@@ -86,7 +86,7 @@ struct PixelReconnectionData
 //wrk
 int rcVertexLength(PathReservoir r)
 {
-    return int(0); // placeholder
+    return int(15); // placeholder
 }
 
 
@@ -126,6 +126,7 @@ struct RestirPathTracerParams
 {
     uvec2 frameDim;
     uint seed;
+    int pad;
 };
 // --- Core GBuffer / Geometry ---
 layout(set = 0, binding = 0) readonly buffer vBuffer {
@@ -190,13 +191,8 @@ layout(set = 0, binding = 16, rgba8) uniform image2D directLighting;
 // --- Output ---
 layout(set = 0, binding = 17, rgba8) uniform image2D outputColor;
 
-
-
 layout(set = 0, binding = 18) uniform ReSTIRUbo
 {
-    // Base params
-    RestirPathTracerParams params;
-
     // Spatial
     int   gSpatialRoundId;
     int   gNumSpatialRounds;
@@ -222,14 +218,19 @@ layout(set = 0, binding = 18) uniform ReSTIRUbo
     
     float nearZ;
     float farZ;
-
-    // Lighting / sampling
     int   useDirectLighting;
     int   useTalbotMIS;
+
     int   restirMISkind;
     int   pathSamplingMode;
+    int   pad4;
+    int   pad5;
+
+        // Base params
+    RestirPathTracerParams params;
 
 } gPathRetracePass;
+
 layout(set = 0, binding = 19) buffer DebugBuffer {
     float d[];
 } debugVals;
@@ -417,7 +418,6 @@ ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
     if (isValidPackedHitInfo(PrimaryHitPacked))
     {
         
-        ShadingData sd;
         sd.posW = vec4(0.0);
         sd.N = vec4(0.0);
         sd.V = vec4(0.0);
@@ -446,7 +446,6 @@ ShadingData getPixelTemporalShadingData(ivec2 pixel, out HitInfo PrimaryHitPacke
     if (isValidPackedHitInfo(PrimaryHitPacked))
     {
         
-        ShadingData sd;
         sd.posW = vec4(0.0);
         sd.N = vec4(0.0);
         sd.V = vec4(0.0);
@@ -736,7 +735,7 @@ void ReSTIR(uvec2 pixel)
     HitInfo centralPrimaryHitPacked;
     ShadingData centralPrimarySd =
         getPixelShadingData(ivec2(pixel), centralPrimaryHitPacked);
-
+    
     if (!isValidPackedHitInfo(centralPrimaryHitPacked))
         return;
 
@@ -760,6 +759,7 @@ void ReSTIR(uvec2 pixel)
 
     if (!isValidPackedHitInfo(temporalPrimaryHitPacked))
         return;
+
 
     PathReservoir temporalReservoir =
         temporalReservoirs[getReservoirOffset(uvec2(prevPixel))];
@@ -814,10 +814,23 @@ void ReSTIR(uvec2 pixel)
 
 void execute(uvec2 pixel)
 {
+   debugVals.d[12] = 72;
+    
+   debugVals.d[13] = 111;
+
+   if (gl_GlobalInvocationID.x == 0 && gl_GlobalInvocationID.y == 0)
+{
+    debugVals.d[14] = gPathRetracePass.params.frameDim.x;
+    debugVals.d[15] = gPathRetracePass.params.frameDim.y;
+}
+
     if (any(greaterThanEqual(pixel, uvec2(gPathRetracePass.params.frameDim))))
         return;
 
+   debugVals.d[18] = 722;
+
     ReSTIR(pixel);
+
 }
 
 // ------------------------------------------------------------------
@@ -826,6 +839,7 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 void main()
 {
+return;
     uvec2 pixel = gl_GlobalInvocationID.xy;
     execute(pixel);
 }

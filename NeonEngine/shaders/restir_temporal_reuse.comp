@@ -40,7 +40,7 @@ struct PathReservoir
     vec4 rcVertexWi[2]; // incident direction on reconnection vertex
     vec4 rcVertexIrradiance[2]; // sampled irradiance on reconnection vertex
 
-    HitInfo hitInfo;
+    HitInfo hitInfo; // hitinfo of the reconnection vertex
 
     vec4 rcVertexBSDFLightSamplingIrradiance;
 
@@ -52,7 +52,7 @@ struct PathReservoir
     float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
     uint initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
     float rcLightPdf; 
-
+    float padding;
 };
 //cls
 struct Ray
@@ -189,6 +189,7 @@ struct RestirPathTracerParams
 {
     uvec2 frameDim;
     uint seed;
+    int pad;
 };
 
 
@@ -260,9 +261,6 @@ layout(set = 0, binding = 17, rgba8) uniform image2D outputColor;
 
 layout(set = 0, binding = 18) uniform ReSTIRUbo
 {
-    // Base params
-    RestirPathTracerParams params;
-
     // Spatial
     int   gSpatialRoundId;
     int   gNumSpatialRounds;
@@ -288,12 +286,16 @@ layout(set = 0, binding = 18) uniform ReSTIRUbo
     
     float nearZ;
     float farZ;
-
-    // Lighting / sampling
     int   useDirectLighting;
     int   useTalbotMIS;
+
     int   restirMISkind;
     int   pathSamplingMode;
+    int   pad4;
+    int   pad5;
+
+        // Base params
+    RestirPathTracerParams params;
 
 } gPathRetracePass;
 
@@ -447,15 +449,22 @@ ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
 {
     ShadingData sd;
 
+    debugVals.d[4] = gPathRetracePass.params.frameDim.x;
+    debugVals.d[5] = gPathRetracePass.params.frameDim.y;
+
     Ray ray = computeRayPinhole(pixel,gPathRetracePass.params.frameDim);
 
-    uint idx = pixel.y *gPathRetracePass.params.frameDim.x + pixel.x;
+    debugVals.d[6] = ray.dir.y;
+    //problem: vbuff not populated anywhere.
+    
+    uint idx = pixel.y * gPathRetracePass.params.frameDim.x + pixel.x;
     PrimaryHitPacked = vBuff.h[idx];
+
 
     if (isValidHitInfo(PrimaryHitPacked))
     {
-        
-        ShadingData sd;
+        debugVals.d[7] = 1;
+            
         sd.posW = vec4(0.0);
         sd.N = vec4(0.0);
         sd.V = vec4(0.0);
@@ -467,7 +476,7 @@ ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
         sd.pad = 0.0;
         bool valid = loadShadingData(uvec2(pixel), gPathRetracePass.params.frameDim, sd, PrimaryHitPacked);
     }
-
+        
     return sd;
 }
 
@@ -485,7 +494,6 @@ ShadingData getPixelTemporalShadingData(ivec2 pixel, out HitInfo PrimaryHitPacke
     if (isValidHitInfo(PrimaryHitPacked))
     {
         
-        ShadingData sd;
         sd.posW = vec4(0.0);
         sd.N = vec4(0.0);
         sd.V = vec4(0.0);
@@ -901,9 +909,11 @@ void ReSTIR(uvec2 pixel)
     // -----------------------------------------
     HitInfo centralPacked;
     ShadingData centralSd = getPixelShadingData(ivec2(pixel), centralPacked);
+    debugVals.d[2] = 1;
 
     if (!isValidHitInfo(centralPacked))
         return;
+    debugVals.d[3] = 1;
 
     // -----------------------------------------
     // Reproject
@@ -916,17 +926,22 @@ void ReSTIR(uvec2 pixel)
     {
         vec2 jitter = nextVec2(rng);
         prevPixel = ivec2(vec2(pixel) + motion * vec2(gPathRetracePass.params.frameDim) + jitter);
+
+        debugVals.d[8] = 1;
+
     }
 
     if (!isValidScreenRegion(prevPixel))
         return;
-
+    debugVals.d[9] = 1;
+    
     HitInfo temporalPacked;
     ShadingData temporalSd = getPixelTemporalShadingData(prevPixel, temporalPacked);
 
     if (!isValidHitInfo(temporalPacked))
         return;
-
+    debugVals.d[10] = 1;
+    
     uint prevOffset = getOffset(uvec2(prevPixel));
     PathReservoir temporalReservoir = temporalReservoirs[prevOffset];
 
@@ -949,6 +964,7 @@ void ReSTIR(uvec2 pixel)
 
     if (gPathRetracePass.useTalbotMIS == 1)
     {
+    debugVals.d[1] = 123;
         float dstJacobian;
 
         // =====================================
@@ -1148,11 +1164,17 @@ void ReSTIR(uvec2 pixel)
 
 void main()
 {
-debugVals.d[0] = 91.0;
+return;
     uvec2 pixel = gl_GlobalInvocationID.xy;
 
     if (any(greaterThanEqual(pixel, uvec2(gPathRetracePass.params.frameDim))))
         return;
 
+           debugVals.d[16] = gPathRetracePass.params.frameDim.x;
+   debugVals.d[17] = gPathRetracePass.params.frameDim.y;
+    uint idx = pixel.y * gPathRetracePass.params.frameDim.x + pixel.x;
+
     ReSTIR(pixel);
+    
+    debugVals.d[0] = vBuff.h[0].misc1.x;
 }

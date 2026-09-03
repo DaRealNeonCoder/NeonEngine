@@ -71,13 +71,12 @@ struct RestirPathTracerParams
 {
 	glm::uvec2 frameDim;
 	uint32_t seed;
+    int pad;
 };
 
 
 struct ReSTIRUbo
 {
-    // Base params
-    RestirPathTracerParams params;
 
     // Spatial
     int   gSpatialRoundId;
@@ -104,13 +103,16 @@ struct ReSTIRUbo
 
     float nearZ;
     float farZ;
-
-    // Lighting / sampling
     int   useDirectLighting;
     int   useTalbotMIS;
+
     int   restirMISkind;
     int   pathSamplingMode;
+    int pad4;
+    int pad5;
 
+    // Base params
+    RestirPathTracerParams params;
 };
 
 

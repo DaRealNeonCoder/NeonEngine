@@ -111,11 +111,15 @@ layout(set = 0, binding = 6) buffer ReservoirBuffer {
 } reservoirs;
 
 
-layout(set = 0, binding = 7) buffer DebugBuffer {
+layout(set = 0, binding = 7) buffer vBuffer {
+    HitInfo h[];
+} vBuff;
+
+layout(set = 0, binding = 8) buffer DebugBuffer {
     float d[];
 } debugVals;
 
-layout(set = 0, binding = 8) uniform sampler2D textures[];  // unbounded array
+layout(set = 0, binding = 9) uniform sampler2D textures[];  // unbounded array
 
 float luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -171,9 +175,11 @@ void pathTerminate(uint rayId) {
         reservoirs.p[rayId].weight = 0.0;
         reservoirs.p[rayId].F = vec4(0.0);
     }
+
 }
 
 void finalizeRIS(inout PathReservoir r) {
+
     float M = r.M;
     float wSum = r.weight;
     float pHat = luminance(r.F.rgb);
@@ -304,7 +310,7 @@ void main() {
     }
 
 
-    if (payload.misc.y >= uint(MAX_DEPTH)) return;
+    if (payload.misc.y >= uint(MAX_DEPTH)) return; //this is probably a bug
 
     uint seedAtStart = payload.misc.x;
 
@@ -421,6 +427,17 @@ void main() {
          }
                         // make sure this is valid not so sure rn.
        if (payload.misc.y == 1u) {
+
+            uint rayIdx = payload.misc.w;
+
+
+            vBuff.h[rayIdx].misc1.x = attribs.x;
+            vBuff.h[rayIdx].misc1.y = attribs.y;
+    
+            // Use uintBitsToFloat to preserve the raw bits of the ID
+            vBuff.h[rayIdx].misc1.z = uintBitsToFloat(gl_PrimitiveID); 
+            vBuff.h[rayIdx].misc1.w = 2.0; // Padding or InstanceID if needed later
+
                 firstHit(
                     payload.misc.w, 
                     barycentrics.xy, 
@@ -579,7 +596,6 @@ void main() {
 
         payload.misc.z = 1u;
     }
-
 
     traceRayEXT(
         topLevelAS,

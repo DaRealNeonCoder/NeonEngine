@@ -213,12 +213,8 @@ layout(set = 0, binding = 16, rgba8) uniform image2D directLighting;
 
 // --- Output ---
 layout(set = 0, binding = 17, rgba8) uniform image2D outputColor;
-
 layout(set = 0, binding = 18) uniform ReSTIRUbo
 {
-    // Base params
-    RestirPathTracerParams params;
-
     // Spatial
     int   gSpatialRoundId;
     int   gNumSpatialRounds;
@@ -244,14 +240,19 @@ layout(set = 0, binding = 18) uniform ReSTIRUbo
     
     float nearZ;
     float farZ;
-
-    // Lighting / sampling
     int   useDirectLighting;
     int   useTalbotMIS;
+
     int   restirMISkind;
     int   pathSamplingMode;
+    int   pad4;
+    int   pad5;
+
+        // Base params
+    RestirPathTracerParams params;
 
 } gPathRetracePass;
+
 
 layout(set = 0, binding = 19) buffer DebugBuffer {
     float d[];
@@ -316,25 +317,81 @@ Ray computeRayPinhole(uvec2 pixel, uvec2 frameDim)
     return ray;
 }
 
+vec3 evalBSDFCosine(const ShadingData sd, const vec3 wi)
+{
+    vec3 N = normalize(sd.N.xyz);
+    vec3 albedo = sd.diffuse.xyz;
 
-// Dummy compute
-vec3 computeShiftedIntegrand_(
-    RestirPathTracerParams params,
-    inout float dstJacobian,
-    HitInfo dstPrimaryHitPacked,
-    ShadingData dstPrimarySd,
-    ShadingData srcPrimarySd,
-    inout PathReservoir tempReservoir,
-    ReconnectionData rcData,
-    bool evalVisibility,
-    bool usePrev,
-    bool temporalUpdateForDynamicScene
+    float cosTheta = max(dot(N, wi), 0.0);
+
+    // Lambert BRDF = albedo / PI
+    // Cosine term included => (albedo / PI) * cosTheta
+    return albedo * cosTheta * (1.0 / 3.14159265);
+}
+
+
+float evalPdfBSDF(const ShadingData sd, const vec3 wi)
+{
+    vec3 N = normalize(sd.N.xyz);
+
+    float cosTheta = max(dot(N, wi), 0.0);
+
+    // Lambert cosine-weighted hemisphere PDF
+    return cosTheta / 3.14159265;
+}
+
+// wrk
+vec3 computeShiftedIntegrand(
+    const ShadingData dstSd,
+    const ShadingData srcRcSd,
+    const vec3 srcWi,
+    const vec3 srcF,
+    const vec3 cachedJacobian,
+    out float outJacobian
 )
 {
-    dstJacobian = 1.0;
-    tempReservoir.cachedJacobian[0] = 1.0;
-    tempReservoir.cachedJacobian[1] = 1.0;
-    return vec3(1.0);
+    // ---------------------------------------
+    // Reconstruct geometry term
+    // ---------------------------------------
+    vec3 dstToRc = srcRcSd.posW.xyz - dstSd.posW.xyz;
+    float dist2 = dot(dstToRc, dstToRc);
+    vec3 wi = normalize(dstToRc);
+
+    float G = abs(dot(dstSd.N.xyz, wi)) *
+              abs(dot(srcRcSd.N.xyz, -wi)) / max(dist2, 1e-6);
+
+    // ---------------------------------------
+    // Evaluate BSDF at destination
+    // ---------------------------------------
+
+
+
+    vec3 f_dst = evalBSDFCosine(dstSd, wi);
+
+    float dstPdf = evalPdfBSDF(dstSd, wi);
+
+    // ---------------------------------------
+    // Reconstruct source PDFs
+    // ---------------------------------------
+    float prevPdf = cachedJacobian.x;
+    float srcPdf  = cachedJacobian.y;
+    float srcG    = cachedJacobian.z;
+
+    // ---------------------------------------
+    // Jacobian (shift correction)
+    // ---------------------------------------
+    float J = 0.0;
+    if (srcPdf > 0.0 && srcG > 0.0)
+    {
+        J = (dstPdf * G) / (srcPdf * srcG);
+    }
+
+    outJacobian = J;
+
+    // ---------------------------------------
+    // Final shifted contribution
+    // ---------------------------------------
+    return srcF * J;
 }
 
 float PathReservoir_toScalar(vec3 F)
@@ -342,9 +399,6 @@ float PathReservoir_toScalar(vec3 F)
     return dot(F, vec3(0.299, 0.587, 0.114));
 }
 
-// ------------------------------------------------------------------
-// Integrand wrapper
-// ------------------------------------------------------------------
 vec3 computeShiftedIntegrandExtraOutput(
     RestirPathTracerParams params,
     inout float dstJacobian,
@@ -359,24 +413,20 @@ vec3 computeShiftedIntegrandExtraOutput(
 {
     PathReservoir tempReservoir = srcReservoir;
 
-    vec3 res = computeShiftedIntegrand_(
-        params,
-        dstJacobian,
-        dstPrimaryHitPacked,
+    vec3 res = computeShiftedIntegrand(
         dstPrimarySd,
         srcPrimarySd,
-        tempReservoir,
-        rcData,
-        evalVisibility,
-        false,
-        false
+        tempReservoir.rcVertexWi[1].xyz,
+        tempReservoir.F.xyz,
+        tempReservoir.cachedJacobian.xyz,
+        dstJacobian
     );
 
-    dstJacobian = tempReservoir.cachedJacobian[0];
-    output2     = tempReservoir.cachedJacobian[1];
+    output2 = 0.0;
 
     return res;
 }
+
 
 // ------------------------------------------------------------------
 // N-rooks sampling helpers (simplified)
@@ -500,7 +550,6 @@ ShadingData getPixelShadingData(ivec2 pixel, out HitInfo PrimaryHitPacked)
     if (isValidHitInfo(PrimaryHitPacked))
     {
         
-        ShadingData sd;
         sd.posW = vec4(0.0);
         sd.N = vec4(0.0);
         sd.V = vec4(0.0);
@@ -559,6 +608,8 @@ int getNeighborCount()
 //cls
 void BPRComputeMISWeights(ivec2 pixel)
 {
+   debugVals.d[25] = 25;
+
     // ------------------------------------------------------------
     // NRooks / block setup (ver2 equivalent)
     // ------------------------------------------------------------
@@ -583,9 +634,13 @@ void BPRComputeMISWeights(ivec2 pixel)
 
     int byteAddress = pixelInBlockId / 2;
 
+   debugVals.d[31] = 31;
+
     uint word = nRooksPattern[
         (patternIndex * 256u + 128u + 4u * uint(byteAddress / 4)) / 4u
     ];
+
+   debugVals.d[26] = 26;
 
     int groupId =
         int((word >> (8 * (byteAddress % 4)))
@@ -608,6 +663,8 @@ void BPRComputeMISWeights(ivec2 pixel)
         return;
     }
 
+   debugVals.d[27] = 27;
+
     ReconnectionData dummyRcData;
     //dummyRcData.init;
     // ------------------------------------------------------------
@@ -620,11 +677,14 @@ void BPRComputeMISWeights(ivec2 pixel)
     float p_self_NEE = 0.0;
 
     int neighborCount = getNeighborCount();
+   debugVals.d[28] = 28;
 
     for (int j = 0; j < neighborCount; ++j)
     {
         if (j == pixelInBlock.x)
         {
+   debugVals.d[29] = 29;
+
             float p = PathReservoir_toScalar(centralReservoir.F.xyz) > 0.0 ? 1.0 : 0.0;
             float p_NEE = PathReservoir_toScalar(centralReservoir.rcVertexIrradiance[1].xyz) > 0.0 ? 1.0 : 0.0;
 
@@ -636,6 +696,8 @@ void BPRComputeMISWeights(ivec2 pixel)
         }
         else
         {
+   debugVals.d[30] = 30;
+
             ivec2 neighborPixel =
                 getPathReuseNextNeighborPixel(NRookQuery, pixel, j);
 
@@ -650,6 +712,7 @@ void BPRComputeMISWeights(ivec2 pixel)
 
             float jacobian = 0.0;
             float neeOut = 0.0;
+            debugVals.d[32] = 32;
 
             computeShiftedIntegrandExtraOutput(
                 gPathRetracePass.params,
@@ -668,6 +731,7 @@ void BPRComputeMISWeights(ivec2 pixel)
 
             p_sum += p;
             p_sum_NEE += p_NEE;
+
         }
     }
 
@@ -686,8 +750,11 @@ void BPRComputeMISWeights(ivec2 pixel)
 // ------------------------------------------------------------------
 void execute(uvec2 pixel)
 {
+   debugVals.d[24] = 23;
+
     if (!isValidScreenRegion(ivec2(pixel)))
         return;
+   debugVals.d[25] = 23;
 
     BPRComputeMISWeights(ivec2(pixel));
 }
@@ -699,5 +766,10 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 void main()
 {
+   debugVals.d[22] = 21;
+
     execute(gl_GlobalInvocationID.xy);
+
+   debugVals.d[23] = 23;
+
 }

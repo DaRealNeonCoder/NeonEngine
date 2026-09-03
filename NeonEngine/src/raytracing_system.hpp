@@ -327,7 +327,7 @@ what
       float lightPdf; // NEE light pdf (might change after shift if transmission is included since light sampling considers "upperHemisphere" of the previous bounce)
       uint32_t initRandomSeed; // saved random seed at the first bounce (for recovering the random distance threshold for hybrid shift)
       float rcLightPdf;
-
+      float padding;
   };
   //cls
   struct ReconnectionData

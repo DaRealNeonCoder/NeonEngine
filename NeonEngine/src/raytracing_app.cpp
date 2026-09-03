@@ -49,9 +49,6 @@ loadGameObjects();
 }
 RayTracingApp::~RayTracingApp() {}
 
-
-
-
 void RayTracingApp::run() {
     std::cout << "Pass 1 \n";
 
@@ -118,7 +115,8 @@ void RayTracingApp::run() {
         .addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
         .addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
         .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
-        .addBindlessBinding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, 10)
+        .addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)
+        .addBindlessBinding(9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR, 10)
         .build();
 
     auto restirSetLayout = LveDescriptorSetLayout::Builder(lveDevice)
@@ -132,7 +130,7 @@ void RayTracingApp::run() {
         .addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)                                                     // MISWeightBuffer
         .addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)               // MaterialBuffer
         .addBinding(9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)               // VertexBuffer
-        .addBinding(10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_SHADER_STAGE_ALL)              // IndexBuffer
+        .addBinding(10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_ALL)              // IndexBuffer
         .addBinding(11, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_ALL)  // TLAS
         .addBinding(12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_ALL)                                            // gWorldPosition
         .addBinding(13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_ALL)                                            // gWorldShadingNormal
@@ -158,7 +156,7 @@ void RayTracingApp::run() {
         uint32_t vertexOffset = static_cast<uint32_t>(vertices.size());
         const auto& modelVertices = obj.model->getVertices();
         const auto& modelIndices = obj.model->getIndices();
-
+        //TODO: compute this somewhere else (precompute or use gpu)
         for (const auto& vertex : modelVertices) {
             RayTracingVertex rtVertex{};
             glm::vec4 transformedPos = obj.transform.mat4() * glm::vec4(vertex.position, 1.0f);
@@ -269,7 +267,6 @@ void RayTracingApp::run() {
         computeSetLayout2->getDescriptorSetLayout(),
         lveRenderer.getSwapChainExtents() };
 
-    // Create the 4 G-buffer images via your existing method
     GBufferRenderTargets gBuffers = rayTracingRast.targets;
 
     VkImageView attachments[5] = {
@@ -300,11 +297,13 @@ void RayTracingApp::run() {
     // ---- Descriptor sets ----
     std::vector<VkDescriptorSet> gBufferDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
     std::vector<VkDescriptorSet> globalDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
+    std::vector<VkDescriptorSet> globalDescriptorSets_pong(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
     std::vector<VkDescriptorSet> computeDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
     std::vector<VkDescriptorSet> computeDescriptorSets2(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
     std::vector<VkDescriptorSet> restirDescriptorSets(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
 
-    
+    std::vector<VkDescriptorSet> restirDescriptorSets_pong(LveSwapChain::MAX_FRAMES_IN_FLIGHT);
+
 
 
     LveTexture text = {};
@@ -503,13 +502,36 @@ void RayTracingApp::run() {
             .writeAccelerationStructure(11, &asInfo, restirDescriptorSets[i])
             .writeImage(12, &restirPosInfo)
             .writeImage(13, &restirFaceNormalInfo)
-            .writeImage(14, &restirFaceNormalInfo)      //restir for some reason doesnt even use this. imma remove later.
+            .writeImage(14, &restirFaceNormalInfo)                                   //restir for some reason doesnt even use this. imma remove later.
             .writeImage(15, &restirMotionInfo)
             .writeImage(16, &directLightingInfo)
             .writeImage(17, &storageImageInfo)
             .writeBuffer(18, &restirBufferInfo)
             .writeBuffer(19, &debugBufferInfo)
             .build(restirDescriptorSets[i]);
+
+        LveDescriptorWriter(*restirSetLayout, *globalPool)
+            .writeBuffer(0, &temporalVBufferInfo)
+            .writeBuffer(1, &vBufferInfo)
+            .writeBuffer(2, &nRooksBufferInfo)
+            .writeBuffer(3, &neighborOffsetInfo)
+            .writeBuffer(4, &outputReservoirInfo)
+            .writeBuffer(5, &temporalReservoirInfo)
+            .writeBuffer(6, &reconnectionInfo)
+            .writeBuffer(7, &misWeightInfo)
+            .writeBuffer(8, &restirMaterialInfo)
+            .writeBuffer(9, &restirVertexInfo)
+            .writeBuffer(10, &restirIndexInfo)
+            .writeAccelerationStructure(11, &asInfo, restirDescriptorSets_pong[i])
+            .writeImage(12, &restirPosInfo)
+            .writeImage(13, &restirFaceNormalInfo)
+            .writeImage(14, &restirFaceNormalInfo)                                   //restir for some reason doesnt even use this. imma remove later.
+            .writeImage(15, &restirMotionInfo)
+            .writeImage(16, &directLightingInfo)
+            .writeImage(17, &storageImageInfo)
+            .writeBuffer(18, &restirBufferInfo)
+            .writeBuffer(19, &debugBufferInfo)
+            .build(restirDescriptorSets_pong[i]);
 
         LveDescriptorWriter(*rayTracingSetLayout, *globalPool)
             .writeAccelerationStructure(0, &asInfo, globalDescriptorSets[i])
@@ -519,9 +541,23 @@ void RayTracingApp::run() {
             .writeBuffer(4, &vertexBufferInfo)
             .writeBuffer(5, &indexBufferInfo)
             .writeBuffer(6, &outputReservoirInfo)  
-            .writeBuffer(7, &debugBufferInfo)   
-            .writeImageArray(8, textureInfos)   
+            .writeBuffer(7, &vBufferInfo)
+            .writeBuffer(8, &debugBufferInfo)
+            .writeImageArray(9, textureInfos)   
             .build(globalDescriptorSets[i]);
+
+        LveDescriptorWriter(*rayTracingSetLayout, *globalPool)
+            .writeAccelerationStructure(0, &asInfo, globalDescriptorSets[i])
+            .writeImage(1, &storageImageInfo)
+            .writeBuffer(2, &uboInfo)
+            .writeBuffer(3, &materialBufferInfo)
+            .writeBuffer(4, &vertexBufferInfo)
+            .writeBuffer(5, &indexBufferInfo)
+            .writeBuffer(6, &outputReservoirInfo)
+            .writeBuffer(7, &temporalVBufferInfo)
+            .writeBuffer(8, &debugBufferInfo)
+            .writeImageArray(9, textureInfos)
+            .build(globalDescriptorSets_pong[i]);
     }
 
 
@@ -633,6 +669,7 @@ void RayTracingApp::run() {
     restirUbo[0]->writeToBuffer(&ubo2);
     restirUbo[0]->flush();
 
+    bool isSwapDescSets = true;//inverted instantly 
 
     while (!lveWindow.shouldClose()) {
         glfwPollEvents();
@@ -667,6 +704,8 @@ void RayTracingApp::run() {
         cameraController.moveWithMouseLook(lveWindow.getGLFWwindow(), frameTime, viewerObject, hasMoved);
         camera.setViewYXZ(viewerObject.transform.translation, viewerObject.transform.rotation);
         camera.setPerspectiveProjection(glm::radians(50.f), lveRenderer.getAspectRatio(), 0.1f, 100.f);
+        
+        isSwapDescSets = !isSwapDescSets;
 
         if (auto commandBuffer = lveRenderer.beginFrame([&]() {
             rayTracingSystem.handleResize(lveRenderer.getSwapChainExtents().width,
@@ -713,9 +752,11 @@ void RayTracingApp::run() {
 
         // ---- Ray tracing pass ----
         {
+            VkDescriptorSet set = globalDescriptorSets[frameIndex];
+            if (isSwapDescSets) set = globalDescriptorSets_pong[frameIndex];
             FrameInfo frameInfo{
                 frameIndex, frameTime, commandBuffer, camera,
-                globalDescriptorSets[frameIndex], gameObjects };
+                set, gameObjects };
             rayTracingSystem.render(frameInfo);
         }
         // ---- Barrier: GBuffer color attachments -> compute shader read ----
@@ -723,9 +764,11 @@ void RayTracingApp::run() {
         // ---- Barrier: storageImage ray tracing write -> compute shader read/write ----
         rayTracingRast.barrierStorageToCompute(commandBuffer, rayTracingSystem.getStorageImage());
 
+        VkDescriptorSet set = restirDescriptorSets[frameIndex];
+        if (isSwapDescSets) set = restirDescriptorSets_pong[frameIndex];
         ReSTIRFrameInfo frameInfo{
             frameIndex, frameTime, commandBuffer, camera,
-            restirDescriptorSets[frameIndex], gameObjects, lveRenderer.getSwapChainExtents().width,
+            set, gameObjects, lveRenderer.getSwapChainExtents().width,
             lveRenderer.getSwapChainExtents().height
         };
         rayTracingSystem.runShaders(frameInfo);
@@ -791,7 +834,7 @@ void RayTracingApp::run() {
             vkDeviceWaitIdle(lveDevice.device());
 
             float* data = (float*)rayTracingSystem.debugBuffer->getMappedMemory();
-            for (int i = 0; i < 20; ++i) {
+            for (int i = 0; i < 50; ++i) {
 
                 if (data[i] != -1) {
                     std::cout << "debug val for " << i << ": " << data[i] << std::endl;
