@@ -84,6 +84,13 @@ struct PathTracer
     bool kUseEnvLight = false;//for now
     bool kUseEmissiveLights;
     bool kUseAnalyticLights = false;
+    bool kUseBSDFSampling = true;
+    // Minimum cos(theta) for the incident and outgoing vectors.
+    // Some BSDF functions are not robust for cos(theta) == 0.0,
+    // so using a small epsilon for consistency.
+    // TODO: Move into IBxDF if possible
+    static const float kMinCosTheta = 1e-6f;
+    static const float kNRDInvalidPathLength = 6.5504e+4F;
 
     // Additional specialization.
     static const bool kOutputTime = false;//POSSIBLE SOURCE OF ERROR
@@ -224,7 +231,7 @@ struct PathTracer
         static const uint itersPerShaderPass = PathSamplingMode(kPathSamplingMode) == PathSamplingMode::PathTracing ? kSamplesPerPixel : kCandidateSamples;
 
         uint maxSpp = itersPerShaderPass > 0 ? itersPerShaderPass : kMaxSamplesPerPixel;
-        path.sg = S(pixel, (itersPerShaderPass + 1 + gNumSpatialRounds) * params.seed + path.getSampleIdx());
+        path.sg = S((itersPerShaderPass + 1 + gNumSpatialRounds) * params.seed + path.getSampleIdx());//POSSIBLE SOURCE OF ERROR
 
 
         path.pathBuilder.init(path.sg);
@@ -296,7 +303,7 @@ struct PathTracer
         BSDFSample_ result;
 
         if (kUseBSDFSampling) valid = sampleBSDF(sd, path.sg, result, !kSeparatePathBSDF); // daqi: indicate using deterministic BSDF
-        else valid = sampleBSDF_Reference(sd, path.sg, result);
+        //else valid = sampleBSDF_Reference(sd, path.sg, result); POSSIBLE SOURCE OF ERROR
 
         float pdfAll = result.pdf;
         if (kSeparatePathBSDF) result.pdf = result.pdfSingle;
@@ -414,7 +421,8 @@ struct PathTracer
     // TODO: support BySampledBSDF replay
     bool generateScatterRayGivenDirection(const ShadingData sd, float3 dir, inout PathState path)
     {
-        bool isCurveHit = path.hit.getType() == HitType::Curve;
+        bool isCurveHit = false;
+//        bool isCurveHit = path.hit.getType() == HitType::Curve;
 
         // Generate a BSDF sample.
         bool valid = true;
@@ -788,22 +796,6 @@ struct PathTracer
     /** Handle scattering in homogeneous volumes.
     \return Returns true if a scattering event took place.
 */
-    bool handleHomogeneousVolumeExtinction(inout PathState path, const ShadingData sd)
-    {
-        if (!path.interiorList.isEmpty())
-        {
-            HomogeneousVolumeSampler hvs = HomogeneousVolumeSampler::create(path.interiorList.getTopMaterialID());
-            const float surfaceDistance = length(path.origin - sd.posW);
-
-            // our implementation doesn't support volume scattering
-            {
-                // Handle volume extinction.
-                updatePathThroughput(path, exp(-hvs.sigmaT * surfaceDistance));
-            }
-        }
-
-        return false;
-    }
 
 
     /** Handle hits on dielectrics.
@@ -924,7 +916,7 @@ struct PathTracer
 
         // Reject false hits in nested dielectrics.
 
-        if (handleHomogeneousVolumeExtinction(path, sd)) return;
+       // if (handleHomogeneousVolumeExtinction(path, sd)) return;
 
         if (!handleNestedDielectrics(sd, path)) return;
 
@@ -1872,17 +1864,24 @@ float evalPdfBSDF(const ShadingData sd, float3 L, uint allowedSampledFlags = -1,
     return bsdf.evalPdf(wo, wi, allowedSampledFlags, allowDeltaEval);
 }
 
-float evalPdfBSDF(const ShadingData sd, float3 L, out float pdfAll, uint allowedSampledFlags = -1, bool allowDeltaEval = false)
+float3 evalBSDFCosine(const ShadingData sd, float3 L, uint allowedSampledFlags=-1, bool allowDeltaEval = false)
 {
     float3 wo = sd.toLocal(sd.V);
     float3 wi = sd.toLocal(L);
-
     FalcorBSDF bsdf;
     bsdf.setup(sd);
-    return bsdf.evalPdfAll(wo, wi, pdfAll, allowedSampledFlags, allowDeltaEval);
+
+    return bsdf.eval(wo, wi, allowedSampledFlags, allowDeltaEval);
 }
 
 
+//POSSIBLE SOURCE OF ERROR
+float3 eval(float3 wo, float3 wi)
+    {
+        if (min(wo.z, wi.z) < kMinCosTheta) return float3(0.f);
+
+        return M_1_PI * albedo * wi.z;
+    }
 
 [mutating] void setup(const ShadingData sd)
     {
@@ -2093,3 +2092,31 @@ bool sampleLight(const float3 posW, const float3 normalW, const bool upperHemisp
     ls.pdf *= lightSelectPdf;
     return true;
 }
+
+
+/*
+
+
+    uint3 launchID = DispatchRaysIndex();
+    uint3 launchSize = DispatchRaysDimensions();
+
+    RayDesc ray;
+    ray.Origin = /* your ray origin */;
+    ray.Direction = /* your ray direction */;
+    ray.TMin = 0.001;
+    ray.TMax = 10000.0;
+
+    Payload payload;
+    TraceRay(
+        accelStruct,          // acceleration structure
+        RAY_FLAG_FORCE_OPAQUE,// ray flags
+        0xff,                 // instance mask
+        0,                    // ray contribution to hit group index
+        1,                    // multiplier for geometry contribution
+        0,                    // miss shader index
+        ray,                  // RayDesc
+        payload                // inout payload
+    );
+
+
+*/
