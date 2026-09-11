@@ -113,25 +113,6 @@ struct PixelReconnectionData
       float pad1;
       float pad2;
   };
-
-//cls
-struct ShadingData
-{
-    // --- Geometry (16-byte aligned each) ---
-    vec4 posW;        // xyz = position
-    vec4 N;           // xyz = shading normal
-    vec4 V;           // xyz = view direction
-
-    vec4 faceN;       // xyz = geometric normal
-
-    vec4 diffuse;     // xyz = albedo
-
-    uint materialID;
-    uint flags;
-    float NdotV;
-    float pad;     
-};
-
 //wrk
 struct RestirPathTracerParams
 {

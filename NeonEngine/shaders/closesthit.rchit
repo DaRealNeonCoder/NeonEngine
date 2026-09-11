@@ -4,7 +4,14 @@
 
 // ReSTIR PT implementation adapted from https://github.com/DQLin/ReSTIR_PT/ 
 
+/*
+TODO:
+at some point follow this:
+Leave it on the default mode (the else branch with finalizeRIS()), 
+and only flip to PathReuse/BPR if you're specifically trying to reproduce a naive-reuse comparison,
+e.g. for a report or to see why the full algorithm is needed.
 
+*/
 const int MAX_DEPTH = 3;
 
 struct HitInfo
@@ -16,7 +23,7 @@ struct HitInfo
         packed vector of the following: 
         vec2 barycentrics;
         uint primitveID; // The triangle we hit on the model. 
-                         // original implementation had another uint for the mesh instance ID, which imma ignore.
+        uint instanceID                 // mesh instance ID.
     
     */
 };
@@ -310,8 +317,11 @@ void main() {
     }
 
 
-    if (payload.misc.y >= uint(MAX_DEPTH)) return; //this is probably a bug
-
+    if (payload.misc.y >= uint(MAX_DEPTH))
+    {
+        pathTerminate(payload.misc.w);
+        return; //this is probably a bug
+    }
     uint seedAtStart = payload.misc.x;
 
     float maxThroughput = max(
