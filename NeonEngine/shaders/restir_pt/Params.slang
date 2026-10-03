@@ -288,6 +288,11 @@ struct HitInfo
     {
         return misc1.x != 0;
     }
+    [mutating] 
+    void setValid()
+    {
+        misc1.x = 1;//POSSIBLE SOURCE OF ERROR
+    }
 };
 
 struct Material
@@ -302,6 +307,14 @@ struct Material
     uint2 dummy;
     
     MaterialType getType() { return MaterialType::Standard; }
+
+    uint32_t getNestedPriority() 
+    {
+        constexpr uint32_t kBits   = 4;  // NESTED_PRIORITY_BITS
+        constexpr uint32_t kOffset = 13; // NESTED_PRIORITY_OFFSET (sum of preceding field widths)
+        return (flags >> kOffset) & ((1u << kBits) - 1);
+    }
+
 };
 
 /** Path tracer parmeters shared between host/device code.
@@ -352,6 +365,8 @@ struct RestirPathTracerParams
     float3   prevCameraW                = float3(1, 0, 0);          ///< Camera base vector W. Normalized it indicates the forward direction. The length is the camera focal distance.
     float    prevJitterY                = 0.0f;                     ///< Eventual camera jitter along the y axis expressed as a subpixel offset divided by screen height (positive value shifts the image up).
 
+    float3 getPosition(bool usePrev) { return usePrev ? prevPosW :posW; }
+    
     uint getReservoirOffset(const uint2 pixel)
     {
         uint2 tileID = pixel >> kScreenTileBits;
@@ -482,8 +497,8 @@ static Ray computeRayPinholePrevFrame(uint2 pixel, uint2 frameDim)
 struct Ray
 {
     float3 origin;
-    float3 dir;
     float tMin;
+    float3 dir;
     float tMax;
 };
 
@@ -549,4 +564,41 @@ float3 computeRayOrigin(float3 pos, float3 normal)
     // depending on distance to origin.
     bool3 nearOrigin = abs(pos) < origin;
     return select(nearOrigin, pos + normal * fScale, iPos);
+}
+
+uint getBSDFLobes(const ShadingData sd)
+{
+    return getLobes(sd);
+}
+static const float kMinGGXAlpha = 0.08 * 0.08;
+static uint getLobes(const ShadingData sd)
+{
+//#if EnableDeltaBSDF
+    float alpha = sd.linearRoughness * sd.linearRoughness;
+    bool isDelta = alpha < kMinGGXAlpha;
+//#else
+//      bool isDelta = false;
+//#endif
+    float diffTrans = sd.diffuseTransmission;
+    float specTrans = sd.specularTransmission;
+
+    uint lobes = isDelta ? (uint)LobeType::DeltaReflection : (uint)LobeType::SpecularReflection;
+    if (any(sd.diffuse > 0.f) && specTrans < 1.f)
+    {
+        if (diffTrans < 1.f) lobes |= (uint)LobeType::DiffuseReflection;
+        if (diffTrans > 0.f) lobes |= (uint)LobeType::DiffuseTransmission;
+    }
+    if (specTrans > 0.f) lobes |= (isDelta ? (uint)LobeType::DeltaTransmission : (uint)LobeType::SpecularTransmission);
+
+    return lobes;
+}
+
+RayDesc toRayDesc(Ray r)
+{
+    RayDesc desc;
+    desc.Origin = r.origin;
+    desc.TMin = r.tMin;
+    desc.Direction = r.dir;
+    desc.TMax = r.tMax;
+    return desc;
 }

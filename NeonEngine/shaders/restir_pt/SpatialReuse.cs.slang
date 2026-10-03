@@ -3,31 +3,31 @@
  **************************************************************************/
 import Params;
 import Shift;
-import Scene.HitInfo;
+//import Scene.HitInfo;
 import PathReservoir;
 import PathTracer;
-import Scene.Scene;
-import Utils.Debug.PixelDebug;
-import Rendering.Utils.PixelStats;
-import Utils.Sampling.TinyUniformSampleGenerator;
-import Utils.Math.Ray;
-import Utils.Math.MathHelpers;
+//import Scene.Scene;
+//import Utils.Debug.PixelDebug;
+//import Rendering.Utils.PixelStats;
+//import Utils.Sampling.TinyUniformSampleGenerator;
+//import Utils.Math.Ray;
+//import Utils.Math.MathHelpers;
 import LoadShadingData;
-import Rendering.Materials.MaterialShading;
-import RenderPasses.Shared.Denoising.NRDData;
-import RenderPasses.Shared.Denoising.NRDBuffers;
-import RenderPasses.Shared.Denoising.NRDConstants;
-import NRDHelpers;
-
+///import Rendering.Materials.MaterialShading;
+//import RenderPasses.Shared.Denoising.NRDData;
+//import RenderPasses.Shared.Denoising.NRDBuffers;
+//import RenderPasses.Shared.Denoising.NRDConstants;
+//import NRDHelpers;
+import StaticParams;
 struct PathReusePass
 {
-    static const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
+    static const uint kNeighborOffsetCount = 8192;
     static const uint kNeighborOffsetMask = kNeighborOffsetCount - 1;
 
     // Resources
     RestirPathTracerParams params;                        ///< Runtime parameters.
-
-    Texture2D<PackedHitInfo> vbuffer;                     ///< Fullscreen V-buffer for the primary hits.
+//float4 = HItinfo
+    Texture2D<float4> vbuffer;                     ///< Fullscreen V-buffer for the primary hits.
     Texture1D<float2> neighborOffsets;
 
     ByteAddressBuffer nRooksPattern;
@@ -38,9 +38,6 @@ struct PathReusePass
     StructuredBuffer<PixelReconnectionData> reconnectionDataBuffer;
     StructuredBuffer<PathReuseMISWeight> misWeightBuffer;
 
-    RWTexture2D<float4> outputNRDDiffuseRadianceHitDist;    ///< Output resolved diffuse color in .rgb and hit distance in .a for NRD. Only valid if kOutputNRDData == true.
-    RWTexture2D<float4> outputNRDSpecularRadianceHitDist;   ///< Output resolved specular color in .rgb and hit distance in .a for NRD. Only valid if kOutputNRDData == true.
-    RWTexture2D<float4> outputNRDResidualRadianceHitDist;   ///< Output resolved residual color in .rgb and hit distance in .a for NRD. Only valid if kOutputNRDData == true.
     Texture2D<float4> primaryHitEmission;                     ///< Output per-pixel primary hit emission. Only valid if kOutputNRDData == true.
 
     int gSpatialRoundId;
@@ -56,14 +53,13 @@ struct PathReusePass
 
     bool gFeatureBasedRejection;
 
-    uint gSppId;
 
     Texture2D<float4> directLighting;  
     bool useDirectLighting;
 
-    bool isValidPackedHitInfo(PackedHitInfo packed)
+    bool isValidHitInfo(HitInfo packed)
     {
-        return packed.x != 0;
+        return packed.misc1.x != 0;
     }
 
     bool isValidScreenRegion(int2 pixel) { return all(pixel >= 0 && pixel < params.frameDim); }
@@ -71,22 +67,26 @@ struct PathReusePass
     bool isValidGeometry(ShadingData centralSd, ShadingData neighborSd)
     {
         if (!gFeatureBasedRejection) return true;
-        float3 camPos = gScene.camera.data.posW;
+        float3 camPos = params.posW;
         float centralDist = distance(camPos, centralSd.posW);
         float neighborDist = distance(camPos, neighborSd.posW);
         return dot(centralSd.N, neighborSd.N) >= 0.5f && abs(centralDist - neighborDist) < 0.1f * centralDist;
     }
 
-    ShadingData getPixelShadingData(int2 pixel, out PackedHitInfo PrimaryHitPacked)
+    ShadingData getPixelShadingData(int2 pixel, out HitInfo PrimaryHitPacked)
     {
         ShadingData sd = {};
-        Ray ray = gScene.camera.computeRayPinhole(pixel, params.frameDim);
-        PrimaryHitPacked = vbuffer[pixel];
-        if (isValidPackedHitInfo(PrimaryHitPacked))
-        {
-            HitInfo PrimaryHit; PrimaryHit.unpack(PrimaryHitPacked);
+        Ray ray = computeRayPinhole(pixel, params.frameDim);
+        float4 temp = vbuffer[pixel];
 
-            TriangleHit th = PrimaryHit.getTriangleHit();
+        PrimaryHitPacked.misc1.x = temp.x;
+        PrimaryHitPacked.misc1.y = temp.y;
+        PrimaryHitPacked.misc1.z = temp.z;
+        PrimaryHitPacked.misc1.w = temp.w;
+
+        if (isValidHitInfo(PrimaryHitPacked))
+        {
+            HitInfo PrimaryHit = PrimaryHitPacked;
             sd = loadShadingData(PrimaryHit, -ray.dir, true);
         }
         return sd;
@@ -104,7 +104,7 @@ struct PathReusePass
             else
             {
                 int smallWindowDiameter = 2 * gSmallWindowRadius + 1;
-                return smallWindowDiameter * smallWindowDiameter; // count self, but not use self as neighbor
+                return smallWindowDiameter * smallWindowDiameter; // count self, but do not use self as neighbor
             }
         }
     }
@@ -150,7 +150,7 @@ struct PathReusePass
 
     void ReSTIR(const uint2 pixel)
     {
-        var sg = TinyUniformSampleGenerator(pixel, (kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples + 1 + gSpatialRoundId);
+        S sg = S((kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples + 1 + gSpatialRoundId);
 
         // Compute offset into per-sample buffers. All samples are stored consecutively at this offset.
         const uint centralOffset = params.getReservoirOffset(pixel);
@@ -160,10 +160,10 @@ struct PathReusePass
         float3 initialColor = dstReservoir.F * dstReservoir.weight;
 
         float centralM = dstReservoir.M;
-        PackedHitInfo centralPrimaryHitPacked;
+        HitInfo centralPrimaryHitPacked;
         ShadingData centralPrimarySd = getPixelShadingData(pixel, centralPrimaryHitPacked);
 
-        if (!isValidPackedHitInfo(centralPrimaryHitPacked)) return;
+        if (!isValidHitInfo(centralPrimaryHitPacked)) return;
 
         if (PathSamplingMode(kPathSamplingMode) == PathSamplingMode::PathReuse ||
             (ReSTIRMISKind(kSpatialReSTIRMISKind) == ReSTIRMISKind::Talbot || ReSTIRMISKind(kSpatialReSTIRMISKind) == ReSTIRMISKind::Pairwise))
@@ -182,11 +182,11 @@ struct PathReusePass
         int neighborCount = getNeighborCount();
         const uint startIndex = sampleNext1D(sg) * kNeighborOffsetCount;
 
-#if BPR
+//#if BPR POSSIBLE SOURCE OF ERROR
         ////////////////////////////////
         /// BEKAERT-STYLE PATH REUSE ///
         ////////////////////////////////
-        {
+        /*{
             dstReservoir.F = 0.f;
             int blockShiftOffset;
             int4 NRookQuery = 0;
@@ -198,7 +198,7 @@ struct PathReusePass
             else
             {
                 int2 block = (pixel - blockShiftOffset + 16) / 16;
-                var NRookSg = TinyUniformSampleGenerator(block, (kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples);
+                var NRookSg = S(block, (kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples);
                 // randomly select one N-rooks pattern from 256 patterns
                 const uint patternIndex = min(255, sampleNext1D(NRookSg) * 256);
                 pixelInBlock = (pixel - blockShiftOffset + 16) % 16;
@@ -217,9 +217,9 @@ struct PathReusePass
                 if (!isValidScreenRegion(neighborPixel)) continue;
                 PathReservoir neighborReservoir = outputReservoirs[params.getReservoirOffset(neighborPixel)];
 
-                PackedHitInfo neighborPrimaryHitPacked;
+                HitInfo neighborPrimaryHitPacked;
                 ShadingData neighborPrimarySd = getPixelShadingData(neighborPixel, neighborPrimaryHitPacked);
-                if (!isValidPackedHitInfo(neighborPrimaryHitPacked)) continue;
+                if (!isValidHitInfo(neighborPrimaryHitPacked)) continue;
 
                 float p_sum = 0;
                 float p_self = 0;
@@ -252,8 +252,8 @@ struct PathReusePass
             }
 
             color = dstReservoir.F;
-        }
-#else
+        }*/
+//#else
         ///////////////////
         /// TALBOT RMIS ///
         ///////////////////
@@ -265,9 +265,9 @@ struct PathReusePass
                 if (!isValidScreenRegion(neighborPixel)) continue;
                 PathReservoir neighborReservoir = outputReservoirs[params.getReservoirOffset(neighborPixel)];
 
-                PackedHitInfo neighborPrimaryHitPacked;
+                HitInfo neighborPrimaryHitPacked;
                 ShadingData neighborPrimarySd = getPixelShadingData(neighborPixel, neighborPrimaryHitPacked);
-                if (!isValidPackedHitInfo(neighborPrimaryHitPacked)) continue;
+                if (!isValidHitInfo(neighborPrimaryHitPacked)) continue;
                 if (!isValidGeometry(centralPrimarySd, neighborPrimarySd)) continue;
 
                 float p_sum = 0;
@@ -311,9 +311,9 @@ struct PathReusePass
                             int2 tneighborPixel = j == -1 ? pixel : getNextNeighborPixel(startIndex, pixel, j);
                             if (!isValidScreenRegion(tneighborPixel)) continue;
                             PathReservoir tneighborReservoir = outputReservoirs[params.getReservoirOffset(tneighborPixel)];
-                            PackedHitInfo tneighborPrimaryHitPacked;
+                            HitInfo tneighborPrimaryHitPacked;
                             ShadingData tneighborPrimarySd = getPixelShadingData(tneighborPixel, tneighborPrimaryHitPacked);
-                            if (!isValidPackedHitInfo(tneighborPrimaryHitPacked)) continue;
+                            if (!isValidHitInfo(tneighborPrimaryHitPacked)) continue;
                             if (!isValidGeometry(centralPrimarySd, tneighborPrimarySd)) continue;
 
                             float tneighborJacobian;
@@ -348,9 +348,9 @@ struct PathReusePass
 
                 if (!isValidScreenRegion(neighborPixel)) continue;
 
-                PackedHitInfo neighborPrimaryHitPacked;
+                HitInfo neighborPrimaryHitPacked;
                 ShadingData neighborPrimarySd = getPixelShadingData(neighborPixel, neighborPrimaryHitPacked);
-                if (!isValidPackedHitInfo(neighborPrimaryHitPacked)) continue;
+                if (!isValidHitInfo(neighborPrimaryHitPacked)) continue;
                 if (!isValidGeometry(centralPrimarySd, neighborPrimarySd)) continue;
 
                 PathReservoir neighborReservoir = outputReservoirs[params.getReservoirOffset(neighborPixel)];
@@ -424,9 +424,9 @@ struct PathReusePass
                 if (!isValidScreenRegion(neighborPixel)) continue;
 
                 PathReservoir neighborReservoir = outputReservoirs[params.getReservoirOffset(neighborPixel)];
-                PackedHitInfo neighborPrimaryHitPacked;
+                HitInfo neighborPrimaryHitPacked;
                 ShadingData neighborPrimarySd = getPixelShadingData(neighborPixel, neighborPrimaryHitPacked);
-                if (!isValidPackedHitInfo(neighborPrimaryHitPacked)) continue;
+                if (!isValidHitInfo(neighborPrimaryHitPacked)) continue;
                 if (!isValidGeometry(centralPrimarySd, neighborPrimarySd)) continue;
 
                 float dstJacobian;
@@ -448,7 +448,7 @@ struct PathReusePass
 
                 // Evaluate the MIS weight by shifting back.
 
-                PackedHitInfo chosenPrimaryHitPacked;
+                HitInfo chosenPrimaryHitPacked;
                 ShadingData chosenPrimarySd = getPixelShadingData(chosenPixel, chosenPrimaryHitPacked);
                 PathReservoir chosenReservoir = outputReservoirs[params.getReservoirOffset(chosenPixel)];
 
@@ -487,9 +487,9 @@ struct PathReusePass
                         if (!isValidScreenRegion(prefixPixel)) continue;
 
                         PathReservoir prefixReservoir = outputReservoirs[params.getReservoirOffset(prefixPixel)];
-                        PackedHitInfo prefixPrimaryHitPacked;
+                        HitInfo prefixPrimaryHitPacked;
                         ShadingData prefixPrimarySd = getPixelShadingData(prefixPixel, prefixPrimaryHitPacked);
-                        if (!isValidPackedHitInfo(prefixPrimaryHitPacked)) continue;
+                        if (!isValidHitInfo(prefixPrimaryHitPacked)) continue;
                         if (!isValidGeometry(centralPrimarySd, prefixPrimarySd)) continue;
 
                         float prefix_approxPdf;
@@ -529,7 +529,7 @@ struct PathReusePass
                 color = dstReservoir.F * dstReservoir.weight;
             }
         }
-#endif
+//#endif
 
         if (dstReservoir.weight < 0.f) dstReservoir.weight = 0.f;
         if (isnan(dstReservoir.weight) || isinf(dstReservoir.weight)) dstReservoir.weight = 0.f;
@@ -549,89 +549,6 @@ struct PathReusePass
             outputColor[pixel] += float4(color / kSamplesPerPixel, 1.f);
 
             // Output Denoiser Data (developed for NRD v2.12, doesn't guarantee to work with the latest version)
-            if (kOutputNRDData && PathSamplingMode(kPathSamplingMode) == PathSamplingMode::ReSTIR)
-            {
-                float3 diffuseRadiance = 0.f;
-                float3 specularRadiance = 0.f;
-                float3 residualRadiance = 0.f;
-                float hitDist = 0.f;
-                float3 reflectance = 0.f;
-                float3 radiance = 0.f;
-                NRDPathType pathType = NRDPathType::Residual; 
-
-                //
-                if (ShiftMapping(kShiftStrategy) == ShiftMapping::Reconnection ||
-                    ShiftMapping(kShiftStrategy) == ShiftMapping::Hybrid && dstReservoir.pathFlags.rcVertexLength() == 1)  //rcVertexHit must exists
-                {
-                    if (dstReservoir.rcVertexHit.instanceID == 0xffffffff)
-                    {
-                        hitDist = kNRDInvalidPathLength;
-                    }
-                    else
-                    {
-                        bool isDiffusePrimaryHit = !dstReservoir.pathFlags.decodeIsSpecularBounce(true);
-                        bool isSpecularPrimaryHit = dstReservoir.pathFlags.decodeIsSpecularBounce(true) && !dstReservoir.pathFlags.decodeIsDeltaEvent(true);
-
-                        reflectance = computeSampleReflectance(kUseNRDDemodulation, isDiffusePrimaryHit, isSpecularPrimaryHit, centralPrimarySd);
-
-                        ShadingData RcVertexSd = loadShadingDataWithPrevVertexPosition(dstReservoir.rcVertexHit.getHitInfo(), centralPrimarySd.posW, false);
-                        hitDist = length(RcVertexSd.posW - centralPrimarySd.posW);
-
-                        pathType = NRDPathType::Residual;
-                        if (isDiffusePrimaryHit) pathType = NRDPathType::Diffuse;
-                        else if (isSpecularPrimaryHit) pathType = NRDPathType::Specular;
-
-                        radiance = dstReservoir.F * dstReservoir.weight;
-                    }
-                }
-                else
-                {
-                    HitInfo centralPrimaryHit; centralPrimaryHit.unpack(centralPrimaryHitPacked);
-                    Ray ray = Ray(gScene.camera.getPosition(), -centralPrimarySd.V, 0, kRayTMax);
-
-                    traceDenoiserData(params, centralPrimaryHitPacked, centralPrimarySd,
-                        dstReservoir.pathFlags, dstReservoir.initRandomSeed, hitDist, pathType, reflectance);
-
-                    radiance = dstReservoir.F * dstReservoir.weight;
-                }
-
-                if (useDirectLighting)
-                    radiance += directLighting[pixel].rgb;
-
-
-                reflectance = max(0.04f, reflectance);
-                float3 emission = primaryHitEmission[pixel].rgb;
-                float3 demodulatedRadiance = max(0.f, (radiance - emission)) / reflectance;
-
-                switch (pathType)
-                {
-                case NRDPathType::Diffuse:
-                    diffuseRadiance += demodulatedRadiance;
-                    break;
-                case NRDPathType::Specular:
-                    specularRadiance += demodulatedRadiance;
-                    break;
-                default:
-                    // Do not demodulate residual.
-                    residualRadiance += radiance;
-                    break;
-                }
-
-                float invSpp = 1.f / kSamplesPerPixel;
-
-                if (gSppId == 0)
-                {
-                    outputNRDDiffuseRadianceHitDist[pixel] = float4(invSpp * diffuseRadiance, invSpp * hitDist);
-                    outputNRDSpecularRadianceHitDist[pixel] = float4(invSpp * specularRadiance, invSpp * hitDist);
-                    outputNRDResidualRadianceHitDist[pixel] = float4(invSpp * residualRadiance, invSpp * hitDist);
-                }
-                else
-                {
-                    outputNRDDiffuseRadianceHitDist[pixel] += float4(invSpp * diffuseRadiance, invSpp * hitDist);
-                    outputNRDSpecularRadianceHitDist[pixel] += float4(invSpp * specularRadiance, invSpp * hitDist);
-                    outputNRDResidualRadianceHitDist[pixel] += float4(invSpp * residualRadiance, invSpp * hitDist);
-                }
-            }
         }
 
     }
@@ -645,8 +562,8 @@ struct PathReusePass
 
         if (any(pixel >= params.frameDim)) return;
 
-        printSetPixel(pixel);
-        logSetPixel(pixel);
+//        printSetPixel(pixel);
+  //      logSetPixel(pixel);
 
         ReSTIR(pixel);
     }

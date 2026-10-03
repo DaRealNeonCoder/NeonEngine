@@ -2,6 +2,7 @@
  # Copyright (c) 2022, Daqi Lin.  All rights reserved.
  **************************************************************************/
 import Params;
+import StaticParams;
 import Shift;
 ///import Scene.HitInfo;
 import PathReservoir;
@@ -52,33 +53,49 @@ struct PathRetracePass
 
     bool isValidScreenRegion(int2 pixel) { return all(pixel >= 0 && pixel < params.frameDim); }
 
-    ShadingData getPixelShadingData(int2 pixel, out HitInfo PrimaryHit)
+
+    ShadingData getPixelShadingData(int2 pixel, out HitInfo PrimaryHitPacked)
     {
         ShadingData sd = {};
-        Ray ray = Params::computeRayPinhole(pixel, params.frameDim);
-        PrimaryHit = vbuffer[pixel];
-        if (isValidHitInfo(PrimaryHit))
+        Ray ray = computeRayPinhole(pixel, params.frameDim);
+        float4 temp = vbuffer[pixel];
+
+        PrimaryHitPacked.misc1.x = temp.x;
+        PrimaryHitPacked.misc1.y = temp.y;
+        PrimaryHitPacked.misc1.z = temp.z;
+        PrimaryHitPacked.misc1.w = temp.w;
+
+        if (isValidHitInfo(PrimaryHitPacked))
         {
-            HitInfo PrimaryHit; PrimaryHit.unpack(PrimaryHit);
+            HitInfo PrimaryHit = PrimaryHitPacked;
             sd = loadShadingData(PrimaryHit, -ray.dir, true);
         }
         return sd;
     }
+
     
     //TODO: why is this defined multiple times?
     
-    ShadingData getPixelTemporalShadingData(int2 pixel, out HitInfo PrimaryHit)
+
+    ShadingData getPixelTemporalShadingData(int2 pixel, out HitInfo PrimaryHitPacked)
     {
         ShadingData sd = {};
         Ray ray = computeRayPinholePrevFrame(pixel, params.frameDim);
-        PrimaryHit = temporalVbuffer[pixel];
-        if (isValidHitInfo(PrimaryHit))
+        float4 temp = temporalVbuffer[pixel];
+
+        PrimaryHitPacked.misc1.x = temp.x;
+        PrimaryHitPacked.misc1.y = temp.y;
+        PrimaryHitPacked.misc1.z = temp.z;
+        PrimaryHitPacked.misc1.w = temp.w;
+
+        if (isValidHitInfo(PrimaryHitPacked))
         {
-            HitInfo PrimaryHit; PrimaryHit.unpack(PrimaryHit);
+            HitInfo PrimaryHit = PrimaryHitPacked;
             sd = loadShadingData(PrimaryHit, -ray.dir, true);
         }
         return sd;
     }
+
 
     /*
     * Build a reservoir of paths whose suffix can be merged to a pixel's prefix.
@@ -88,7 +105,7 @@ struct PathRetracePass
     void ReSTIR(const uint2 pixel)
     {
         // TODO: How to seed efficiently?
-        var sg = S(pixel, (kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples);
+        var sg = S((kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples);
 
         // Compute offset into per-sample buffers. All samples are stored consecutively at this offset.
         const uint centralOffset = params.getReservoirOffset(pixel);
@@ -151,8 +168,8 @@ struct PathRetracePass
 
         if (any(pixel >= params.frameDim)) return;
 
-        printSetPixel(pixel);
-        logSetPixel(pixel);
+//        printSetPixel(pixel);
+  //      logSetPixel(pixel);
 
         ReSTIR(pixel);
     }

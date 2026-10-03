@@ -1,3 +1,5 @@
+
+#pragma once
 /***************************************************************************
  # Copyright (c) 2022, Daqi Lin.  All rights reserved.
  **************************************************************************/
@@ -40,7 +42,7 @@ static const uint kShiftStrategy = 2; // Hybrid
 static const uint kSpatialReSTIRMISKind = 2; // Pairwise
 static const uint kTemporalReSTIRMISKind = 1; // Talbot
 static const bool kTemporalUpdateForDynamicScene = false;
-static const int kMaximumPathLength = 15;
 static const uint kPathSamplingMode = 0; // ReSTIR
 static const bool kSeparatePathBSDF = true;
 static const bool kUseNRDDemodulation = true;
+static const float kRayTMax = 1e30f;

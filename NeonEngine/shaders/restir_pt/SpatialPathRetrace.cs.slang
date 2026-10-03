@@ -13,13 +13,13 @@ import PathTracer;
 //import Utils.Math.Ray;
 //import Utils.Math.MathHelpers;
 import LoadShadingData;
-i//mport Rendering.Materials.MaterialShading;
-
+//import Rendering.Materials.MaterialShading;
+import StaticParams;
 /** TODO.
 */
 struct PathRetracePass
 {
-    static const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
+    static const uint kNeighborOffsetCount = 8192;
     static const uint kNeighborOffsetMask = kNeighborOffsetCount - 1;
 
     // Resources
@@ -48,9 +48,9 @@ struct PathRetracePass
 
     bool gFeatureBasedRejection;
 
-    bool isValidPackedHitInfo(HitInfo packed)
+    bool isValidHitInfo(HitInfo packed)
     {
-        return HitInfo.misc1.x != 0;
+        return packed.misc1.x != 0;
     }
 
     bool isValidScreenRegion(int2 pixel) { return all(pixel >= 0 && pixel < params.frameDim); }
@@ -58,20 +58,26 @@ struct PathRetracePass
     bool isValidGeometry(ShadingData centralSd, ShadingData neighborSd)
     {
         if (!gFeatureBasedRejection) return true;
-        float3 camPos = gScene.camera.data.posW;
+        float3 camPos = params.posW;
         float centralDist = distance(camPos, centralSd.posW);
         float neighborDist = distance(camPos, neighborSd.posW);
         return dot(centralSd.N, neighborSd.N) >= 0.5f && abs(centralDist - neighborDist) < 0.1f * centralDist;
     }
 
-    ShadingData getPixelShadingData(int2 pixel, out PackedHitInfo PrimaryHitPacked)
+    ShadingData getPixelShadingData(int2 pixel, out HitInfo PrimaryHitPacked)
     {
         ShadingData sd = {};
         Ray ray = computeRayPinhole(pixel, params.frameDim);
-        PrimaryHitPacked = vbuffer[pixel];
-        if (isValidPackedHitInfo(PrimaryHitPacked))
+        float4 temp = vbuffer[pixel];
+
+PrimaryHitPacked.misc1.x = temp.x;
+PrimaryHitPacked.misc1.y = temp.y;
+PrimaryHitPacked.misc1.z = temp.z;
+PrimaryHitPacked.misc1.w = temp.w;
+
+        if (isValidHitInfo(PrimaryHitPacked))
         {
-            HitInfo PrimaryHit;
+            HitInfo PrimaryHit = PrimaryHitPacked;
             sd = loadShadingData(PrimaryHit, -ray.dir, true);
         }
         return sd;
@@ -110,14 +116,14 @@ struct PathRetracePass
     void ReSTIR(const uint2 pixel)
     {
         // TODO: How to seed efficiently?
-        var sg = S(pixel, (kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples + 1 + gSpatialRoundId);
+        S sg = S((kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples + 1 + gSpatialRoundId);
 
         // Compute offset into per-sample buffers. All samples are stored consecutively at this offset.
         const uint centralOffset = params.getReservoirOffset(pixel);
         PathReservoir centralReservoir = outputReservoirs[centralOffset];
         HitInfo centralPrimaryHitPacked;
         ShadingData centralPrimarySd = getPixelShadingData(pixel, centralPrimaryHitPacked);
-        if (!isValidPackedHitInfo(centralPrimaryHitPacked)) return;
+        if (!isValidHitInfo(centralPrimaryHitPacked)) return;
 
         uint2 chosenPixel = pixel;
         int chosen_i = -1;
@@ -134,9 +140,9 @@ struct PathRetracePass
 
             PathReservoir neighborReservoir = outputReservoirs[params.getReservoirOffset(neighborPixel)];
 
-            PackedHitInfo neighborPrimaryHitPacked;
+            HitInfo neighborPrimaryHitPacked;
             ShadingData neighborPrimarySd = getPixelShadingData(neighborPixel, neighborPrimaryHitPacked);
-            if (!isValidPackedHitInfo(neighborPrimaryHitPacked)) continue;
+            if (!isValidHitInfo(neighborPrimaryHitPacked)) continue;
             if (!isValidGeometry(centralPrimarySd, neighborPrimarySd)) continue;
 
             HitInfo dstRcPrevVertexHit;
@@ -170,8 +176,8 @@ struct PathRetracePass
 
         if (any(pixel >= params.frameDim)) return;
 
-        printSetPixel(pixel);
-        logSetPixel(pixel);
+        //printSetPixel(pixel);
+        //logSetPixel(pixel);
 
         ReSTIR(pixel);
     }

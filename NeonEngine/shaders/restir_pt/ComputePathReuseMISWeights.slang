@@ -2,30 +2,32 @@
  # Copyright (c) 2022, Daqi Lin.  All rights reserved.
  **************************************************************************/
 import Params;
+import StaticParams;
+
 import Shift;
-import Scene.HitInfo;
+//import Scene.HitInfo;
 import PathReservoir;
 import PathTracer;
-import Scene.Scene;
-import Utils.Debug.PixelDebug;
-import Rendering.Utils.PixelStats;
-import Utils.Sampling.TinyUniformSampleGenerator;
-import Utils.Math.Ray;
-import Utils.Math.MathHelpers;
+//import Scene.Scene;
+//import Utils.Debug.PixelDebug;
+//import Rendering.Utils.PixelStats;
+//import Utils.Sampling.TinyUniformSampleGenerator;
+//import Utils.Math.Ray;
+//import Utils.Math.MathHelpers;
 import LoadShadingData;
-import Rendering.Materials.MaterialShading;
+//import Rendering.Materials.MaterialShading;
 
 // if we don't use PathSamplingMode::PathReuse, this pass is used for computing contribution MIS weights
 
 struct PathReusePass
 {
-    static const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
+    static const uint kNeighborOffsetCount = 8192;
     static const uint kNeighborOffsetMask = kNeighborOffsetCount - 1;
 
     // Resources
     RestirPathTracerParams params;                        ///< Runtime parameters.
 
-    Texture2D<PackedHitInfo> vbuffer;                     ///< Fullscreen V-buffer for the primary hits.
+    Texture2D<float4> vbuffer;                     ///< Fullscreen V-buffer for the primary hits.
 
     RWTexture2D<float4> outputColor;                      ///< Output resolved color.
     StructuredBuffer<PathReservoir> outputReservoirs;                  ///< New per-pixel paths.
@@ -38,23 +40,29 @@ struct PathReusePass
     uint gSpatialReusePattern;
     bool gIsLastRound;
 
-    bool isValidPackedHitInfo(PackedHitInfo packed)
+    bool isValidHitInfo(HitInfo packed)
     {
-        return packed.x != 0;
+        return packed.misc1.x != 0;
     }
 
     bool isValidScreenRegion(int2 pixel) { return all(pixel >= 0 && pixel < params.frameDim); }
 
-    ShadingData getPixelShadingData(int2 pixel, out PackedHitInfo PrimaryHitPacked)
+    ShadingData getPixelShadingData(int2 pixel, out HitInfo PrimaryHitPacked)
     {
         ShadingData sd = {};
-        Ray ray = gScene.camera.computeRayPinhole(pixel, params.frameDim);
-        PrimaryHitPacked = vbuffer[pixel];
-        if (isValidPackedHitInfo(PrimaryHitPacked))
-        {
-            HitInfo PrimaryHit; PrimaryHit.unpack(PrimaryHitPacked);
+        Ray ray = computeRayPinhole(pixel, params.frameDim);
+        float4 tempHit = vbuffer[pixel];
+        PrimaryHitPacked.misc1.x = tempHit.x;
+        PrimaryHitPacked.misc1.y = tempHit.y;
+        PrimaryHitPacked.misc1.z = tempHit.z;
+        PrimaryHitPacked.misc1.w = tempHit.w;
 
-            TriangleHit th = PrimaryHit.getTriangleHit();
+        if (isValidHitInfo(PrimaryHitPacked))
+        {
+            HitInfo PrimaryHit; 
+            PrimaryHit = PrimaryHitPacked;
+
+            // tf does this do? //TriangleHit th = PrimaryHit.getTriangleHit();
             sd = loadShadingData(PrimaryHit, -ray.dir, true);
         }
         return sd;
@@ -97,11 +105,12 @@ struct PathReusePass
         else blockShiftOffset = params.seed % 16;
         int2 block = (pixel - blockShiftOffset + 16) / 16;
         // TODO: How to seed efficiently?
-        var sg = TinyUniformSampleGenerator(block, (kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples);
+        var sg = S((kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples);
 
         // randomly select one N-rooks pattern from 256 patterns
-        const uint patternIndex = min(255, sampleNext1D(sg) * 256);
-        const int2 pixelInBlock = (pixel - blockShiftOffset + 16) % 16;
+        const float r = sampleNext1D(sg);
+        const uint patternIndex = min(255u, (uint)(r * 256.0f));
+        int2 pixelInBlock = (pixel - blockShiftOffset + 16) % 16;
         int pixelInBlockId = pixelInBlock.y * 16 + pixelInBlock.x;
         int byteAddress = pixelInBlockId / 2;
         uint word = nRooksPattern.Load(patternIndex * 256 + 128 + 4 * (byteAddress / 4));
@@ -112,10 +121,10 @@ struct PathReusePass
         // Compute offset into per-sample buffers. All samples are stored consecutively at this offset.
         const uint centralOffset = params.getReservoirOffset(pixel);
         PathReservoir centralReservoir = outputReservoirs[centralOffset];
-        PackedHitInfo centralPrimaryHitPacked;
+        HitInfo centralPrimaryHitPacked;
         ShadingData centralPrimarySd = getPixelShadingData(pixel, centralPrimaryHitPacked);
 
-        if (!isValidPackedHitInfo(centralPrimaryHitPacked)) return;
+        if (!isValidHitInfo(centralPrimaryHitPacked)) return;
 
         ReconnectionData dummyRcData;
         dummyRcData.Init();
@@ -149,9 +158,9 @@ struct PathReusePass
                 int2 tneighborPixel = getPathReuseNextNeighborPixel(NRookQuery, pixel, j);
 
                 if (!isValidScreenRegion(tneighborPixel)) continue;
-                PackedHitInfo tneighborPrimaryHitPacked;
+                HitInfo tneighborPrimaryHitPacked;
                 ShadingData tneighborPrimarySd = getPixelShadingData(tneighborPixel, tneighborPrimaryHitPacked);
-                if (!isValidPackedHitInfo(tneighborPrimaryHitPacked)) continue;
+                if (!isValidHitInfo(tneighborPrimaryHitPacked)) continue;
                 validCount++;
 
                 float p = 0.f;
@@ -196,8 +205,8 @@ struct PathReusePass
 
         if (any(pixel >= params.frameDim)) return;
 
-        printSetPixel(pixel);
-        logSetPixel(pixel);
+        //printSetPixel(pixel);
+        //logSetPixel(pixel);
 
         BPRComputeMISWeights(pixel);
     }
@@ -214,3 +223,4 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     gPathReusePass.execute(dispatchThreadId.xy);
 }
+

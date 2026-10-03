@@ -8,7 +8,7 @@
      but the programs are not yet ready to be used when we create the buffers.
      Therefore we create this dummy program to make it easier.
  */
-import RenderPasses.ReSTIRPTPass.PathReservoir;
+//import RenderPasses.ReSTIRPTPass.PathReservoir;
 
 //StructuredBuffer<PathReservoir> outputReservoirs;
 //StructuredBuffer<PixelReconnectionData> reconnectionDataBuffer;

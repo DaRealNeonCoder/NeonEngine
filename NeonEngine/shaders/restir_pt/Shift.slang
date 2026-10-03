@@ -4,7 +4,7 @@
 
 
 import PathReservoir;
-//import Utils.Sampling.SampleGenerator;
+//import Utils.Sampling.S;
 import LoadShadingData;
 import Params;
 //import Utils.Debug.PixelDebug;
@@ -13,12 +13,14 @@ import Params;
 //import Scene.RaytracingInline;
 //import Scene.Scene;
 import PathTracer;
+import StaticParams;
+
 //import RenderPasses.Shared.Denoising.NRDData;
 
 ParameterBlock<PathTracer> gPathTracer;
 
 float3 computeShiftedIntegrandExtraOutput(
-    const RestirPathTracerParams params, inout float dstJacobian, inout float output2, const PackedHitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd,
+    const RestirPathTracerParams params, inout float dstJacobian, inout float output2, const HitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd,
     const ShadingData srcPrimarySd, const PathReservoir srcReservoir, ReconnectionData rcData, bool evalVisibility, bool usePrev = false, bool temporalUpdateForDynamicScene = false)
 {
     PathReservoir tempReservoir = srcReservoir;
@@ -33,7 +35,7 @@ float3 computeShiftedIntegrandExtraOutput(
 }
 
 float3 computeShiftedIntegrand(
-    const RestirPathTracerParams params, inout float dstJacobian, const PackedHitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd,
+    const RestirPathTracerParams params, inout float dstJacobian, const HitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd,
     const ShadingData srcPrimarySd, const PathReservoir srcReservoir, ReconnectionData rcData, bool evalVisibility, bool usePrev = false, bool temporalUpdateForDynamicScene = false)
 {
     PathReservoir tempReservoir = srcReservoir;
@@ -46,7 +48,7 @@ float3 computeShiftedIntegrand(
     return res;
 }
 
-float3 computeShiftedIntegrand_(const RestirPathTracerParams params, inout float dstJacobian, const PackedHitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd,
+float3 computeShiftedIntegrand_(const RestirPathTracerParams params, inout float dstJacobian, const HitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd,
     const ShadingData srcPrimarySd, inout PathReservoir srcReservoir, ReconnectionData rcData, bool evalVisibility, bool usePrev = false, bool temporalUpdateForDynamicScene = false)
 {
     dstJacobian = 0.f;
@@ -76,7 +78,7 @@ float3 computeShiftedIntegrand_(const RestirPathTracerParams params, inout float
 }
 
 
-float3 computeShiftedIntegrandRandomReplay(const RestirPathTracerParams params, bool usePrev, inout float dstJacobian, const PackedHitInfo dstPrimaryHitPacked, ShadingData dstPrimarySd, ShadingData srcPrimarySd,
+float3 computeShiftedIntegrandRandomReplay(const RestirPathTracerParams params, bool usePrev, inout float dstJacobian, const HitInfo dstPrimaryHitPacked, ShadingData dstPrimarySd, ShadingData srcPrimarySd,
     inout PathReservoir tempPathReservoir)
 {
     dstJacobian = 0.f;
@@ -86,8 +88,8 @@ float3 computeShiftedIntegrandRandomReplay(const RestirPathTracerParams params, 
     dstJacobian = 1.f;
     PathReservoir srcReservoir = tempPathReservoir;
 
-    HitInfo dstPrimaryHit; dstPrimaryHit.unpack(dstPrimaryHitPacked);
-    Ray ray = Ray(gScene.camera.getPosition(usePrev), -dstPrimarySd.V, 0, kRayTMax);
+    HitInfo dstPrimaryHit = dstPrimaryHitPacked;
+    Ray ray = Ray(params.getPosition(usePrev), 0, -dstPrimarySd.V, kRayTMax);
 
     float3 L = gPathTracer.traceRandomReplayPath(dstPrimaryHit, dstPrimarySd, srcPrimarySd, ray, tempPathReservoir);
 
@@ -101,8 +103,7 @@ float3 computeShiftedIntegrandRandomReplay(const RestirPathTracerParams params, 
 
     return L;
 }
-
-float3 computeShiftedIntegrandHybrid(const RestirPathTracerParams params, bool usePrev, bool temporalUpdateForDynamicScene, inout float dstJacobian, const PackedHitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd, const ShadingData srcPrimarySd,
+float3 computeShiftedIntegrandHybrid(const RestirPathTracerParams params, bool usePrev, bool temporalUpdateForDynamicScene, inout float dstJacobian, const HitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd, const ShadingData srcPrimarySd,
     inout PathReservoir tempPathReservoir, ReconnectionData rcData, bool evalVisibility)
 {
     dstJacobian = 0.f;
@@ -111,8 +112,9 @@ float3 computeShiftedIntegrandHybrid(const RestirPathTracerParams params, bool u
 
     dstJacobian = 1.f;
 
-    HitInfo dstPrimaryHit; dstPrimaryHit.unpack(dstPrimaryHitPacked);
-    Ray ray = Ray(gScene.camera.getPosition(usePrev), -dstPrimarySd.V, 0, kRayTMax);
+    HitInfo dstPrimaryHit; 
+    dstPrimaryHit = dstPrimaryHitPacked;
+    Ray ray = Ray(params.getPosition(usePrev),  0, -dstPrimarySd.V, kRayTMax);
     bool isRcVertexEscapedVertex = tempPathReservoir.pathFlags.pathLength() + 1 == tempPathReservoir.pathFlags.rcVertexLength();
 
     PathReservoir srcReservoir = tempPathReservoir;
@@ -189,24 +191,14 @@ float3 computeShiftedIntegrandHybrid(const RestirPathTracerParams params, bool u
 }
 
 
-float3 traceHybridShiftRays(const RestirPathTracerParams params, bool usePrev, const PackedHitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd,
+float3 traceHybridShiftRays(const RestirPathTracerParams params, bool usePrev, const HitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd,
     PathReservoir srcReservoir, inout HitInfo dstRcPrevVertexHit, inout float3 dstRcPrevVertexWo)
 {
     if (srcReservoir.weight == 0.f) return 0.f;
-    HitInfo dstPrimaryHit; dstPrimaryHit.unpack(dstPrimaryHitPacked);
-    Ray ray = Ray(gScene.camera.getPosition(usePrev), -dstPrimarySd.V, 0, kRayTMax); // this ray can be arbitrary, does not affect results
+    HitInfo dstPrimaryHit; dstPrimaryHit = dstPrimaryHitPacked;
+    Ray ray = Ray(params.getPosition(usePrev), 0, -dstPrimarySd.V, kRayTMax); // this ray can be arbitrary, does not affect results
     float3 Tp = gPathTracer.traceRandomReplayPathHybridSimple(dstPrimaryHit, dstPrimarySd, ray, srcReservoir.pathFlags, srcReservoir.initRandomSeed, dstRcPrevVertexHit, dstRcPrevVertexWo);
     return Tp;
-}
-
-
-void traceDenoiserData(const RestirPathTracerParams params, const PackedHitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd,
-    ReSTIRPathFlags pathFlags, uint initRandomSeed, inout float hitDist, inout NRDPathType pathType, inout float3 sampleReflectance)
-{
-    HitInfo dstPrimaryHit; dstPrimaryHit.unpack(dstPrimaryHitPacked);
-    Ray ray = Ray(gScene.camera.getPosition(), -dstPrimarySd.V, 0, kRayTMax); // this ray can be arbitrary, does not affect results
-    gPathTracer.traceRandomReplayGetDenoiserData(dstPrimaryHit, dstPrimarySd, ray, pathFlags,
-        initRandomSeed, hitDist, pathType, sampleReflectance);
 }
 
 
@@ -221,7 +213,7 @@ float3 computeShiftedIntegrandReconnectionPathTree(const RestirPathTracerParams 
     dstJacobian = 0.f;
 
     int rcVertexLength = 1;
-    HitInfo rcVertexHit = srcReservoir.rcVertexHit.getHitInfo();
+    HitInfo rcVertexHit = srcReservoir.rcVertexHit;
     float3 rcVertexIrradiance = srcReservoir.rcVertexIrradiance[0];
 
     float3 rcVertexBSDFLightSamplingIrradiance = srcReservoir.rcVertexBSDFLightSamplingIrradiance;
@@ -232,7 +224,7 @@ float3 computeShiftedIntegrandReconnectionPathTree(const RestirPathTracerParams 
     {
         return 0.f;
     }
-    bool isTransmission = srcReservoir.pathFlags.decodeIsTransmissionEvent(true, false);
+    bool isTransmission = false; //srcReservoir.pathFlags.decodeIsTransmissionEvent(true, false);
 
     srcPrimarySd.posW = srcPrimarySd.computeNewRayOrigin(!isTransmission);
     dstPrimarySd.posW = dstPrimarySd.computeNewRayOrigin(!isTransmission);
@@ -262,7 +254,7 @@ float3 computeShiftedIntegrandReconnectionPathTree(const RestirPathTracerParams 
     if (isJacobianInvalid(Jacobian)) return 0.f;
 
     // assuming BSDF sampling
-    assert(kUseBSDFSampling);
+    //assert(kUseBSDFSampling);
 
     uint allowedSampledTypes1 = getAllowedBSDFFlags(srcReservoir.pathFlags.decodeIsSpecularBounce(true));
 
@@ -376,7 +368,7 @@ float3 computeShiftedIntegrandReconnection(const RestirPathTracerParams params, 
 
     int rcVertexLength = !useHybridShift ? 1 : srcReservoir.pathFlags.rcVertexLength();
 
-    HitInfo rcVertexHit = srcReservoir.rcVertexHit.getHitInfo();
+    HitInfo rcVertexHit = srcReservoir.rcVertexHit;
     float3 rcVertexIrradiance = srcReservoir.rcVertexIrradiance[0];
     float3 rcVertexWi = srcReservoir.rcVertexWi[0];
     bool rcVertexHitExists = rcVertexHit.isValid();
@@ -458,7 +450,7 @@ float3 computeShiftedIntegrandReconnection(const RestirPathTracerParams params, 
     if (isJacobianInvalid(Jacobian)) return 0.f;
 
     // assuming BSDF sampling
-    assert(kUseBSDFSampling);
+    //assert(kUseBSDFSampling);
 
     // assuming bsdf sampling
     float dstPDF1All = 0.f;
@@ -559,8 +551,8 @@ float3 computeShiftedIntegrandReconnection(const RestirPathTracerParams params, 
 }
 
 
-bool shiftAndMergeReservoir(const RestirPathTracerParams params, bool temporalUpdateForDynamicScene, inout float dstJacobian, const PackedHitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd, inout PathReservoir dstReservoir,
-                                    const ShadingData srcPrimarySd, const PathReservoir srcReservoir, ReconnectionData rcData, bool evalVisibility, inout SampleGenerator sg, bool isSpatialReuse, float misWeight = 1.f, bool forceMerge = false)
+bool shiftAndMergeReservoir(const RestirPathTracerParams params, bool temporalUpdateForDynamicScene, inout float dstJacobian, const HitInfo dstPrimaryHitPacked, const ShadingData dstPrimarySd, inout PathReservoir dstReservoir,
+                                    const ShadingData srcPrimarySd, const PathReservoir srcReservoir, ReconnectionData rcData, bool evalVisibility, inout S sg, bool isSpatialReuse, float misWeight = 1.f, bool forceMerge = false)
 {
     PathReservoir tempPathReservoir = srcReservoir;
     float3 dstIntegrand = computeShiftedIntegrand_(params, dstJacobian, dstPrimaryHitPacked, dstPrimarySd, srcPrimarySd,
@@ -598,25 +590,24 @@ bool shiftAndMergeReservoir(const RestirPathTracerParams params, bool temporalUp
     }
 }
 
-bool mergeReservoirNoResampling(const RestirPathTracerParams params, inout PathReservoir dstReservoir, const PathReservoir srcReservoir, inout SampleGenerator sg)
+bool mergeReservoirNoResampling(const RestirPathTracerParams params, inout PathReservoir dstReservoir, const PathReservoir srcReservoir, inout S sg)
 {
     bool selected = dstReservoir.merge(srcReservoir.F, 1.f, srcReservoir, sg, 1.f);
     return selected;
 }
 
-bool mergeReservoirWithResamplingMIS(const RestirPathTracerParams params, float3 dstIntegrand, float dstJacobian, inout PathReservoir dstReservoir, const PathReservoir tempDstReservoir, const PathReservoir srcReservoir, inout SampleGenerator sg, bool isSpatialReuse, float misWeight = 1.f)
+bool mergeReservoirWithResamplingMIS(const RestirPathTracerParams params, float3 dstIntegrand, float dstJacobian, inout PathReservoir dstReservoir, const PathReservoir tempDstReservoir, const PathReservoir srcReservoir, inout S sg, bool isSpatialReuse, float misWeight = 1.f)
 {
     bool selected = dstReservoir.mergeWithResamplingMIS(dstIntegrand, dstJacobian, tempDstReservoir, sg, misWeight);
     return selected;
 }
 
-bool mergeReservoir(const RestirPathTracerParams params, float3 dstIntegrand, float dstJacobian, inout PathReservoir dstReservoir, const PathReservoir tempDstReservoir, const PathReservoir srcReservoir, inout SampleGenerator sg, bool isSpatialReuse, float misWeight = 1.f)
+bool mergeReservoir(const RestirPathTracerParams params, float3 dstIntegrand, float dstJacobian, inout PathReservoir dstReservoir, const PathReservoir tempDstReservoir, const PathReservoir srcReservoir, inout S sg, bool isSpatialReuse, float misWeight = 1.f)
 {
     bool selected = dstReservoir.merge(dstIntegrand, dstJacobian, tempDstReservoir, sg, misWeight);
     return selected;
 }
-
-/// Evaluates the visibility term to the reconnection vertex from the source vertex.
+//POSSIBLE SOURCE OF ERROR
 bool evalSegmentVisibility(const float3 sourceVertex, const float3 targetVertex, bool isDirection = false)
 {
     float3 dir;
@@ -634,15 +625,11 @@ bool evalSegmentVisibility(const float3 sourceVertex, const float3 targetVertex,
         tMax *= 0.999f; // prevent intersection with another surface
     }
 
-    RayDesc ray = { sourceVertex, 0.f, dir, tMax }; // TODO: use offset position instead
-
-    SceneRayQuery<kUseAlphaTest> sceneRayQuery;
-    return sceneRayQuery.traceVisibilityRay(ray, RAY_FLAG_NONE, 0xff);
+    Ray ray = Ray(sourceVertex, 0.f, dir, tMax); // TODO: use offset position instead
+    return gPathTracer.traceVisibilityRay(ray);
 }
 
 bool traceVisibilityRay(const Ray ray)
 {
-    SceneRayQuery<kUseAlphaTest> sceneRayQuery;
-    return sceneRayQuery.traceVisibilityRay(ray.toRayDesc(), RAY_FLAG_NONE, 0xff);
+    return gPathTracer.traceVisibilityRay(ray);
 }
-

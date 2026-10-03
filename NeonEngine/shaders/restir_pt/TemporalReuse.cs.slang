@@ -13,12 +13,12 @@ import PathTracer;
 //import Utils.Math.Ray;
 import LoadShadingData;
 //import Rendering.Materials.MaterialShading;
-
+import StaticParams;
 /** TODO.
 */
 struct PathReusePass
 {
-    static const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
+    static const uint kNeighborOffsetCount = 8192;
     static const uint kNeighborOffsetMask = kNeighborOffsetCount - 1;
 
     // Resources
@@ -52,31 +52,46 @@ struct PathReusePass
 
     bool isValidScreenRegion(int2 pixel) { return all(pixel >= 0 && pixel < params.frameDim); }
 
-    ShadingData getPixelShadingData(int2 pixel, out HitInfo PrimaryHitPacked)
+  ShadingData getPixelShadingData(int2 pixel, out HitInfo PrimaryHitPacked)
     {
         ShadingData sd = {};
         Ray ray = computeRayPinhole(pixel, params.frameDim);
-        PrimaryHitPacked = vbuffer[pixel];
-        if (IsValidHitInfo(PrimaryHitPacked))
+        float4 temp = vbuffer[pixel];
+
+        PrimaryHitPacked.misc1.x = temp.x;
+        PrimaryHitPacked.misc1.y = temp.y;
+        PrimaryHitPacked.misc1.z = temp.z;
+        PrimaryHitPacked.misc1.w = temp.w;
+
+        if (isValidHitInfo(PrimaryHitPacked))
         {
-            HitInfo PrimaryHit; PrimaryHit.unpack(PrimaryHitPacked);
+            HitInfo PrimaryHit = PrimaryHitPacked;
             sd = loadShadingData(PrimaryHit, -ray.dir, true);
         }
         return sd;
     }
 
-    ShadingData getPixelTemporalShadingData(int2 pixel, out HitInfo PrimaryHit)
+    
+    //TODO: why is this defined multiple times?
+
+    ShadingData getPixelTemporalShadingData(int2 pixel, out HitInfo PrimaryHitPacked)
     {
         ShadingData sd = {};
         Ray ray = computeRayPinholePrevFrame(pixel, params.frameDim);
-        PrimaryHit = temporalVbuffer[pixel];
-        if (IsValidHitInfo(PrimaryHit))
+        float4 temp = temporalVbuffer[pixel];
+
+        PrimaryHitPacked.misc1.x = temp.x;
+        PrimaryHitPacked.misc1.y = temp.y;
+        PrimaryHitPacked.misc1.z = temp.z;
+        PrimaryHitPacked.misc1.w = temp.w;
+
+        if (isValidHitInfo(PrimaryHitPacked))
         {
+            HitInfo PrimaryHit = PrimaryHitPacked;
             sd = loadShadingData(PrimaryHit, -ray.dir, true);
         }
         return sd;
     }
-
     /*
     * Build a reservoir of paths whose suffix can be merged to a pixel's prefix.
     * This method is optimized for small windows such that we can run the entire
@@ -84,7 +99,7 @@ struct PathReusePass
     */
     void ReSTIR(const uint2 pixel)
     {
-        var sg = S(pixel, (kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples);
+        S sg = S( (kCandidateSamples + 1 + gNumSpatialRounds) * params.seed + kCandidateSamples);
 
         // Compute offset into per-sample buffers. All samples are stored consecutively at this offset.
         const uint centralOffset = params.getReservoirOffset(pixel);
@@ -104,7 +119,7 @@ struct PathReusePass
 
         HitInfo centralPrimaryHitPacked;
         ShadingData centralPrimarySd = getPixelShadingData(pixel, centralPrimaryHitPacked);
-        if (!IsValidHitInfo(centralPrimaryHitPacked)) return;
+        if (!isValidHitInfo(centralPrimaryHitPacked)) return;
 
         float3 color = 0.f;
         ReconnectionData dummyRcData;
@@ -130,7 +145,7 @@ struct PathReusePass
 
             HitInfo temporalPrimaryHitPacked;
             ShadingData temporalPrimarySd = getPixelTemporalShadingData(prevPixel, temporalPrimaryHitPacked);
-            if (!IsValidHitInfo(temporalPrimaryHitPacked)) return;
+            if (!isValidHitInfo(temporalPrimaryHitPacked)) return;
 
             bool doTemporalUpdateForDynamicScene = kTemporalUpdateForDynamicScene;
 
@@ -321,8 +336,8 @@ struct PathReusePass
 
         if (any(pixel >= params.frameDim)) return;
 
-        printSetPixel(pixel);
-        logSetPixel(pixel);
+        //printSetPixel(pixel);
+        //logSetPixel(pixel);
 
         ReSTIR(pixel);
     }

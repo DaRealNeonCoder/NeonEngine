@@ -1,12 +1,13 @@
 /***************************************************************************
  # Copyright (c) 2022, Daqi Lin.  All rights reserved.
  **************************************************************************/
-import Scene.Raytracing;
-import Utils.Debug.PixelDebug;
-import Rendering.Utils.PixelStats;
+//import Scene.Raytracing;
+//import Utils.Debug.PixelDebug;
+//import Rendering.Utils.PixelStats;
 import PathTracer;
 import PathState;
 import Params;
+import StaticParams;
 import PathReservoir;
 
 ParameterBlock<PathTracer> gPathTracer;
@@ -21,8 +22,8 @@ void tracePath(uint pathID, inout PathReservoir giReservoir, uint sampleIdx)
     PathState path;
     gPathTracer.generatePath(pathID, path);
 
-    printSetPixel(path.getPixel());
-    logSetPixel(path.getPixel());
+ //   printSetPixel(path.getPixel());
+//    logSetPixel(path.getPixel());
 
     while (path.isActive())
     {

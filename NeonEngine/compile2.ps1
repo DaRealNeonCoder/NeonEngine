@@ -1,5 +1,5 @@
 $SLANGC = "C:\VulkanSDK\1.4.328.1\Bin\slangc.exe"
-$SHADER_DIR = "C:\Users\ZyBros\Downloads\NeonEngine\NeonEngine\shaders\restir_pt"
+$SHADER_DIR = "C:\Users\ZyBros\Downloads\NeonEngine\NeonEngine\shaders"
 
 Write-Host "Compiling updated Slang shaders..."
 

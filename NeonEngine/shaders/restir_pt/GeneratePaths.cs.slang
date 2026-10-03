@@ -154,10 +154,10 @@ struct PathGenerator
     {
         // Evaluate background color for the current pixel.
         float3 color = float3(0.f);
-        if (kUseEnvBackground)
+        /*if (kUseEnvBackground)
         {
             color = gScene.envMap.eval(dir);
-        }
+        }*/
 
         // Write color and denoising guide data for all samples in pixel.
         // For the special case of fixed 1 spp we write the color directly to the output texture.
@@ -166,16 +166,16 @@ struct PathGenerator
         }
     }
 };
-Ray computeRayPinhole(uvec2 pixel, uvec2 frameDim)
+Ray computeRayPinhole(uint2 pixel, uint2 frameDim)
 {
     Ray ray;
 
     // Compute the normalized ray direction assuming a pinhole camera.
     ray.origin = params.posW;
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(frameDim);
-    vec2 ndc = uv * 2.0 - 1.0;
+    float2 uv = (float2(pixel) + 0.5) / float2(frameDim);
+    float2 ndc = uv * 2.0 - 1.0;
 
-    ray.dir = normalize(vec3(ndc, 1.0));
+    ray.dir = normalize(float3(ndc, 1.0));
 
     float invCos = 1.f / dot(normalize(params.cameraW), ray.dir);
     ray.tMin = params.nearZ * invCos;
@@ -197,4 +197,14 @@ void main(
     uint3 groupThreadID : SV_GroupThreadID)
 {
     gPathGenerator.execute(groupID.xy, groupThreadID.x);
+}
+
+uint2 deinterleave_8bit(uint i)
+{
+    uint j = ((i >> 1) << 8) | i;           // j = ---- ---- ---- ---- -(i >> 1) (   i   )
+    j &= 0x00005555;                        // j = ---- ---- ---- ---- -7-6 -5-4 -3-2 -1-0
+    j = (j ^ (j >> 1)) & 0x33333333;        // j = ---- ---- ---- ---- --76 --54 --32 --10
+    j = (j ^ (j >> 2)) & 0x0f0f0f0f;        // j = ---- ---- ---- ---- ---- 7654 ---- 3210
+    return uint2(j & 0xf, j >> 8);          // x = ---- ---- ---- ---- ---- ---- ---- 3210
+                                            // y = ---- ---- ---- ---- ---- ---- ---- 7654
 }

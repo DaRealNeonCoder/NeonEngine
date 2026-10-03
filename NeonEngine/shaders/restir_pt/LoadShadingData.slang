@@ -445,3 +445,13 @@ struct StaticVertexData
     float4 tangent;     ///< Shading tangent. The bitangent is computed: cross(normal, tangent.xyz) * tangent.w. NOTE: The tangent is *only* valid when tangent.w != 0.
     float2 texCrd;      ///< Texture coordinates.
 };
+ShadingData loadShadingDataWithPrevVertexPosition(const HitInfo hit, const float3 prevVertexPosition, const bool isPrimary, const float lod = 0.f)
+{
+    float curveSphereRadius = {};
+    uint materialID = {};
+    VertexData v = loadVertexData(hit, float3(0.f), materialID, curveSphereRadius);
+    float3 viewDir = normalize(prevVertexPosition - v.posW);
+    ShadingData sd = prepareShadingData(v, materialID, materials[materialID], viewDir);
+    adjustShadingData(sd, hit, curveSphereRadius, v, isPrimary);
+    return sd;
+}

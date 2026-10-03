@@ -8,10 +8,9 @@ import PathReservoir;
 //__exported import Utils.Sampling.SampleGenerator;
 //import Rendering.Materials.InteriorListHelpers;
 import Params;
-
+import StaticParams;
 static const uint kMaxRejectedHits = 16; // Maximum number of rejected hits along a path. The path is terminated if the limit is reached to avoid getting stuck in pathological cases.
 
-static const float kRayTMax = 1e30f;
 
 /** Path flags. The path flags are currently stored in a uint16_t.
 */

@@ -8,7 +8,7 @@
 /*
 import Scene.RaytracingInline;
 import Rendering.Lights.EnvMapSampler;
-import Rendering.Lights.EmissiveLightSampler;
+
 import Rendering.Lights.EmissiveLightSamplerHelpers;
 import Rendering.Lights.LightHelpers;
 import Rendering.Materials.StandardMaterial;
@@ -34,8 +34,12 @@ import PathReservoir;
 import PathState;
 import StaticParams;
 import Params;
-#define M_PI                3.14159265358979323846  // pi
+import EmissiveLightSampler;
 
+#define M_PI                3.14159265358979323846  // pi
+#define M_1_PI              0.318309886183790671538 // 1/pi
+#define M_PI_4              0.785398163397448309616 // pi/4
+#define M_PI_2              1.57079632679489661923  // pi/2
 //#include "Utils/Math/MathConstants.slangh"
 
 //__exported import PathState;
@@ -46,12 +50,14 @@ uint getAllowedBSDFFlags(bool isSpecularBounce)
     if (kSeparatePathBSDF) return isSpecularBounce ? 0xc : 0x3;
     else return -1;
 }
+static const float kMinCosTheta = 1e-6f;
+static const float kNRDInvalidPathLength = 6.5504e+4F;
 
 struct PathTracer
 {
     RestirPathTracerParams params;                  ///< Runtime parameters.
  //   EnvMapSampler envMapSampler;                    ///< Environment map sampler. Only valid when kUseEnvLight == true.
-    //EmissiveLightSampler emissiveSampler;           ///< Emissive light sampler. Only valid when kUseEmissiveLights == true.
+    EmissiveLightSampler emissiveSampler;           ///< Emissive light sampler. Only valid when kUseEmissiveLights == true.
 
     //float4 = hitInfo
     Texture2D<float4> vbuffer;               ///< Fullscreen V-buffer for the primary hits.
@@ -84,13 +90,12 @@ struct PathTracer
     bool kUseEnvLight = false;//for now
     bool kUseEmissiveLights;
     bool kUseAnalyticLights = false;
+    bool kUseMIS = false;
+
     bool kUseBSDFSampling = true;
     // Minimum cos(theta) for the incident and outgoing vectors.
     // Some BSDF functions are not robust for cos(theta) == 0.0,
     // so using a small epsilon for consistency.
-    // TODO: Move into IBxDF if possible
-    static const float kMinCosTheta = 1e-6f;
-    static const float kNRDInvalidPathLength = 6.5504e+4F;
 
     // Additional specialization.
     static const bool kOutputTime = false;//POSSIBLE SOURCE OF ERROR
@@ -115,7 +120,7 @@ struct PathTracer
         float3  dir;        ///< Ray direction for visibility evaluation (normalized).
         uint    lightType;  ///< Light type this sample comes from (LightSampleType casted to uint).
 
-        Ray getVisibilityRay() { return Ray(origin, dir, 0.f, distance); }
+        Ray getVisibilityRay() { return Ray(origin, 0.f, dir, distance); }
     };
 
     /** Describes a path vertex.
@@ -296,8 +301,8 @@ struct PathTracer
     */
     bool generateScatterRay(const ShadingData sd, inout PathState path)
     {
-        bool isCurveHit = path.hit.getType() == HitType::Curve;
-
+//        bool isCurveHit = path.hit.getType() == HitType::Curve;
+bool isCurveHit = false;
         // Generate a BSDF sample.
         bool valid;
         BSDFSample_ result;
@@ -352,11 +357,11 @@ struct PathTracer
                 {
                     path.incrementBounces(BounceType::Diffuse);
                 }
-                else
+                /*else
                 {
                     path.incrementBounces(BounceType::Specular);
                     path.setSpecular();
-                }
+                }*/
             }
 
             // Handle delta events.
@@ -365,11 +370,11 @@ struct PathTracer
                 path.setDelta();
             }
 
-            if (result.isLobe(LobeType::SpecularOrDelta))
+          /*  if (result.isLobe(LobeType::SpecularOrDelta))
             {
                 path.setSpecularBounce();
             }
-
+*/
             // daqi: record delta and transmission event before/after rcVertex, this is important because such information will be used in computing the Jacobian in shift.slang
             if (path.length == path.pathBuilder.rcVertexLength)
             {
@@ -380,22 +385,7 @@ struct PathTracer
             }
 
             // Handle transmission events.
-            if (result.isLobe(LobeType::Transmission))
-            {
-                path.incrementBounces(BounceType::Transmission);
-                path.setTransmission();
-
-                // Compute ray origin for next ray segment.
-                path.origin = sd.computeNewRayOrigin(false);
-
-                // Update interior list and inside volume flag.
-                if (!sd.isThinSurface())
-                {
-                    uint nestedPriority = materials[sd.materialID].getNestedPriority();
-                    path.interiorList.handleIntersection(sd.materialID, nestedPriority, sd.frontFacing);
-                    path.setInsideDielectricVolume(!path.interiorList.isEmpty());
-                }
-            }
+           
 
             // Save the shading normal. This is needed for MIS.
             path.normal = sd.N;
@@ -491,26 +481,12 @@ struct PathTracer
 
             // daqi: set delta/transmission path flags. we don't care about other path flags since our resampling doesn't depend on the sampled BSDF components
             // Handle transmission events.
-            if (isTransmissionEvent)
-            {
-                // Compute ray origin for next ray segment.
-                path.origin = sd.computeNewRayOrigin(false);
-                path.setTransmission();
 
-                // Update interior list and inside volume flag.
-                if (!sd.isThinSurface())
-                {
-                    uint nestedPriority = materials[sd.materialID].getNestedPriority();
-                    path.interiorList.handleIntersection(sd.materialID, nestedPriority, sd.frontFacing);
-                    path.setInsideDielectricVolume(!path.interiorList.isEmpty());
-                }
-            }
-
-            if (isSpecularBounce)
+           /* if (isSpecularBounce)
             {
                 path.setSpecularBounce();
             }
-
+*/
             // Save the shading normal. This is needed for MIS.
             path.normal = sd.N;
 
@@ -574,26 +550,7 @@ struct PathTracer
         \param[out] ls Struct describing valid samples.
         \return True if the sample is valid and has nonzero contribution, false otherwise.
     */
-    bool generateEnvMapSample(const PathVertex vertex, inout S sg, out LightSample ls)
-    {
-        ls = {}; // Default initialization to avoid divergence at returns.
-
-        if (!kUseEnvLight) return false;
-
-       /* // Sample environment map.
-        EnvMapSample lightSample;
-        if (!envMapSampler.sample(sampleNext2D(sg), lightSample)) return false;
-
-        // Setup returned sample.
-        ls.Li = lightSample.pdf > 0.f ? lightSample.Le / lightSample.pdf : float3(0);
-        ls.pdf = lightSample.pdf;
-        ls.origin = vertex.getRayOrigin(lightSample.dir);
-        ls.distance = kRayTMax;
-        ls.dir = lightSample.dir;
-
-        return any(ls.Li > 0.f);
-*/
-    }
+    
 
     /** Generates a light sample on the emissive geometry.
         \param[in] vertex Path vertex.
@@ -704,10 +661,6 @@ struct PathTracer
         if (!selectLightType(lightType, selectionPdf, sg)) return false;
 
         bool valid = false;
-        if (kUseEnvLight && lightType == (uint)LightSampleType::EnvMap)
-        {
-            valid = generateEnvMapSample(vertex, sg, ls);
-        }
         if (kUseEmissiveLights && lightType == (uint)LightSampleType::Emissive)
         {
             // Emissive light samplers have an option to exclusively sample the upper hemisphere.
@@ -742,15 +695,10 @@ struct PathTracer
         if (!selectLightType(lightType, selectionPdf, sg)) return;
 
         bool valid = false;
-        if (kUseEnvLight && lightType == (uint)LightSampleType::EnvMap)
-        {
-            if (!kUseEnvLight) valid = false;
-            else sampleNext2D(sg);
-        }
         if (kUseEmissiveLights && lightType == (uint)LightSampleType::Emissive)
         {
             if (!kUseEmissiveLights) valid = false;
-            else emissiveSampler.skipRandomNumber(sg);
+             else emissiveSampler.skipRandomNumber(sg);// this does nothing? //POSSIBLE SOURCE OF ERROR
         }
         
     }
@@ -760,16 +708,16 @@ struct PathTracer
     */
     void nextVertex(inout PathState path)
     {
-        // Setup ray.
         RayDesc ray = path.getScatterRay();
 
-        //logTraceRay(PixelStatsRayType::ClosestHit);
-        HitInfo hit;
-        float hitT;
-        SceneRayQuery<kUseAlphaTest> sceneRayQuery;
-        if (sceneRayQuery.traceRay(ray, hit, hitT, RAY_FLAG_NONE, 0xff))
+        uint instanceID, primitiveIndex;
+        float2 bary; float hitT;
+        bool didHit = traceClosestHit(ray, instanceID, primitiveIndex, bary, hitT);
+
+        if (didHit)
         {
-            // Store hit info.
+            HitInfo hit;
+            fromRaw(hit, instanceID, primitiveIndex, bary); // you write this constructor
             path.setHit(hit);
             path.length++;
             path.sceneLength += float16_t(hitT);
@@ -781,16 +729,19 @@ struct PathTracer
         }
     }
 
-    /** Trace a visibility ray to evaluate light visibility.
-        \param[in] ray Visibility ray.
-        \return true if the light is visible, false if occluded.
-    */
     bool traceVisibilityRay(const Ray ray)
     {
-        // TODO rename to PixelStatsRayType::Visibility
-        //logTraceRay(PixelStatsRayType::Shadow);
-        SceneRayQuery<kUseAlphaTest> sceneRayQuery;
-        return sceneRayQuery.traceVisibilityRay(ray.toRayDesc(), RAY_FLAG_NONE, 0xff);
+        RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+        q.TraceRayInline(gRtScene, RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                        0xff, toRayDesc(ray));
+
+        while (q.Proceed())
+        {
+            if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+                q.CommitNonOpaqueTriangleHit(); // alpha test here too, if you need it
+        }
+
+        return q.CommittedStatus() != COMMITTED_TRIANGLE_HIT; // true = visible (nothing occluding)
     }
 
     /** Handle scattering in homogeneous volumes.
@@ -801,40 +752,7 @@ struct PathTracer
     /** Handle hits on dielectrics.
         \return True if this is an valid intersection, false if it is rejected.
     */
-    bool handleNestedDielectrics(inout ShadingData sd, inout PathState path)
-    {
-        // Compute relative index of refraction at interface.
-        sd.eta = computeRelativeIoR(path.interiorList, sd.materialID, sd.frontFacing);
-
-        // Check for false intersections.
-        uint nestedPriority = materials[sd.materialID].getNestedPriority();
-        if (!path.interiorList.isTrueIntersection(nestedPriority))
-        {
-            if (path.rejectedHits < kMaxRejectedHits)
-            {
-                path.rejectedHits++;
-                path.interiorList.handleIntersection(sd.materialID, nestedPriority, sd.frontFacing);
-                path.origin = sd.computeNewRayOrigin(false);
-                path.length--;
-            }
-            else
-            {
-                path.terminate();
-            }
-            return false;
-        }
-
-        // Limit specular transmission paths.
-        if (kLimitTransmission && sd.specularTransmission > 0.f)
-        {
-            const uint transmissionBounces = path.getBounces(BounceType::Transmission);
-            if (transmissionBounces >= kMaxTransmissionReflectionDepth) sd.setActiveLobes((uint)LobeType::All & ~((uint)LobeType::DeltaReflection | (uint)LobeType::SpecularReflection));
-            if (transmissionBounces >= kMaxTransmissionRefractionDepth) sd.eta = 1.f;
-        }
-
-        return true;
-    }
-
+  
     /** Apply russian roulette to terminate paths early.
         \param[in,out] path Path.
         \return Returns true if path was terminated.
@@ -894,31 +812,18 @@ struct PathTracer
         // - Sample light(s) using shadow rays
         // - Sample scatter ray or terminate
 
-        HitInfo th = path.hit.getHitInfo();
+        HitInfo th = path.hit;
 
-        bool isCurveHit = path.hit.getType() == HitType::Curve;
+        bool isCurveHit = false;
 
         // Load vertex/material attributes. This is a long latency operation.
-        ShadingData sd;
-
-        if (kPrimaryLodMode == TexLODMode::RayDiffs && path.length == 0 && path.hit.getType() == HitType::Triangle)
-        {
-            // Filtered lookups at primary hit
-            float2 ddx, ddy;
-            computeDerivativesAtPrimaryHitInfo(path.hit.getHitInfo(), path.getPixel(), params.frameDim, ddx, ddy);
-            sd = loadShadingDataFootprint(path.hit, -path.dir, true, ddx, ddy);
-        }
-        else
-        {
-            float lod = path.length > 0 ? params.lodBias : 0.f;
-            sd = loadShadingData(path.hit, -path.dir, path.length == 0, lod);
-        }
+ShadingData sd = loadShadingData(path.hit, -path.dir, path.length == 0, 0.f);
+       
 
         // Reject false hits in nested dielectrics.
 
        // if (handleHomogeneousVolumeExtinction(path, sd)) return;
 
-        if (!handleNestedDielectrics(sd, path)) return;
 
         //logPathVertex(); POSSIBLE SOURCE OF ERROR
 
@@ -969,14 +874,14 @@ struct PathTracer
                 // Prepare hit point struct with data needed for emissive light PDF evaluation.
                 HitInfo hitInfo = path.hit;
                 TriangleLightHit hit;
-                hit.triangleIndex = hitInfo.primitiveIndex;
+                hit.triangleIndex = hitInfo.misc1.z;
                 hit.posW = sd.posW;
                 hit.normalW = sd.frontFacing ? sd.faceN : -sd.faceN;
 
                 // Evaluate PDF at the hit, had it been generated with light sampling.
                 // Emissive light samplers have an option to exclusively sample the upper hemisphere.
                 bool upperHemisphere = path.isLightSampledUpper() && !path.isLightSampledLower();
-                lightPdf = getEmissiveSelectionProbability() * emissiveSampler.evalPdf(path.origin, path.normal, upperHemisphere, hit);
+                lightPdf = getEmissiveSelectionProbability() * emissiveSampler.evalPdf(path.origin, path.normal, upperHemisphere, hit);//POSSIBLE SOURCE OF ERROR
 
                 // Compute MIS weight by combining this with BRDF sampling.
                 // Note we can assume path.pdf > 0.f since we shouldn't have got here otherwise.
@@ -1079,8 +984,8 @@ struct PathTracer
         bool is_rcVertex = false;
 
         bool isFarField = length(path.origin - prevPathOrigin) >= params.nearFieldDistance;
-        bool isCurrentVertexClassifiedAsRough =false
-            // = kSeparatePathBSDF ? hasRoughComponent(sd, params.specularRoughnessThreshold) : classifyAsRough(sd, params.specularRoughnessThreshold);
+        bool isCurrentVertexClassifiedAsRough 
+             = kSeparatePathBSDF ? hasRoughComponent(sd, params.specularRoughnessThreshold) : classifyAsRough(sd, params.specularRoughnessThreshold);
         bool isLastVertexAcceptableForRcPrev = path.isLastVertexClassifiedAsRough;
 
         // daqi: if we are not doing a hybrid shift replay, we should check if current vertex satisfy the condition to be used as a rcVertex
@@ -1317,7 +1222,7 @@ struct PathTracer
         bool valid = generateScatterRay(sd, path);
 
         // forbid current vertex being rcVertex
-        if (kSeparatePathBSDF && params.localStrategyType & (uint)LocalStrategy::RoughnessCondition)
+        if (kSeparatePathBSDF && (params.localStrategyType & (uint)LocalStrategy::RoughnessCondition != 0))
         {
             bool seenAsConnectible = !path.isSpecularBounce() || sd.linearRoughness > params.specularRoughnessThreshold;
 
@@ -1366,7 +1271,7 @@ struct PathTracer
         if (kUseNEE && !kUseMIS && isLastVertex && path.isLightSamplable()) valid = false;
 
         // Terminate caustics paths.
-        if (kDisableCaustics && path.getBounces(BounceType::Diffuse) > 0 && path.isSpecular()) valid = false;
+        //if (kDisableCaustics && path.getBounces(BounceType::Diffuse) > 0 && path.isSpecular()) valid = false;
 
         if (!valid)
         {
@@ -1379,95 +1284,6 @@ struct PathTracer
     */
     void handleMiss(inout PathState path)
     {
-        // Upon miss:
-        // - Compute MIS weight if previous path vertex sampled a light
-        // - Evaluate environment map
-        // - Write guiding data
-        // - Terminate the path
-
-        // Check if the scatter event is samplable by the light sampling technique.
-        const bool isLightSamplable = path.isLightSamplable();
-
-        // Add env radiance.
-        bool computeEnv = kUseEnvLight && (!kUseNEE || kUseMIS || !path.isLightSampled() || !isLightSamplable);
-
-        // Disable all constributions to direct illumination if requested.
-        if (kDisableDirectIllumination && path.length == 0 && isLightSamplable) computeEnv = false;
-
-        if (computeEnv)
-        {
-            //logPathVertex();
-
-            float misWeight = 1.f;
-            float lightPdf = 0.f;
-            if (kUseNEE && kUseMIS && path.isLightSampled() && isLightSamplable)
-            {
-                // If NEE and MIS are enabled, and we've already sampled the env map,
-                // then we need to evaluate the MIS weight here to account for the remaining contribution.
-
-                // Evaluate PDF, had it been generated with light sampling.
-                lightPdf = getEnvMapSelectionProbability() * envMapSampler.evalPdf(path.dir);
-
-                // Compute MIS weight by combining this with BRDF sampling.
-                // Note we can assume path.pdf > 0.f since we shouldn't have got here otherwise.
-                misWeight = evalMIS(1, path.pdf, 1, lightPdf);
-            }
-
-            float3 Le = envMapSampler.eval(path.dir);
-            float3 Lr = path.getCurrentThp() * Le * misWeight;
-
-            // daqi: when doing random number replay, we will terminate the path when the length reaches the base path length and 
-            // when the path types match. In this case, if the base path is a escaped path (as opposed to an NEE path), we should terminate when we 
-            // find that offset path can also be an escaped path
-            bool terminateRandomReplayForEscape = path.enableRandomReplay && path.length == path.randomReplayLength && path.randomReplayIsEscaped
-                && path.length >= 1;
-
-            // daqi: Since ScreenSpaceReSTIR cannot handle transmission and delta reflection, we must include the contribution in the color buffer 
-            if (!path.enableRandomReplay || terminateRandomReplayForEscape)
-            {
-                if (!kDisableDirectIllumination || path.length > 0) path.L += Lr;
-
-                // will change this to path.IsDelta() if ScreenSpaceReSTIR can handle transmission
-                if (!isLightSamplable && path.length == 0) path.LDeltaDirect += Lr;
-            }
-
-            // daqi: here we are adding the path terminated with an escaped vertex
-            if ((!path.enableRandomReplay || terminateRandomReplayForEscape) && PathSamplingMode(kPathSamplingMode) != PathSamplingMode::PathTracing)
-            {
-                if (path.length > path.pathBuilder.rcVertexLength)
-                {
-                    path.rcVertexPathTreeIrradiance += path.thp * Le * misWeight;
-                }
-                bool selectedCurrentPath = path.pathBuilder.addEscapeVertex(params, path.length, path.dir, Lr, 
-                    path.length == path.pathBuilder.rcVertexLength ? path.thp * Le * misWeight : path.rcVertexPathTreeIrradiance,
-                    path.useHybridShift, path.russianRoulettePdf, misWeight, lightPdf, (uint)LightSampleType::EnvMap, path.pathReservoir, path.enableRandomReplay);
-//#else !BPR
-  //              bool selectedCurrentPath = path.pathBuilder.addEscapeVertex(params, path.length, path.dir, Lr, path.thp * Le * misWeight, 
-    //                path.useHybridShift, path.russianRoulettePdf, misWeight, lightPdf, (uint)LightSampleType::EnvMap, path.pathReservoir, path.enableRandomReplay);
-                // daqi: if current escaped vertex has path.length >= 2, then it can be used as a rcVertex
-                if (selectedCurrentPath && path.useHybridShift && path.length >= 1 && path.length + 1 < path.pathBuilder.rcVertexLength)
-                {
-                    bool isLastVertexAcceptableForRcPrev = path.isLastVertexClassifiedAsRough;
-
-                    // daqi: in the case of escaped to infinitely far, we always satisfy the far field requirement
-                    if (!(params.localStrategyType & (uint)LocalStrategy::RoughnessCondition && !isLastVertexAcceptableForRcPrev))
-                    {
-                        if (path.isReplayForHybridShift) // non-invertible case 
-                        {
-                            path.L = 0.f;
-                        }
-                        else
-                        {
-                            // we found an RC vertex!
-                            // set rcVertexLength to current length (this will make rcVertexLength = reseroivr.pathLength + 1)
-                            HitInfo dummyHit = HitInfo();
-                            path.pathBuilder.markEscapeVertexAsRcVertex(params, path.length + 1, path.pathReservoir, dummyHit, path.isDelta(), path.isTransmission(), path.isSpecularBounce(), lightPdf, (uint)LightSampleType::EnvMap, Le, path.dir, path.prevScatterPdf, 1.f);
-                        }
-                    }
-                }
-            }
-        }
-
         path.terminate();
     }
 
@@ -1591,7 +1407,7 @@ struct PathTracer
     void traceTemporalUpdate(ShadingData rcPrevSd, inout PathReservoir tempPathReservoir)
     {
         int rcVertexLength = tempPathReservoir.pathFlags.rcVertexLength();
-        ShadingData rcVertexSd = loadShadingDataWithPrevVertexPosition(tempPathReservoir.rcVertexHit.getHitInfo(), rcPrevSd.posW, false);
+        ShadingData rcVertexSd = loadShadingDataWithPrevVertexPosition(tempPathReservoir.rcVertexHit, rcPrevSd.posW, false);
         PathState path;
 
         //rcVertex is NEE
@@ -1639,11 +1455,11 @@ struct PathTracer
         }
         else
         {
-            Ray emptyRay = Ray(float3(0.f), float3(0.f), 0.f, kRayTMax);
+            Ray emptyRay = Ray(float3(0.f),  0.f, float3(0.f), kRayTMax);
 
             // should always be false in this case
             bool isRcVertexEscapedVertex = false;
-            generateRandomReplayPath(path, tempPathReservoir.rcVertexHit.getHitInfo(), emptyRay, tempPathReservoir.rcRandomSeed, tempPathReservoir.pathFlags.pathLength(), tempPathReservoir.pathFlags.lastVertexNEE(), isRcVertexEscapedVertex);
+            generateRandomReplayPath(path, tempPathReservoir.rcVertexHit, emptyRay, tempPathReservoir.rcRandomSeed, tempPathReservoir.pathFlags.pathLength(), tempPathReservoir.pathFlags.lastVertexNEE(), isRcVertexEscapedVertex);
             path.length = rcVertexLength;
             path.useHybridShift = false;
             path.isReplayForHybridShift = false;
@@ -1875,96 +1691,6 @@ float3 evalBSDFCosine(const ShadingData sd, float3 L, uint allowedSampledFlags=-
 }
 
 
-//POSSIBLE SOURCE OF ERROR
-float3 eval(float3 wo, float3 wi)
-    {
-        if (min(wo.z, wi.z) < kMinCosTheta) return float3(0.f);
-
-        return M_1_PI * albedo * wi.z;
-    }
-
-[mutating] void setup(const ShadingData sd)
-    {
-        // Use square root if we can assume the shaded object is intersected twice.
-        float3 transmissionAlbedo = sd.isThinSurface() ? sd.transmission : sqrt(sd.transmission);
-
-        // Setup lobes.
-        diffuseReflection.albedo = sd.diffuse;
-//#if DiffuseBrdf != DiffuseBrdfLambert
-        diffuseReflection.linearRoughness = sd.linearRoughness;
-//#endif
-        diffuseTransmission.albedo = transmissionAlbedo;
-
-        // Compute GGX alpha.
-        float alpha = sd.linearRoughness * sd.linearRoughness;
-//#if EnableDeltaBSDF
-        // Alpha below min alpha value means using delta reflection/transmission.
-        if (alpha < kMinGGXAlpha) alpha = 0.f;
-//#else
-  //      alpha = max(alpha, kMinGGXAlpha);
-//#endif
-        const uint activeLobes = sd.getActiveLobes();
-
-        specularReflection.albedo = sd.specular;
-        specularReflection.alpha = alpha;
-        specularReflection.activeLobes = activeLobes;
-
-        specularReflectionTransmission.transmissionAlbedo = transmissionAlbedo;
-        // Transmission through rough interface with IoR == 1 is not well defined, switch to delta reflection instead.
-        specularReflectionTransmission.alpha = sd.eta == 1.f ? 0.f : alpha;
-        specularReflectionTransmission.eta = sd.eta;
-        specularReflectionTransmission.activeLobes = activeLobes;
-
-        diffTrans = sd.diffuseTransmission;
-        specTrans = sd.specularTransmission;
-
-        // Compute sampling weights.
-        float metallicBRDF = sd.metallic;
-        float specularBSDF = (1.f - sd.metallic) * specTrans;
-        float dielectricBSDF = (1.f - sd.metallic) * (1.f - specTrans);
-
-        float diffuseWeight = luminance(sd.diffuse);
-        float specularWeight = luminance(evalFresnelSchlick(sd.specular, 1.f, dot(sd.V, sd.N)));
-
-        pDiffuseReflection = (activeLobes & (uint)LobeType::DiffuseReflection) ? diffuseWeight * dielectricBSDF * (1.f - diffTrans) : 0.f;
-        pDiffuseTransmission = (activeLobes & (uint)LobeType::DiffuseTransmission) ? diffuseWeight * dielectricBSDF * diffTrans : 0.f;
-        pSpecularReflection = (activeLobes & ((uint)LobeType::SpecularReflection | (uint)LobeType::DeltaReflection)) ? specularWeight * (metallicBRDF + dielectricBSDF) : 0.f;
-        pSpecularReflectionTransmission = (activeLobes & ((uint)LobeType::SpecularReflection | (uint)LobeType::DeltaReflection | (uint)LobeType::SpecularTransmission | (uint)LobeType::DeltaTransmission)) ? specularBSDF : 0.f;
-
-        float normFactor = pDiffuseReflection + pDiffuseTransmission + pSpecularReflection + pSpecularReflectionTransmission;
-        if (normFactor > 0.f)
-        {
-            normFactor = 1.f / normFactor;
-            pDiffuseReflection *= normFactor;
-            pDiffuseTransmission *= normFactor;
-            pSpecularReflection *= normFactor;
-            pSpecularReflectionTransmission *= normFactor;
-        }
-    }
-
-struct TriangleLightHit
-{
-    uint    triangleIndex;      ///< Index of the triangle.
-    float3  posW;               ///< Sampled point on the triangle in world space.
-    float3  normalW;            ///< Face normal of the triangle in world space, flipped for back-facing hits.
-};
-
-
-/** Describes a light sample on an emissive triangle.
-    If pdf == 0.0 is returned, the sample in invalid and the other fields should not be used.
-*/
-struct TriangleLightSample
-{
-    uint    triangleIndex;      ///< Index of the sampled triangle.
-    float3  posW;               ///< Sampled point on the light source in world space.
-    float3  normalW;            ///< Normal of the sampled point on the light source in world space.
-    float3  dir;                ///< Normalized direction from the shading point to the sampled point on the light source in world space.
-    float   distance;           ///< Distance from the shading point to the sampled point.
-    float3  Le;                 ///< Emitted radiance. This is zero if the light is back-facing or sample is invalid.
-    float   pdf;                ///< Probability density with respect to solid angle from the shading point. The range is [0,inf] (inclusive), where pdf == 0.0 indicated an invalid sample.
-    float2  uv;                 ///< Light sample barycentric coords over the triangle
-};
-
 
 //POSSIBLE SOURCE OF ERROR
 static uint getLobes(const ShadingData sd)
@@ -2005,93 +1731,11 @@ struct PointLightData
     Fills in a TriangleLightSample even though the light isn't a triangle —
     triangleIndex and uv are left at their zero-initialized defaults.
 */
-bool samplePointLight(const float3 posW, uint lightIndex, float2 u, out TriangleLightSample ls)
-{
-    ls = {}; // zeroes triangleIndex and uv along with everything else
-
-    PointLightData light = pointLights[lightIndex];
-    ls.Le = light.intensity.xyz;
-
-    float3 lightCenter = light.posW.xyz;
-    float radius = light.posW.w;
-
-    float3 toCenter = lightCenter - posW;
-    float distToCenter2 = dot(toCenter, toCenter);
-    float distToCenter = sqrt(distToCenter2);
-
-    // Degenerate case: shading point is inside (or on) the sphere.
-    // Fall back to uniform sampling over the whole sphere surface.
-    if (distToCenter <= radius)
-    {
-        float3 localDir = sampleSphereUniform(u); // unit vector, area pdf = 1/(4*pi*r^2)
-        ls.posW = lightCenter + radius * localDir;
-        ls.normalW = localDir;
-        float3 toSample = ls.posW - posW;
-        ls.distance = length(toSample);
-        ls.dir = ls.distance > 0.f ? toSample / ls.distance : float3(0, 0, 1);
-        ls.pdf = 1.f / (4.f * M_PI * radius * radius);
-        return any(ls.Le > 0.f);
-    }
-
-    // Sample a direction inside the cone subtended by the sphere.
-    float sinThetaMax2 = (radius * radius) / distToCenter2;
-    float cosThetaMax = sqrt(max(0.f, 1.f - sinThetaMax2));
-
-    float cosTheta = (1.f - u.x) + u.x * cosThetaMax;
-    float sinTheta2 = max(0.f, 1.f - cosTheta * cosTheta);
-    float phi = u.y * 2.f * M_PI;
-
-    float3 wz = toCenter / distToCenter;
-    float3 wx, wy;
-    coordinateSystem(wz, wx, wy);
-
-    float3 sampleDir = wx * (cos(phi) * sqrt(sinTheta2)) + wy * (sin(phi) * sqrt(sinTheta2)) + wz * cosTheta;
-
-    // Project onto the sphere surface for a consistent point/normal/distance.
-    float ds = distToCenter * cosTheta - sqrt(max(0.f, radius * radius - distToCenter2 * sinTheta2));
-    ls.posW = posW + ds * sampleDir;
-    ls.normalW = normalize(ls.posW - lightCenter);
-    ls.dir = sampleDir;
-    ls.distance = ds;
-
-    // Cone-sampling pdf is already w.r.t. solid angle; no Jacobian needed.
-    ls.pdf = 1.f / (2.f * M_PI * (1.f - cosThetaMax));
-
-    return any(ls.Le > 0.f);
-}
-
 /** Picks a point light uniformly at random.
     Swap this for a power-weighted CDF pick if lights vary a lot in brightness.
 */
-bool pickPointLight(float u, out float pdf, out uint lightIndex)
-{
-    uint lightCount = pointLights.getCount();
-    if (lightCount == 0) return false;
 
-    lightIndex = min(uint(u * lightCount), lightCount - 1);
-    pdf = 1.f / lightCount;
-    return true;
-}
 
-bool sampleLight(const float3 posW, const float3 normalW, const bool upperHemisphere, inout S sg, out TriangleLightSample ls)
-{
-    ls = {};
-
-    if (pointLights.isEmpty()) return false;
-
-    // Pick a light (uniformly — no BVH).
-    float lightSelectPdf;
-    uint lightIndex;
-    float uLight = sampleNext1D(sg);
-    if (!pickPointLight(uLight, lightSelectPdf, lightIndex)) return false;
-
-    // Sample a point on that light's sphere.
-    float2 u = sampleNext2D(sg);
-    if (!samplePointLight(posW, lightIndex, u, ls)) return false;
-
-    ls.pdf *= lightSelectPdf;
-    return true;
-}
 
 
 /*
@@ -2101,8 +1745,8 @@ bool sampleLight(const float3 posW, const float3 normalW, const bool upperHemisp
     uint3 launchSize = DispatchRaysDimensions();
 
     RayDesc ray;
-    ray.Origin = /* your ray origin */;
-    ray.Direction = /* your ray direction */;
+    ray.Origin =
+    ray.Direction = 
     ray.TMin = 0.001;
     ray.TMax = 10000.0;
 
@@ -2120,3 +1764,432 @@ bool sampleLight(const float3 posW, const float3 normalW, const bool upperHemisp
 
 
 */
+
+
+float luminance(float3 color)
+{
+    return dot(color, float3(0.299, 0.587, 0.114));
+}
+
+bool sampleBSDF(const ShadingData sd, inout S sg, out BSDFSample_ result, bool useDeterministicBSDF = false)
+{
+    float3 wo = sd.toLocal(sd.V);
+    float3 wi;
+
+    FalcorBSDF bsdf;
+    bsdf.setup(sd);
+    bool valid = bsdf.sample(wo, wi, result.pdf, result.pdfSingle, result.weight, result.lobe, sg);
+    result.wi = sd.fromLocal(wi);
+
+    if (useDeterministicBSDF)
+    {
+        if (result.pdfSingle == 0.f) result.pdf = 0.f;
+        // Ensure consistency with the geometry.
+        bool compatibleWithReflection = true; //!isTransmissionEvent(result.wi, sd.V, sd.N);
+
+        uint allowedSampledFlags = 0;
+        if (compatibleWithReflection)
+        {
+            allowedSampledFlags |= (uint)SampledBSDFFlags::DiffuseReflection;
+            allowedSampledFlags |= (uint)SampledBSDFFlags::SpecularReflection;
+            allowedSampledFlags |= (uint)SampledBSDFFlags::SpecularReflectionTransmission;
+        }
+        else
+        {
+            allowedSampledFlags |= (uint)SampledBSDFFlags::DiffuseTransmission;
+            allowedSampledFlags |= (uint)SampledBSDFFlags::SpecularReflectionTransmission;
+        }
+
+        // Evaluate all lobes and divide by the full PDF. TODO: Optimize.
+        result.weight = bsdf.eval(wo, wi, allowedSampledFlags, result.isLobe(LobeType::Delta)) / result.pdf;
+    }
+
+    return valid;
+}
+
+enum class SampledBSDFFlags
+{
+    DiffuseReflection = 1,
+    DiffuseTransmission = 2,
+    SpecularReflection = 4,
+    SpecularReflectionTransmission = 8
+};
+
+
+float evalPdfBSDF(const ShadingData sd, float3 L, out float pdfAll, uint allowedSampledFlags = -1, bool allowDeltaEval = false)
+{
+    float3 wo = sd.toLocal(sd.V);
+    float3 wi = sd.toLocal(L);
+
+    FalcorBSDF bsdf;
+    bsdf.setup(sd);
+    return bsdf.evalPdfAll(wo, wi, pdfAll, allowedSampledFlags, allowDeltaEval);
+}
+
+
+struct FalcorBSDF 
+{
+    DiffuseReflectionLambert diffuseReflection;
+   // DiffuseTransmissionLambert diffuseTransmission;
+
+    //SpecularReflectionMicrofacet specularReflection;
+    //SpecularReflectionTransmissionMicrofacet specularReflectionTransmission;
+
+    float diffTrans;                        ///< Mix between diffuse BRDF and diffuse BTDF.
+    float specTrans;                        ///< Mix between dielectric BRDF and specular BSDF.
+
+    float pDiffuseReflection;               ///< Probability for sampling the diffuse BRDF.
+    float pDiffuseTransmission;             ///< Probability for sampling the diffuse BTDF.
+    float pSpecularReflection;              ///< Probability for sampling the specular BRDF.
+    float pSpecularReflectionTransmission;  ///< Probability for sampling the specular BSDF.
+
+    /** Setup the BSDF for sampling and evaluation.
+        TODO: Currently specular reflection and transmission lobes are not properly separated.
+        This leads to incorrect behaviour if only the specular reflection or transmission lobe is selected.
+        Things work fine as long as both or none are selected.
+        \param[in] sd Shading data.
+    */
+    [mutating] void setup(const ShadingData sd)
+    {
+        // Use square root if we can assume the shaded object is intersected twice.
+        float3 transmissionAlbedo = sd.isThinSurface() ? sd.transmission : sqrt(sd.transmission);
+
+        // Setup lobes.
+        diffuseReflection.albedo = sd.diffuse;
+/**#if DiffuseBrdf != DiffuseBrdfLambert
+  //      diffuseReflection.linearRoughness = sd.linearRoughness;
+//#endif
+        diffuseTransmission.albedo = transmissionAlbedo;
+
+        // Compute GGX alpha.
+        float alpha = sd.linearRoughness * sd.linearRoughness;
+//#if EnableDeltaBSDF
+        // Alpha below min alpha value means using delta reflection/transmission.
+        if (alpha < kMinGGXAlpha) alpha = 0.f;
+//#else
+  //      alpha = max(alpha, kMinGGXAlpha);
+#//endif
+        const uint activeLobes = sd.getActiveLobes();
+
+        specularReflection.albedo = sd.specular;
+        specularReflection.alpha = alpha;
+        specularReflection.activeLobes = activeLobes;
+
+        specularReflectionTransmission.transmissionAlbedo = transmissionAlbedo;
+        // Transmission through rough interface with IoR == 1 is not well defined, switch to delta reflection instead.
+        specularReflectionTransmission.alpha = sd.eta == 1.f ? 0.f : alpha;
+        specularReflectionTransmission.eta = sd.eta;
+        specularReflectionTransmission.activeLobes = activeLobes;
+
+        diffTrans = sd.diffuseTransmission;
+        specTrans = sd.specularTransmission;
+
+        // Compute sampling weights.
+        float metallicBRDF = sd.metallic;
+        float specularBSDF = (1.f - sd.metallic) * specTrans;
+        float dielectricBSDF = (1.f - sd.metallic) * (1.f - specTrans);
+
+        float diffuseWeight = luminance(sd.diffuse);
+        float specularWeight = luminance(evalFresnelSchlick(sd.specular, 1.f, dot(sd.V, sd.N)));
+
+        pDiffuseReflection = (activeLobes & (uint)LobeType::DiffuseReflection) ? diffuseWeight * dielectricBSDF * (1.f - diffTrans) : 0.f;
+        pDiffuseTransmission = (activeLobes & (uint)LobeType::DiffuseTransmission) ? diffuseWeight * dielectricBSDF * diffTrans : 0.f;
+        pSpecularReflection = (activeLobes & ((uint)LobeType::SpecularReflection | (uint)LobeType::DeltaReflection)) ? specularWeight * (metallicBRDF + dielectricBSDF) : 0.f;
+        pSpecularReflectionTransmission = (activeLobes & ((uint)LobeType::SpecularReflection | (uint)LobeType::DeltaReflection | (uint)LobeType::SpecularTransmission | (uint)LobeType::DeltaTransmission)) ? specularBSDF : 0.f;
+
+        float normFactor = pDiffuseReflection + pDiffuseTransmission + pSpecularReflection + pSpecularReflectionTransmission;
+        if (normFactor > 0.f)
+        {
+            normFactor = 1.f / normFactor;
+            pDiffuseReflection *= normFactor;
+            pDiffuseTransmission *= normFactor;
+            pSpecularReflection *= normFactor;
+            pSpecularReflectionTransmission *= normFactor;
+        }
+*/
+    }
+
+    /** Returns the set of BSDF lobes given some shading data.
+        \param[in] sd Shading data.
+        \return Returns a set of lobes (see LobeType in IBxDF.slang).
+    */
+    static uint getLobes(const ShadingData sd)
+    {
+//#if EnableDeltaBSDF
+        float alpha = sd.linearRoughness * sd.linearRoughness;
+        bool isDelta = alpha < kMinGGXAlpha;
+//#else
+  //      bool isDelta = false;
+//#endif
+        float diffTrans = sd.diffuseTransmission;
+        float specTrans = sd.specularTransmission;
+
+        uint lobes = isDelta ? (uint)LobeType::DeltaReflection : (uint)LobeType::SpecularReflection;
+        if (any(sd.diffuse > 0.f) && specTrans < 1.f)
+        {
+            if (diffTrans < 1.f) lobes |= (uint)LobeType::DiffuseReflection;
+            if (diffTrans > 0.f) lobes |= (uint)LobeType::DiffuseTransmission;
+        }
+        if (specTrans > 0.f) lobes |= (isDelta ? (uint)LobeType::DeltaTransmission : (uint)LobeType::SpecularTransmission);
+
+        return lobes;
+    }
+
+    // not considering transmission cases for now
+    bool classifyAsRough(const ShadingData sd, float roughnessThreshold)
+    {
+        return sd.linearRoughness > roughnessThreshold;
+    }
+
+    bool hasRoughComponent(const ShadingData sd, float roughnessThreshold)
+    {
+        return pDiffuseReflection > 0 || sd.linearRoughness > roughnessThreshold;
+    }
+
+    float3 eval(float3 wo, float3 wi, uint allowedSampledTypes = -1, bool allowDeltaEval = false)
+    {
+        float3 result = 0.f;
+        if ((allowedSampledTypes & uint(SampledBSDFFlags::DiffuseReflection)) && pDiffuseReflection > 0.f && !allowDeltaEval) result += (1.f - specTrans) * (1.f - diffTrans) * diffuseReflection.eval(wo, wi);
+//        if ((allowedSampledTypes & uint(SampledBSDFFlags::DiffuseTransmission)) && pDiffuseTransmission > 0.f && !allowDeltaEval) result += (1.f - specTrans) * diffTrans * diffuseTransmission.eval(wo, wi);
+        //if ((allowedSampledTypes & uint(SampledBSDFFlags::SpecularReflection)) && pSpecularReflection > 0.f) result += (1.f - specTrans) * specularReflection.eval(wo, wi, allowDeltaEval);
+        //if ((allowedSampledTypes & uint(SampledBSDFFlags::SpecularReflectionTransmission)) && pSpecularReflectionTransmission > 0.f) result += specTrans * (specularReflectionTransmission.eval(wo, wi, allowDeltaEval));
+        return result;
+    }
+
+    // does not support diffuse transmission yet
+    float3 evalWithHalfVector(float3 wo, float3 h, out float3 wi, uint allowedSampledTypes = -1, bool isRefraction = false, bool allowDeltaEval = false)
+    {
+        float3 result = 0.f;
+       // if ((allowedSampledTypes & uint(SampledBSDFFlags::SpecularReflectionTransmission)) && pSpecularReflectionTransmission > 0.f) result += specTrans * (specularReflectionTransmission.evalWithHalfVector(wo, h, wi, isRefraction, allowDeltaEval));
+        //if ((allowedSampledTypes & uint(SampledBSDFFlags::SpecularReflection)) && !isRefraction && pSpecularReflection > 0.f) result += (1.f - specTrans) * specularReflection.evalWithHalfVector(wo, h, wi, allowDeltaEval);
+        if ((allowedSampledTypes & uint(SampledBSDFFlags::DiffuseReflection)) && !isRefraction && pDiffuseReflection > 0.f && !allowDeltaEval) result += (1.f - specTrans) * (1.f - diffTrans) * (diffuseReflection.evalWithHalfVector(wo, h, wi));
+        return result;
+    }
+// POSSIBLE SOURCE OF ERROR
+bool sample(float3 wo, out float3 wi, out float pdf, out float pdfSingle, out float3 weight, out uint lobe, inout S sg)
+{
+    lobe = (uint)LobeType::DiffuseReflection;
+    bool valid = diffuseReflection.sample(wo, wi, pdf, weight, lobe, sg);
+    pdfSingle = pdf;
+    return valid;
+}
+    float evalPdf(float3 wo, float3 wi, uint allowedSampledTypes = -1, bool allowDeltaEval = false)
+    {
+        float pdf = 0.f;
+        if ((allowedSampledTypes & uint(SampledBSDFFlags::DiffuseReflection)) && !allowDeltaEval && pDiffuseReflection > 0.f) pdf += pDiffuseReflection * diffuseReflection.evalPdf(wo, wi);
+        //if ((allowedSampledTypes & uint(SampledBSDFFlags::DiffuseTransmission)) && !allowDeltaEval && pDiffuseTransmission > 0.f) pdf += pDiffuseTransmission * diffuseTransmission.evalPdf(wo, wi);
+       // if ((allowedSampledTypes & uint(SampledBSDFFlags::SpecularReflection)) && pSpecularReflection > 0.f) pdf += pSpecularReflection * specularReflection.evalPdf(wo, wi, allowDeltaEval);
+       // if ((allowedSampledTypes & uint(SampledBSDFFlags::SpecularReflectionTransmission)) && pSpecularReflectionTransmission > 0.f) pdf += pSpecularReflectionTransmission * specularReflectionTransmission.evalPdf(wo, wi, allowDeltaEval);
+        return pdf;
+    }
+
+    float evalPdfAll(float3 wo, float3 wi, out float pdfAll, uint allowedSampledTypes = -1, bool allowDeltaEval = false)
+    {
+        pdfAll = 0.f;
+        float pdfSingle = 0.f;
+        if (!allowDeltaEval && pDiffuseReflection > 0.f)
+        {
+            float pdf = pDiffuseReflection * diffuseReflection.evalPdf(wo, wi);
+            if (allowedSampledTypes & uint(SampledBSDFFlags::DiffuseReflection)) pdfSingle += pdf;
+            pdfAll += pdf;
+        }
+      /*  if (!allowDeltaEval && pDiffuseTransmission > 0.f)
+        {
+            float pdf = pDiffuseTransmission * diffuseTransmission.evalPdf(wo, wi);
+            if (allowedSampledTypes & uint(SampledBSDFFlags::DiffuseTransmission)) pdfSingle += pdf;
+            pdfAll += pdf;
+        }
+        if (pSpecularReflection > 0.f)
+        {
+            float pdf = pSpecularReflection * specularReflection.evalPdf(wo, wi, allowDeltaEval);
+            if (allowedSampledTypes & uint(SampledBSDFFlags::SpecularReflection)) pdfSingle += pdf;
+            pdfAll += pdf;
+        }
+        if (pSpecularReflectionTransmission > 0.f)
+        {
+            float pdf = pSpecularReflectionTransmission * specularReflectionTransmission.evalPdf(wo, wi, allowDeltaEval);
+            if (allowedSampledTypes & uint(SampledBSDFFlags::SpecularReflectionTransmission)) pdfSingle += pdf;
+            pdfAll += pdf;
+        }*/
+        return pdfSingle;
+    }
+
+};
+
+struct DiffuseReflectionLambert
+{
+    float3 albedo;  ///< Diffuse albedo.
+
+    float3 eval(float3 wo, float3 wi)
+    {
+        if (min(wo.z, wi.z) < kMinCosTheta) return float3(0.f);
+
+        return M_1_PI * albedo * wi.z;
+    }
+
+    float3 evalWithHalfVector(float3 wo, float3 h, out float3 wi)
+    {
+        // Reflect the outgoing direction to find the incident direction.
+        float woDotH = dot(wo, h);
+        wi = 2.f * woDotH * h - wo;
+        if (min(wo.z, wi.z) < kMinCosTheta) return float3(0.f);
+
+        return M_1_PI * albedo * wi.z;
+    }
+
+    bool sample(float3 wo, out float3 wi, out float pdf, out float3 weight, out uint lobe, inout S sg)
+    {
+        sampleNext1D(sg);
+        wi = sample_cosine_hemisphere_concentric(sampleNext2D(sg), pdf);
+        lobe = (uint)LobeType::DiffuseReflection;
+
+        if (min(wo.z, wi.z) < kMinCosTheta)
+        {
+            weight = {};
+            return false;
+        }
+
+        weight = albedo;
+        return true;
+    }
+
+    float evalPdf(float3 wo, float3 wi)
+    {
+        if (min(wo.z, wi.z) < kMinCosTheta) return 0.f;
+
+        return M_1_PI * wi.z;
+    }
+};
+
+
+float2 sample_disk_concentric(float2 u)
+{
+    u = 2.f * u - 1.f;
+    if (u.x == 0.f && u.y == 0.f) return u;
+    float phi, r;
+    if (abs(u.x) > abs(u.y))
+    {
+        r = u.x;
+        phi = (u.y / u.x) * M_PI_4;
+    }
+    else
+    {
+        r = u.y;
+        phi = M_PI_2 - (u.x / u.y) * M_PI_4;
+    }
+    return r * float2(cos(phi), sin(phi));
+}
+
+float3 sample_cosine_hemisphere_concentric(float2 u, out float pdf)
+{
+    float2 d = sample_disk_concentric(u);
+    float z = sqrt(max(0.f, 1.f - dot(d, d)));
+    pdf = z * M_1_PI;
+    return float3(d, z);
+}
+
+
+bool classifyAsRough(const ShadingData sd, float roughnessThreshold)
+{
+    FalcorBSDF bsdf;
+    bsdf.setup(sd);
+    return bsdf.classifyAsRough(sd, roughnessThreshold);
+}
+
+bool hasRoughComponent(const ShadingData sd, float roughnessThreshold)
+{
+    FalcorBSDF bsdf;
+    bsdf.setup(sd);
+    return bsdf.hasRoughComponent(sd, roughnessThreshold);
+}
+
+void nextVertex(inout PathState path)
+{
+    RayDesc ray = path.getScatterRay();
+
+    uint instanceID, primitiveIndex;
+    float2 bary; float hitT;
+    bool didHit = traceClosestHit(ray, instanceID, primitiveIndex, bary, hitT);
+
+    if (didHit)
+    {
+        HitInfo hit;
+        fromRaw(hit, instanceID, primitiveIndex, bary); // you write this constructor
+        
+        path.setHit(hit);
+        path.length++;
+        path.sceneLength += float16_t(hitT);
+    }
+    else
+    {
+        path.clearHit();
+        path.sceneLength = float16_t(kNRDInvalidPathLength);
+    }
+}
+
+bool traceVisibilityRay(const Ray ray)
+{
+    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+    q.TraceRayInline(gRtScene, RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                     0xff, toRayDesc(ray));
+
+    while (q.Proceed())
+    {
+        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+            q.CommitNonOpaqueTriangleHit(); // alpha test here too, if you need it
+    }
+
+    return q.CommittedStatus() != COMMITTED_TRIANGLE_HIT; // true = visible (nothing occluding)
+}
+
+void fromRaw(HitInfo hit, uint instanceID, uint primitiveIndex, float2 barycentrics)
+{
+hit.misc1.x = barycentrics.x;
+hit.misc1.y = barycentrics.y;
+hit.misc1.z = primitiveIndex;
+hit.misc1.x = instanceID;
+
+}
+
+
+[[vk::binding(0, 0)]]
+RaytracingAccelerationStructure gRtScene;
+
+bool traceClosestHit(RayDesc ray, out uint instanceID, out uint primitiveIndex,
+                      out float2 barycentrics, out float hitT)
+{
+    RayQuery<RAY_FLAG_NONE> q;
+    q.TraceRayInline(gRtScene, RAY_FLAG_NONE, 0xff, ray);
+
+    while (q.Proceed())
+    {
+        // Only needed if you want alpha-tested cutouts.
+        // Non-opaque triangle candidates land here; you sample alpha
+        // and call q.CommitNonOpaqueTriangleHit() if it passes.
+        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+        {
+            q.CommitNonOpaqueTriangleHit(); // or skip if alpha fails
+        }
+    }
+
+    bool hit = q.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+    if (hit)
+    {
+        instanceID = q.CommittedInstanceID();
+        primitiveIndex = q.CommittedPrimitiveIndex();
+        barycentrics = q.CommittedTriangleBarycentrics();
+        hitT = q.CommittedRayT();
+    }
+    return hit;
+}
+
+float evalPdfBSDFWithV(in ShadingData sd, float3 V, float3 L, uint allowedSampledFlags = -1, bool allowDeltaEval = false)
+{
+    sd.V = V;
+    float3 wo = sd.toLocal(V);
+    float3 wi = sd.toLocal(L);
+
+    FalcorBSDF bsdf;
+    bsdf.setup(sd);
+    return bsdf.evalPdf(wo, wi, allowedSampledFlags, allowDeltaEval);
+}
