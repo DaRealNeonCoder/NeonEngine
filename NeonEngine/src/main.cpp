@@ -2,6 +2,7 @@
 #include "first_app.hpp"
 #include "water_app.hpp"
 #include "raytracing_app.hpp"
+#include "mcts_app.hpp"
 
 // std
 #include <cstdlib>
@@ -14,8 +15,9 @@ int main() {
 
 
     // lve::FirstApp app{};
-    lve::RayTracingApp app{};
+    //lve::RayTracingApp app{};
    //lve::WaterApp app{};
+   lve::MctsApp app{};
 
 
   try {

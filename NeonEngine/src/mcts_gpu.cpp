@@ -4,18 +4,47 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace lve {
 
+    static inline bool algoIsOcp(Algo a) { return a == Algo::OcpProdigal || a == Algo::OcpThrifty; }
+    static inline bool algoIsThrifty(Algo a) { return a == Algo::AcpThrifty || a == Algo::OcpThrifty; }
+
+    static inline uint32_t hash32(uint32_t x) {
+        x ^= x >> 16; x *= 0x7feb352dU;
+        x ^= x >> 15; x *= 0x846ca68bU;
+        x ^= x >> 16;
+        return x;
+    }
+
     MctsGpu::MctsGpu(LveDevice& dev, const Config& config) : device{ dev }, cfg{ config } {
-        maxNodes = 1 + MAX_ACTIONS * cfg.maxIterations;
+        if (NumKernels != kStatsKernels) throw std::runtime_error("MctsGpu: kStatsKernels out of sync with Kernel enum");
+
+        // ACP creates up to MAX_ACTIONS nodes per iteration, OCP exactly one.
+        maxNodes = algoIsOcp(cfg.algo) ? (1 + cfg.maxIterations)
+            : (1 + MAX_ACTIONS * cfg.maxIterations);
+
+        // Fail loudly instead of silently reading/writing past the binding range.
+        const uint64_t treeBytes = uint64_t(cfg.numTrees) * uint64_t(maxNodes) * NODE_ROW * sizeof(int32_t);
+        const uint64_t rangeLimit = device.properties.limits.maxStorageBufferRange;
+        if (treeBytes > rangeLimit) {
+            throw std::runtime_error("MctsGpu: tree buffer (" + std::to_string(treeBytes >> 20) +
+                " MiB) exceeds maxStorageBufferRange (" + std::to_string(rangeLimit >> 20) +
+                " MiB); lower numTrees or maxIterations");
+        }
+
         createBuffers();
         createDescriptors();
         createPipelines();
+        createQueryPool();
     }
 
     MctsGpu::~MctsGpu() {
+        if (queryPool != VK_NULL_HANDLE) vkDestroyQueryPool(device.device(), queryPool, nullptr);
         for (int k = 0; k < NumKernels; k++) {
             if (pipelines[k] != VK_NULL_HANDLE) vkDestroyPipeline(device.device(), pipelines[k], nullptr);
         }
@@ -63,6 +92,11 @@ namespace lve {
         buffers[ChildBoards] = deviceLocal(T * MAX_ACTIONS * CB_STRIDE);
         buffers[ChildScores] = deviceLocal(T * MAX_ACTIONS);
         buffers[RootStats] = hostVisible(2 * MAX_ACTIONS + 1);
+        // thrifty only: GPU writes b_t per tree, host reads it and writes the block map
+        buffers[TreeB] = hostVisible(T);
+        buffers[BlockMap] = hostVisible(T * MAX_ACTIONS);
+        // GPU-side statistics counters (zeroed by the host at the start of every search)
+        buffers[Counters] = hostVisible(kNumCounters);
     }
 
     // -----------------------------------------------------------------------------
@@ -105,9 +139,10 @@ namespace lve {
 
         shaderModule = LvePipeline::loadShaderModule(cfg.shaderPath, device.device());
 
+        // order must match the Kernel enum
         static const char* entryNames[NumKernels] = {
             "mctsReset", "mctsSelect", "mctsExpand", "mctsPlayout",
-            "mctsBackup", "mctsReduceTrees", "mctsReduceActions" };
+            "mctsBackup", "mctsReduceTrees", "mctsReduceActions", "mctsExpandOcp" };
 
         for (int k = 0; k < NumKernels; k++) {
             VkComputePipelineCreateInfo ci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
@@ -121,6 +156,23 @@ namespace lve {
                 throw std::runtime_error(std::string("MctsGpu: failed to create pipeline ") + entryNames[k]);
             }
         }
+    }
+
+    // -----------------------------------------------------------------------------
+    // Timestamp queries: one per dispatch (taken after its barrier) + one at the start
+    // of each command buffer. Consecutive differences = per-kernel GPU time.
+    void MctsGpu::createQueryPool() {
+        profileOk = false;
+        if (!cfg.profile) return;
+        const VkPhysicalDeviceLimits& lim = device.properties.limits;
+        if (!lim.timestampComputeAndGraphics || lim.timestampPeriod <= 0.f) return;
+        tsPeriodNs = lim.timestampPeriod;
+        // worst case per command buffer: 1 start + reset + 4 kernels per batched iteration
+        maxQueries = 4 * std::max(cfg.itersPerSubmit, 1) + 16;
+        VkQueryPoolCreateInfo ci{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+        ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        ci.queryCount = static_cast<uint32_t>(maxQueries);
+        profileOk = (vkCreateQueryPool(device.device(), &ci, nullptr, &queryPool) == VK_SUCCESS);
     }
 
     // -----------------------------------------------------------------------------
@@ -150,63 +202,212 @@ namespace lve {
     // -----------------------------------------------------------------------------
     MctsGpu::Result MctsGpu::search(
         const std::array<int, CELLS>& board, int rootTurn, int iterations) {
-        if (iterations > cfg.maxIterations) {
+        SearchLimits lim;
+        lim.maxIterations = iterations;
+        return search(board, rootTurn, lim, kAutoSeed);
+    }
+
+    // -----------------------------------------------------------------------------
+    //   AcpProdigal : all children expanded, playout grid (T, B), no host traffic
+    //   AcpThrifty  : all children expanded, compacted, playout grid (A), host readback each iteration
+    //   OcpProdigal : one random untried child, playout grid (T), no host traffic
+    //   OcpThrifty  : one random untried child, playout grid (A), host readback each iteration
+    //
+    // Budget: SearchLimits (iterations and/or wall-clock ms). All RNG streams derive from
+    // (cfg.seed, callSeed, iteration index), so a search is reproducible given its callSeed.
+    // -----------------------------------------------------------------------------
+    MctsGpu::Result MctsGpu::search(
+        const std::array<int, CELLS>& board, int rootTurn, const SearchLimits& lim, uint32_t callSeed) {
+        using clock = std::chrono::steady_clock;
+        const auto t0 = clock::now();
+        auto elapsedMs = [&]() { return std::chrono::duration<double, std::milli>(clock::now() - t0).count(); };
+
+        const int maxIters = lim.maxIterations > 0 ? lim.maxIterations : cfg.maxIterations;
+        if (maxIters > cfg.maxIterations) {
             throw std::runtime_error("MctsGpu::search: iterations > Config::maxIterations");
         }
-        auto t0 = std::chrono::steady_clock::now();
 
-        buffers[RootBoard]->writeToBuffer(const_cast<int*>(board.data()));
-        buffers[RootBoard]->flush();
-
-        MctsPush pc{ cfg.numTrees, maxNodes, 0u, rootTurn, cfg.ucbC };
+        const bool ocp = algoIsOcp(cfg.algo);
+        const bool thrifty = algoIsThrifty(cfg.algo);
+        const Kernel expandKernel = ocp ? KExpandOcp : KExpand;
+        const uint32_t playoutY = ocp ? 1u : static_cast<uint32_t>(MAX_ACTIONS);
         const uint32_t T = static_cast<uint32_t>(cfg.numTrees);
         const uint32_t groups32 = (T + 31) / 32;
 
-        int done = 0;
-        while (done < iterations) {
-            const int batch = std::min(cfg.itersPerSubmit, iterations - done);
+        // int32 overflow guard for nodeN / nodeWins (root wins <= 2N; ReduceTrees sums over T trees)
+        {
+            const int64_t perIter = (ocp ? 1 : MAX_ACTIONS) * int64_t(kPlayoutsPerChild);
+            if (2 * perIter * int64_t(maxIters) * int64_t(T) > int64_t(INT32_MAX)) {
+                throw std::runtime_error("MctsGpu::search: visit/win counters would overflow int32");
+            }
+        }
 
-            VkCommandBuffer cb = device.beginSingleTimeCommands();
+        if (callSeed == kAutoSeed) callSeed = static_cast<uint32_t>(seedCounter++);
+
+        SearchStats st;
+        st.algo = algoName(cfg.algo);
+        st.numTrees = cfg.numTrees;
+        st.ucbC = cfg.ucbC;
+        st.cfgSeed = static_cast<uint32_t>(cfg.seed);
+        st.callSeed = callSeed;
+        st.maxNodesPerTree = maxNodes;
+        st.countersEnabled = cfg.collectCounters;
+        st.profiled = profileOk;
+        st.treeBytes = uint64_t(T) * uint64_t(maxNodes) * (NODE_ROW + 3) * sizeof(int32_t);
+
+        buffers[RootBoard]->writeToBuffer(const_cast<int*>(board.data()));
+        buffers[RootBoard]->flush();
+        std::memset(buffers[Counters]->getMappedMemory(), 0, kNumCounters * sizeof(int32_t));
+
+        MctsPush pc{ cfg.numTrees, maxNodes, 0u, rootTurn, cfg.ucbC, thrifty ? 1 : 0, cfg.collectCounters ? 1 : 0 };
+
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        std::vector<int> cbKernels;  // kernel id of each timestamp interval in the current command buffer
+        uint32_t qCount = 0;
+
+        auto begin = [&]() {
+            cb = device.beginSingleTimeCommands();
             vkCmdBindDescriptorSets(
                 cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
+            cbKernels.clear();
+            qCount = 0;
+            if (profileOk) {
+                vkCmdResetQueryPool(cb, queryPool, 0, static_cast<uint32_t>(maxQueries));
+                vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, qCount++);
+            }
+        };
+        auto dispatch = [&](Kernel k, uint32_t x, uint32_t y = 1, uint32_t z = 1) {
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[k]);
+            vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+            vkCmdDispatch(cb, x, y, z);
+            computeBarrier(cb);
+            if (profileOk && qCount < static_cast<uint32_t>(maxQueries)) {
+                vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, qCount++);
+                cbKernels.push_back(static_cast<int>(k));
+            }
+        };
+        auto harvest = [&]() {
+            if (!profileOk || qCount < 2) return;
+            std::vector<uint64_t> ts(qCount);
+            if (vkGetQueryPoolResults(device.device(), queryPool, 0, qCount, ts.size() * sizeof(uint64_t),
+                ts.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS) {
+                return;
+            }
+            for (uint32_t i = 1; i < qCount; i++) {
+                const double ms = double(ts[i] - ts[i - 1]) * double(tsPeriodNs) * 1e-6;
+                st.kernelMs[cbKernels[i - 1]] += ms;
+                st.gpuMs += ms;
+            }
+        };
+        auto submit = [&]() {
+            device.endSingleTimeCommands(cb);  // submits + waits for the queue
+            ++st.submits;
+            harvest();
+        };
 
-            auto dispatch = [&](Kernel k, uint32_t x, uint32_t y = 1, uint32_t z = 1) {
-                vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[k]);
-                vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-                vkCmdDispatch(cb, x, y, z);
-                computeBarrier(cb);
-            };
+        int done = 0;
+        double msPerIter = 0.0;  // measured on the previous batch; used to avoid overshooting maxMs
+        while (done < maxIters) {
+            double remaining = 1e300;
+            if (lim.maxMs > 0.0) {
+                remaining = lim.maxMs - elapsedMs();
+                if (remaining <= 0.0 && done > 0) break;  // always do at least one iteration
+            }
 
+            // thrifty needs a host round trip inside every iteration, so batching is moot
+            int batch = thrifty ? 1 : std::min(cfg.itersPerSubmit, maxIters - done);
+            if (!thrifty && lim.maxMs > 0.0 && msPerIter > 0.0) {
+                batch = std::max(1, std::min(batch, static_cast<int>(remaining / msPerIter)));
+            }
+
+            const double tb = elapsedMs();
+            begin();
             if (done == 0) dispatch(KReset, groups32);
 
             for (int i = 0; i < batch; i++) {
-                pc.seed = cfg.seed * 2654435761u + (++seedCounter) * 0x9E3779B9u;
+                pc.seed = hash32(static_cast<uint32_t>(cfg.seed) ^
+                    hash32(callSeed + 0x9E3779B9u * static_cast<uint32_t>(done + i + 1)));
                 dispatch(KSelect, T);
-                dispatch(KExpand, groups32);
-                dispatch(KPlayout, T, MAX_ACTIONS);
+                dispatch(expandKernel, groups32);
+
+                if (thrifty) {
+                    // ---- device -> host: how many children did each tree expand? ----
+                    hostReadBarrier(cb);
+                    submit();
+                    ++st.hostRoundTrips;
+
+                    const auto h0 = clock::now();
+                    const int32_t* b = static_cast<const int32_t*>(buffers[TreeB]->getMappedMemory());
+                    int32_t* map = static_cast<int32_t*>(buffers[BlockMap]->getMappedMemory());
+                    uint32_t A = 0;  // total number of expanded children over all trees
+                    for (int t = 0; t < cfg.numTrees; t++) {
+                        if (b[t] < 0 || b[t] > MAX_ACTIONS) {
+                            throw std::runtime_error("MctsGpu::search: corrupt b_t read back from device");
+                        }
+                        for (int k = 0; k < b[t]; k++) map[A++] = t * MAX_ACTIONS + k;  // slot id
+                    }
+                    st.hostMapMs += std::chrono::duration<double, std::milli>(clock::now() - h0).count();
+                    st.blocksLaunched += A;
+                    st.sumA += A;
+                    st.maxA = std::max<int64_t>(st.maxA, A);
+
+                    // ---- host -> device: playouts get exactly A workgroups ----
+                    begin();
+                    dispatch(KPlayout, A);  // A == 0 is a legal no-op dispatch
+                }
+                else {
+                    st.blocksLaunched += int64_t(T) * playoutY;
+                    dispatch(KPlayout, T, playoutY);
+                }
                 dispatch(KBackup, T);
             }
 
             done += batch;
-            if (done == iterations) {
-                dispatch(KReduceTrees, MAX_ACTIONS);
-                dispatch(KReduceActions, 1);
-                hostReadBarrier(cb);
-            }
-
-            device.endSingleTimeCommands(cb);  // submits + waits for the queue
+            submit();
+            msPerIter = (elapsedMs() - tb) / batch;
         }
 
+        // final reduction in its own submit (the loop length is not known in advance when time-limited)
+        begin();
+        dispatch(KReduceTrees, MAX_ACTIONS);
+        dispatch(KReduceActions, 1);
+        hostReadBarrier(cb);
+        submit();
+
+        // ---- results -------------------------------------------------------------
         const int32_t* stats = static_cast<const int32_t*>(buffers[RootStats]->getMappedMemory());
         Result r;
+        st.rootVisits.assign(COLS, 0);
+        st.rootWinRate.assign(COLS, 0.0f);
         for (int a = 0; a < COLS; a++) {
             int n = stats[2 * a];
             int w = stats[2 * a + 1];
             r.visits[a] = n;
             r.winRate[a] = (n > 0) ? static_cast<float>(w) / (2.0f * static_cast<float>(n)) : 0.0f;
+            st.rootVisits[a] = n;
+            st.rootWinRate[a] = r.winRate[a];
         }
         r.bestAction = stats[2 * MAX_ACTIONS];
-        r.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        st.bestAction = r.bestAction;
+
+        const int32_t* ctr = static_cast<const int32_t*>(buffers[Counters]->getMappedMemory());
+        st.depthSum = ctr[CtrDepthSum];
+        st.depthMax = ctr[CtrDepthMax];
+        st.terminalHits = ctr[CtrTerminalHits];
+        st.childrenCreated = ctr[CtrChildrenCreated];
+        st.treeSizeMax = ctr[CtrTreeSizeMax];
+        st.blocksReal = ctr[CtrBlocksReal];
+        st.blocksVirtual = ctr[CtrBlocksVirtual];
+        st.pliesSum = ctr[CtrPliesSum];
+        st.anomalies = ctr[CtrAnomalies];
+        st.finalTies = ctr[CtrFinalTies];
+
+        st.iterations = done;
+        st.wallMs = elapsedMs();
+        st.finalize();
+
+        r.ms = st.wallMs;
+        r.stats = st;
         return r;
     }
 
