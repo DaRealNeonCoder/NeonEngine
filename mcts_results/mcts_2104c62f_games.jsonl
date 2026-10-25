@@ -1,0 +1,2 @@
+{"game":1,"matchup":"acp_prodigal__vs__acp_thrifty","a":"acp_prodigal","b":"acp_thrifty","opening_id":0,"black":"a","outcome":1,"plies":7,"budget":{"type":"time_ms","value":200}}
+{"game":2,"matchup":"acp_prodigal__vs__acp_thrifty","a":"acp_prodigal","b":"acp_thrifty","opening_id":0,"black":"b","outcome":1,"plies":7,"budget":{"type":"time_ms","value":200}}

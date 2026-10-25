@@ -25,6 +25,8 @@
 //   3. bias     : mirror-symmetry tests (detects column bias)
 //   4. matches  : round robin, paired colour-swapped random openings, equal time per move,
 //                 JSONL logs (-> analyze_matches.py)
+//   5. counters : instrumentation counter overhead (enabled vs disabled)
+//   6. replay   : time-limited vs fixed-iteration determinism check
 // =============================================================================
 
 namespace lve {
@@ -41,6 +43,8 @@ namespace lve {
         constexpr bool RUN_BENCH = true;
         constexpr bool RUN_BIAS = true;
         constexpr bool RUN_MATCHES = true;
+        constexpr bool RUN_COUNTER_COST = true;
+        constexpr bool RUN_REPLAY_CHECK = true;
 
         constexpr int NUM_TREES = 64;
         constexpr int MAX_ITERS = 4000;        // node-pool cap; matches log how often it was hit (must be rare)
@@ -53,7 +57,7 @@ namespace lve {
         constexpr int SYM_REPS = 200, SYM_ITERS = 4;
 
         constexpr double MOVE_MS = 200.0;      // equal wall-clock budget per move for every engine
-        constexpr int N_OPENINGS = 10;         // each opening is played twice (colours swapped); use >= 200 for real runs
+        constexpr int N_OPENINGS = 100;        // each opening is played twice (colours swapped); use >= 200 for close rankings
         constexpr int OPENING_PLIES = 4;       // random plies before the engines take over
         constexpr bool INCLUDE_SELFPLAY = false;
 
@@ -270,6 +274,78 @@ namespace lve {
         }
 
         // ============================================================================
+        // 5. COUNTER COST: same engine with instrumentation counters on vs off
+        // ============================================================================
+        void runCounterCost(LveDevice& dev) {
+            std::cout << "\n######## 5. COUNTER COST (collectCounters on vs off) ########\n";
+            const Board mid = parseBoard({ ".......", ".......", "...O...", "..XX...", "..OXO..", ".XOXOX." });
+            std::printf("%-13s %10s %10s %9s\n", "algo", "on ms", "off ms", "cost %");
+            for (Algo a : ALGOS) {
+                double ms[2] = { 0, 0 }; // [0] counters off, [1] counters on
+                for (int on = 0; on < 2; on++) {
+                    MctsGpu::Config cfg;
+                    cfg.algo = a; cfg.numTrees = NUM_TREES; cfg.maxIterations = MAX_ITERS;
+                    cfg.itersPerSubmit = ITERS_PER_SUBMIT; cfg.ucbC = UCB_C; cfg.seed = EXP_SEED;
+                    cfg.shaderPath = SHADER_PATH;
+                    cfg.collectCounters = (on == 1);
+                    MctsGpu e(dev, cfg);
+                    for (int i = 0; i < 3; i++) e.search(mid, -1, iterLimits(BENCH_ITERS));
+                    Acc w;
+                    for (int i = 0; i < BENCH_REPS * 3; i++)
+                        w.add(e.search(mid, -1, iterLimits(BENCH_ITERS)).stats.wallMs);
+                    ms[on] = w.mean();
+                }
+                const double cost = ms[0] > 0.0 ? 100.0 * (ms[1] - ms[0]) / ms[0] : 0.0;
+                std::printf("%-13s %10.2f %10.2f %8.1f%%\n", algoName(a), ms[1], ms[0], cost);
+            }
+        }
+
+        // ============================================================================
+        // 6. REPLAY: time-limited search vs fixed-iteration replay
+        // ============================================================================
+        void runReplayCheck(Engines& engines) {
+            std::cout << "\n######## 6. REPLAY (time-limited vs fixed-iteration replay) ########\n";
+            const Board mid = parseBoard({ ".......", ".......", "...O...", "..XX...", "..OXO..", ".XOXOX." });
+            for (auto& e : engines) {
+                int bad = 0;
+                constexpr int REPS = 10;
+                for (int i = 0; i < REPS; i++) {
+                    const uint32_t seed = mix3(EXP_SEED, 777, static_cast<uint32_t>(i));
+                    SearchLimits tl; tl.maxIterations = MAX_ITERS; tl.maxMs = 15.0 + 7.0 * i;
+                    const auto r1 = e->search(mid, -1, tl, seed);
+                    const auto r2 = e->search(mid, -1, iterLimits(r1.stats.iterations), seed);
+                    bool same = (r1.bestAction == r2.bestAction);
+                    for (int c = 0; c < COLS; c++) same = same && (r1.visits[c] == r2.visits[c]);
+                    if (!same) bad++;
+                }
+                std::printf("%-13s %d/%d replays identical %s\n", nameOf(*e), REPS - bad, REPS,
+                    bad ? "[MISMATCH]" : "[ok]");
+            }
+        }
+
+        // One colour-swapped opening pair is one independent statistical unit.
+        // Each stored value is the average of A's score across both colours, in [0, 1].
+        struct PairStats {
+            std::vector<double> p;
+            void add(double s0, double s1) { p.push_back(0.5 * (s0 + s1)); }
+            void report(const char* label) const {
+                const int n = static_cast<int>(p.size());
+                if (n < 2) return;
+                Acc a;
+                for (double x : p) a.add(x);
+                const double m = a.mean(), se = a.sd() / std::sqrt(static_cast<double>(n));
+                auto elo = [](double score) {
+                    score = std::min(0.999, std::max(0.001, score));
+                    return -400.0 * std::log10(1.0 / score - 1.0);
+                };
+                const double lo = m - 1.96 * se, hi = m + 1.96 * se;
+                std::printf("   %-34s pairs=%d  score=%.3f [%.3f, %.3f]  Elo=%+.0f [%+.0f, %+.0f]  %s\n",
+                    label, n, m, lo, hi, elo(m), elo(lo), elo(hi),
+                    (lo > 0.5 || hi < 0.5) ? "SIGNIFICANT" : "inconclusive");
+            }
+        };
+
+        // ============================================================================
         // 4. MATCHES
         // ============================================================================
         struct EngineAcc {
@@ -373,8 +449,10 @@ namespace lve {
                     const std::string an = nameOf(*engines[ia]), bn = nameOf(*engines[ib]);
                     const std::string matchup = an + "__vs__" + bn;
                     int w = 0, d = 0, l = 0;  // from A's perspective
+                    PairStats pairStats;
                     for (int k = 0; k < N_OPENINGS; k++) {
                         const std::vector<int> opening = makeOpening(k);
+                        double pairScores[2] = { 0.0, 0.0 };
                         for (int swap = 0; swap < 2; swap++) {
                             const bool aBlack = (swap == 0);
                             const int blackIdx = aBlack ? static_cast<int>(ia) : static_cast<int>(ib);
@@ -387,11 +465,14 @@ namespace lve {
                                 << ",\"budget\":{\"type\":\"time_ms\",\"value\":" << MOVE_MS << "}}\n";
                             gamesOut.flush();
                             const double sa = aBlack ? 0.5 * (outcome + 1.0) : 1.0 - 0.5 * (outcome + 1.0);
+                            pairScores[swap] = sa;
                             if (sa == 1.0) w++; else if (sa == 0.0) l++; else d++;
                         }
+                        pairStats.add(pairScores[0], pairScores[1]);
                     }
                     std::printf("%-34s  A: W %2d  D %2d  L %2d   score(A)=%.3f\n", matchup.c_str(), w, d, l,
                         (w + 0.5 * d) / std::max(1, w + d + l));
+                    pairStats.report(matchup.c_str());
                 }
             }
             movesOut.flush();
@@ -435,6 +516,8 @@ namespace lve {
         if (RUN_BENCH) runBench(engines);
         if (RUN_BIAS) runBias(engines);
         if (RUN_MATCHES) runMatches(lveDevice, engines);
+        if (RUN_COUNTER_COST) runCounterCost(lveDevice);
+        if (RUN_REPLAY_CHECK) runReplayCheck(engines);
 
         std::cout << "\nDone.\n";
     }

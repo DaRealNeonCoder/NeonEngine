@@ -24,11 +24,9 @@ namespace lve {
     MctsGpu::MctsGpu(LveDevice& dev, const Config& config) : device{ dev }, cfg{ config } {
         if (NumKernels != kStatsKernels) throw std::runtime_error("MctsGpu: kStatsKernels out of sync with Kernel enum");
 
-        // ACP creates up to MAX_ACTIONS nodes per iteration, OCP exactly one.
         maxNodes = algoIsOcp(cfg.algo) ? (1 + cfg.maxIterations)
             : (1 + MAX_ACTIONS * cfg.maxIterations);
 
-        // Fail loudly instead of silently reading/writing past the binding range.
         const uint64_t treeBytes = uint64_t(cfg.numTrees) * uint64_t(maxNodes) * NODE_ROW * sizeof(int32_t);
         const uint64_t rangeLimit = device.properties.limits.maxStorageBufferRange;
         if (treeBytes > rangeLimit) {
@@ -54,13 +52,12 @@ namespace lve {
 
     // -----------------------------------------------------------------------------
     void MctsGpu::createBuffers() {
-        // every buffer is a plain array of 32-bit ints
-        auto deviceLocal = [&](size_t numInts) {
+        auto deviceLocal = [&](size_t numInts, VkBufferUsageFlags extra = 0) {
             return std::make_unique<LveBuffer>(
                 device,
                 sizeof(int32_t),
                 static_cast<uint32_t>(numInts),
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | extra,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         };
         auto hostVisible = [&](size_t numInts) {
@@ -78,7 +75,8 @@ namespace lve {
         const size_t nodes = T * static_cast<size_t>(maxNodes);
 
         buffers.resize(NumBindings);
-        buffers[RootBoard] = hostVisible(CELLS);
+        // root bitboard (4 ints), device-local, filled with vkCmdUpdateBuffer
+        buffers[RootBoard] = deviceLocal(4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         buffers[Trees] = deviceLocal(nodes * NODE_ROW);
         buffers[TreeSizes] = deviceLocal(T);
         buffers[NodeFlags] = deviceLocal(nodes);
@@ -89,14 +87,13 @@ namespace lve {
         buffers[SelActs] = deviceLocal(T * PATH_STRIDE);
         buffers[SelInfo] = deviceLocal(T * INFO_STRIDE);
         buffers[ActionsExp] = deviceLocal(T * MAX_ACTIONS);
-        buffers[ChildBoards] = deviceLocal(T * MAX_ACTIONS * CB_STRIDE);
+        buffers[ChildBoards] = deviceLocal(T * MAX_ACTIONS * CB_STRIDE);   // CB_STRIDE == 5 now
         buffers[ChildScores] = deviceLocal(T * MAX_ACTIONS);
         buffers[RootStats] = hostVisible(2 * MAX_ACTIONS + 1);
-        // thrifty only: GPU writes b_t per tree, host reads it and writes the block map
-        buffers[TreeB] = hostVisible(T);
-        buffers[BlockMap] = hostVisible(T * MAX_ACTIONS);
-        // GPU-side statistics counters (zeroed by the host at the start of every search)
-        buffers[Counters] = hostVisible(kNumCounters);
+        buffers[TreeB] = deviceLocal(T);                  // no longer read by the host
+        buffers[BlockMap] = deviceLocal(T * MAX_ACTIONS); // compacted on the GPU
+        buffers[Counters] = hostVisible(kNumCounters);    // must be >= 13 ints
+        buffers[DispatchArgs] = deviceLocal(4, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
     }
 
     // -----------------------------------------------------------------------------
@@ -139,7 +136,6 @@ namespace lve {
 
         shaderModule = LvePipeline::loadShaderModule(cfg.shaderPath, device.device());
 
-        // order must match the Kernel enum
         static const char* entryNames[NumKernels] = {
             "mctsReset", "mctsSelect", "mctsExpand", "mctsPlayout",
             "mctsBackup", "mctsReduceTrees", "mctsReduceActions", "mctsExpandOcp" };
@@ -159,15 +155,12 @@ namespace lve {
     }
 
     // -----------------------------------------------------------------------------
-    // Timestamp queries: one per dispatch (taken after its barrier) + one at the start
-    // of each command buffer. Consecutive differences = per-kernel GPU time.
     void MctsGpu::createQueryPool() {
         profileOk = false;
         if (!cfg.profile) return;
         const VkPhysicalDeviceLimits& lim = device.properties.limits;
         if (!lim.timestampComputeAndGraphics || lim.timestampPeriod <= 0.f) return;
         tsPeriodNs = lim.timestampPeriod;
-        // worst case per command buffer: 1 start + reset + 4 kernels per batched iteration
         maxQueries = 4 * std::max(cfg.itersPerSubmit, 1) + 16;
         VkQueryPoolCreateInfo ci{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
         ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -176,26 +169,24 @@ namespace lve {
     }
 
     // -----------------------------------------------------------------------------
-    // Compute->compute global memory barrier (every pass depends on the previous one)
-    static void computeBarrier(VkCommandBuffer cb) {
+    // forIndirect: the next command is vkCmdDispatchIndirect reading a buffer this pass wrote
+    static void computeBarrier(VkCommandBuffer cb, bool forIndirect = false) {
         VkMemoryBarrier mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
         mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(
-            cb,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 1, &mb, 0, nullptr, 0, nullptr);
+        VkPipelineStageFlags dst = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        if (forIndirect) {
+            mb.dstAccessMask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+            dst |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;   // also covers vkCmdDispatchIndirect
+        }
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, dst, 0, 1, &mb, 0, nullptr, 0, nullptr);
     }
 
     static void hostReadBarrier(VkCommandBuffer cb) {
         VkMemoryBarrier mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
         mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-        vkCmdPipelineBarrier(
-            cb,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_HOST_BIT,
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
             0, 1, &mb, 0, nullptr, 0, nullptr);
     }
 
@@ -208,13 +199,12 @@ namespace lve {
     }
 
     // -----------------------------------------------------------------------------
-    //   AcpProdigal : all children expanded, playout grid (T, B), no host traffic
-    //   AcpThrifty  : all children expanded, compacted, playout grid (A), host readback each iteration
-    //   OcpProdigal : one random untried child, playout grid (T), no host traffic
-    //   OcpThrifty  : one random untried child, playout grid (A), host readback each iteration
+    // All four variants now run fully on the device; thrifty compacts with an atomic in the
+    // expand kernel and launches playouts with vkCmdDispatchIndirect, so thrifty batches too.
     //
-    // Budget: SearchLimits (iterations and/or wall-clock ms). All RNG streams derive from
-    // (cfg.seed, callSeed, iteration index), so a search is reproducible given its callSeed.
+    // Reproducibility: every RNG stream depends only on (cfg.seed, callSeed, iteration index),
+    // never on batch size or timing. A time-limited search is therefore bit-reproducible by
+    // replaying with maxIterations = stats.iterations and maxMs = 0 (see runReplayCheck).
     // -----------------------------------------------------------------------------
     MctsGpu::Result MctsGpu::search(
         const std::array<int, CELLS>& board, int rootTurn, const SearchLimits& lim, uint32_t callSeed) {
@@ -230,11 +220,12 @@ namespace lve {
         const bool ocp = algoIsOcp(cfg.algo);
         const bool thrifty = algoIsThrifty(cfg.algo);
         const Kernel expandKernel = ocp ? KExpandOcp : KExpand;
-        const uint32_t playoutY = ocp ? 1u : static_cast<uint32_t>(MAX_ACTIONS);
+        // ACP expand: one 8-thread workgroup per tree. OCP expand: one thread per tree.
         const uint32_t T = static_cast<uint32_t>(cfg.numTrees);
         const uint32_t groups32 = (T + 31) / 32;
+        const uint32_t expandGroups = ocp ? groups32 : T;
+        const uint32_t playoutY = ocp ? 1u : static_cast<uint32_t>(MAX_ACTIONS);
 
-        // int32 overflow guard for nodeN / nodeWins (root wins <= 2N; ReduceTrees sums over T trees)
         {
             const int64_t perIter = (ocp ? 1 : MAX_ACTIONS) * int64_t(kPlayoutsPerChild);
             if (2 * perIter * int64_t(maxIters) * int64_t(T) > int64_t(INT32_MAX)) {
@@ -255,17 +246,32 @@ namespace lve {
         st.profiled = profileOk;
         st.treeBytes = uint64_t(T) * uint64_t(maxNodes) * (NODE_ROW + 3) * sizeof(int32_t);
 
-        buffers[RootBoard]->writeToBuffer(const_cast<int*>(board.data()));
-        buffers[RootBoard]->flush();
+        // ---- root bitboard: bit = col*7 + row, pos = stones of the player to move ----
+        int32_t rootBB[4];
+        {
+            uint64_t pos = 0, mask = 0;
+            for (int r = 0; r < ROWS; r++)
+                for (int c = 0; c < COLS; c++) {
+                    const int v = board[r * COLS + c];
+                    if (v == 0) continue;
+                    const uint64_t bit = uint64_t(1) << (c * (ROWS + 1) + r);
+                    mask |= bit;
+                    if (v == rootTurn) pos |= bit;
+                }
+            rootBB[0] = static_cast<int32_t>(static_cast<uint32_t>(pos));
+            rootBB[1] = static_cast<int32_t>(static_cast<uint32_t>(pos >> 32));
+            rootBB[2] = static_cast<int32_t>(static_cast<uint32_t>(mask));
+            rootBB[3] = static_cast<int32_t>(static_cast<uint32_t>(mask >> 32));
+        }
         std::memset(buffers[Counters]->getMappedMemory(), 0, kNumCounters * sizeof(int32_t));
 
         MctsPush pc{ cfg.numTrees, maxNodes, 0u, rootTurn, cfg.ucbC, thrifty ? 1 : 0, cfg.collectCounters ? 1 : 0 };
 
         VkCommandBuffer cb = VK_NULL_HANDLE;
-        std::vector<int> cbKernels;  // kernel id of each timestamp interval in the current command buffer
+        std::vector<int> cbKernels;
         uint32_t qCount = 0;
 
-        auto begin = [&]() {
+        auto begin = [&](bool uploadRoot) {
             cb = device.beginSingleTimeCommands();
             vkCmdBindDescriptorSets(
                 cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descSet, 0, nullptr);
@@ -275,15 +281,34 @@ namespace lve {
                 vkCmdResetQueryPool(cb, queryPool, 0, static_cast<uint32_t>(maxQueries));
                 vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, qCount++);
             }
+            if (uploadRoot) {
+                vkCmdUpdateBuffer(cb, buffers[RootBoard]->getBuffer(), 0, sizeof(rootBB), rootBB);
+                VkMemoryBarrier mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+                mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0, 1, &mb, 0, nullptr, 0, nullptr);
+            }
         };
         auto dispatch = [&](Kernel k, uint32_t x, uint32_t y = 1, uint32_t z = 1) {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[k]);
             vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
             vkCmdDispatch(cb, x, y, z);
-            computeBarrier(cb);
+            // after expand in thrifty mode the next command is the indirect playout dispatch
+            computeBarrier(cb, thrifty && k == expandKernel);
             if (profileOk && qCount < static_cast<uint32_t>(maxQueries)) {
                 vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, qCount++);
                 cbKernels.push_back(static_cast<int>(k));
+            }
+        };
+        auto dispatchPlayoutIndirect = [&]() {
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[KPlayout]);
+            vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+            vkCmdDispatchIndirect(cb, buffers[DispatchArgs]->getBuffer(), 0);
+            computeBarrier(cb);
+            if (profileOk && qCount < static_cast<uint32_t>(maxQueries)) {
+                vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, qCount++);
+                cbKernels.push_back(static_cast<int>(KPlayout));
             }
         };
         auto harvest = [&]() {
@@ -300,60 +325,37 @@ namespace lve {
             }
         };
         auto submit = [&]() {
-            device.endSingleTimeCommands(cb);  // submits + waits for the queue
+            device.endSingleTimeCommands(cb);
             ++st.submits;
             harvest();
         };
 
         int done = 0;
-        double msPerIter = 0.0;  // measured on the previous batch; used to avoid overshooting maxMs
+        double msPerIter = 0.0;
         while (done < maxIters) {
             double remaining = 1e300;
             if (lim.maxMs > 0.0) {
                 remaining = lim.maxMs - elapsedMs();
-                if (remaining <= 0.0 && done > 0) break;  // always do at least one iteration
+                if (remaining <= 0.0 && done > 0) break;
             }
 
-            // thrifty needs a host round trip inside every iteration, so batching is moot
-            int batch = thrifty ? 1 : std::min(cfg.itersPerSubmit, maxIters - done);
-            if (!thrifty && lim.maxMs > 0.0 && msPerIter > 0.0) {
+            int batch = std::min(cfg.itersPerSubmit, maxIters - done);   // thrifty batches too now
+            if (lim.maxMs > 0.0 && msPerIter > 0.0) {
                 batch = std::max(1, std::min(batch, static_cast<int>(remaining / msPerIter)));
             }
 
             const double tb = elapsedMs();
-            begin();
+            begin(done == 0);
             if (done == 0) dispatch(KReset, groups32);
 
             for (int i = 0; i < batch; i++) {
                 pc.seed = hash32(static_cast<uint32_t>(cfg.seed) ^
                     hash32(callSeed + 0x9E3779B9u * static_cast<uint32_t>(done + i + 1)));
                 dispatch(KSelect, T);
-                dispatch(expandKernel, groups32);
+                dispatch(expandKernel, expandGroups);
 
                 if (thrifty) {
-                    // ---- device -> host: how many children did each tree expand? ----
-                    hostReadBarrier(cb);
-                    submit();
-                    ++st.hostRoundTrips;
-
-                    const auto h0 = clock::now();
-                    const int32_t* b = static_cast<const int32_t*>(buffers[TreeB]->getMappedMemory());
-                    int32_t* map = static_cast<int32_t*>(buffers[BlockMap]->getMappedMemory());
-                    uint32_t A = 0;  // total number of expanded children over all trees
-                    for (int t = 0; t < cfg.numTrees; t++) {
-                        if (b[t] < 0 || b[t] > MAX_ACTIONS) {
-                            throw std::runtime_error("MctsGpu::search: corrupt b_t read back from device");
-                        }
-                        for (int k = 0; k < b[t]; k++) map[A++] = t * MAX_ACTIONS + k;  // slot id
-                    }
-                    st.hostMapMs += std::chrono::duration<double, std::milli>(clock::now() - h0).count();
-                    st.blocksLaunched += A;
-                    st.sumA += A;
-                    st.maxA = std::max<int64_t>(st.maxA, A);
-
-                    // ---- host -> device: playouts get exactly A workgroups ----
-                    begin();
-                    dispatch(KPlayout, A);  // A == 0 is a legal no-op dispatch
+                    dispatchPlayoutIndirect();                 // A workgroups, A written by expand
                 }
                 else {
                     st.blocksLaunched += int64_t(T) * playoutY;
@@ -367,8 +369,7 @@ namespace lve {
             msPerIter = (elapsedMs() - tb) / batch;
         }
 
-        // final reduction in its own submit (the loop length is not known in advance when time-limited)
-        begin();
+        begin(false);
         dispatch(KReduceTrees, MAX_ACTIONS);
         dispatch(KReduceActions, 1);
         hostReadBarrier(cb);
@@ -401,6 +402,13 @@ namespace lve {
         st.pliesSum = ctr[CtrPliesSum];
         st.anomalies = ctr[CtrAnomalies];
         st.finalTies = ctr[CtrFinalTies];
+        // new (add the fields to SearchStats):
+        st.pliesMaxSum = ctr[CtrPliesMaxSum];          // laneEff = pliesSum / (32 * pliesMaxSum)
+        if (thrifty) {
+            st.sumA = ctr[CtrSumA];                    // now device-side; hostRoundTrips/hostMapMs stay 0
+            st.maxA = ctr[CtrMaxA];
+            st.blocksLaunched = st.sumA;
+        }
 
         st.iterations = done;
         st.wallMs = elapsedMs();

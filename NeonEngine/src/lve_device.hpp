@@ -118,6 +118,6 @@ class LveDevice {
       // required by SPIRV 1.4
   };
 
-  //TODO: organize this stuff. Requirements for a device should vary app by app.
+  //TODO: organize this stuff. Requirements for device features should vary app by app.
 };
 }  // namespace lve
