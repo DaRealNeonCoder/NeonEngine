@@ -20,6 +20,7 @@ groupshared float smlRMSNormScratch[256];
 
 float sml_rmsnorm_reduce(float value, uint lane)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     float subgroupValue = slangml_subgroup_add_f32(value);
     uint subgroup = lane / SLANGML_SUBGROUP_SIZE;

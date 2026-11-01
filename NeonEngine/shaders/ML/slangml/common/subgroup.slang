@@ -96,6 +96,8 @@ public float slangml_workgroup_reduce_add_f32(
     uint lane,
     uint workgroupSize)
 {
+    // Entry barrier: a previous call's lanes may still be reading scratch[0].
+    GroupMemoryBarrierWithGroupSync();
     scratch[lane] = value;
     GroupMemoryBarrierWithGroupSync();
     for (uint active = workgroupSize; active > 1u; active = (active + 1u) / 2u)
@@ -115,6 +117,8 @@ public float slangml_workgroup_reduce_add_f32_256(
     inout float scratch[256],
     uint lane)
 {
+    // Entry barrier: a previous call's lanes may still be reading scratch[0].
+    GroupMemoryBarrierWithGroupSync();
     scratch[lane] = value;
     GroupMemoryBarrierWithGroupSync();
     for (uint active = 256u; active > 1u; active = (active + 1u) / 2u)
@@ -135,6 +139,8 @@ public uint slangml_workgroup_reduce_add_u32(
     uint lane,
     uint workgroupSize)
 {
+    // Entry barrier: a previous call's lanes may still be reading scratch[0].
+    GroupMemoryBarrierWithGroupSync();
     scratch[lane] = value;
     GroupMemoryBarrierWithGroupSync();
     for (uint active = workgroupSize; active > 1u; active = (active + 1u) / 2u)

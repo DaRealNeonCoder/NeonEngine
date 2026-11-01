@@ -27,6 +27,7 @@ float sml_softmax_load(TensorDesc tensor, uint row, uint col, uint cols)
 
 float sml_softmax_reduce_max(float value, uint lane)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     float subgroupValue = slangml_subgroup_max_f32(value);
     uint subgroup = lane / SLANGML_SUBGROUP_SIZE;
@@ -61,6 +62,7 @@ float sml_softmax_reduce_max(float value, uint lane)
 
 float sml_softmax_reduce_sum(float value, uint lane)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     float subgroupValue = slangml_subgroup_add_f32(value);
     uint subgroup = lane / SLANGML_SUBGROUP_SIZE;

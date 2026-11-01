@@ -20,6 +20,7 @@ groupshared float smlReduceStatsScratch[256];
 
 float sml_reduce_stats_sum(float value, uint lane)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     float subgroupValue = slangml_subgroup_add_f32(value);
     uint subgroup = lane / SLANGML_SUBGROUP_SIZE;
@@ -43,6 +44,7 @@ float sml_reduce_stats_sum(float value, uint lane)
 
 float sml_reduce_stats_max(float value, uint lane)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     float subgroupValue = slangml_subgroup_max_f32(value);
     uint subgroup = lane / SLANGML_SUBGROUP_SIZE;

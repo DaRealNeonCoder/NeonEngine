@@ -21,6 +21,7 @@ groupshared uint smlReduceExtraUint[256];
 
 float sml_reduce_extra_sum(float value, uint lane)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     float subgroupValue = slangml_subgroup_add_f32(value);
     uint subgroup = lane / SLANGML_SUBGROUP_SIZE;
@@ -44,6 +45,7 @@ float sml_reduce_extra_sum(float value, uint lane)
 
 float sml_reduce_extra_product(float value, uint lane)
 {
+    GroupMemoryBarrierWithGroupSync();
     smlReduceExtraFloat[lane] = value;
     GroupMemoryBarrierWithGroupSync();
     for (uint active = 256u; active > 1u; active = (active + 1u) / 2u)
@@ -60,6 +62,7 @@ float sml_reduce_extra_product(float value, uint lane)
 
 uint sml_reduce_extra_any(uint value, uint lane)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     uint subgroup = lane / SLANGML_SUBGROUP_SIZE;
     uint subgroupValue = WaveActiveAnyTrue(value != 0u) ? 1u : 0u;
@@ -94,6 +97,7 @@ uint sml_reduce_extra_any(uint value, uint lane)
 
 uint sml_reduce_extra_all(uint value, uint lane)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     uint subgroup = lane / SLANGML_SUBGROUP_SIZE;
     uint subgroupValue = WaveActiveAllTrue(value != 0u) ? 1u : 0u;

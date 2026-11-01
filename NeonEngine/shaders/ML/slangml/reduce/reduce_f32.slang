@@ -27,6 +27,7 @@ float sml_reduce_input(TensorDesc input, uint row, uint col, uint cols)
 
 float sml_reduce_sum_workgroup(float value, uint localIndex)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     float subgroupSum = slangml_subgroup_add_f32(value);
     uint lane = WaveGetLaneIndex();
@@ -51,6 +52,7 @@ float sml_reduce_sum_workgroup(float value, uint localIndex)
 
 float sml_reduce_min_workgroup(float value, uint localIndex)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     float subgroupValue = slangml_subgroup_min_f32(value);
     uint lane = WaveGetLaneIndex();
@@ -86,6 +88,7 @@ float sml_reduce_min_workgroup(float value, uint localIndex)
 
 float sml_reduce_max_workgroup(float value, uint localIndex)
 {
+    GroupMemoryBarrierWithGroupSync();
 #if SLANGML_ENABLE_SUBGROUP_OPS
     float subgroupValue = slangml_subgroup_max_f32(value);
     uint lane = WaveGetLaneIndex();
