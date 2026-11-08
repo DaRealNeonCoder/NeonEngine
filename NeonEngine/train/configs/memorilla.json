@@ -1,0 +1,7 @@
+{
+  "slots": 16,
+  "heads": 8,
+  "refine_layers": 2,
+  "ffn_mult": 4,
+  "eps": 1e-5
+}

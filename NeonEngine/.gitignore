@@ -12,3 +12,5 @@ models/viking_room.obj
 imgui.ini
 .env.cmake
 .claude
+# tokenized training data (train/prepare_data.py)
+/data/

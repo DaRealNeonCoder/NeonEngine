@@ -1,5 +1,5 @@
 // =============================================================================
-// mcts_connect4.slang  (v2)
+// mcts_connect4.slang  (v3)
 //
 // Changes vs v1:
 //  * Bitboard Connect Four (49-bit, 7 bits/column, needs shaderInt64).
@@ -10,6 +10,22 @@
 //    (binding 17); host uses vkCmdDispatchIndirect.
 //  * Root position is a device-local bitboard uploaded with vkCmdUpdateBuffer.
 //  * New counters: SUM_A, MAX_A, PLIES_MAXSUM (warp-divergence efficiency).
+//
+// Changes vs v2:
+//  * Fix: ACP expansion could create a child for a full column (driver miscompile of a 64-bit
+//    shift by a run-time amount, see bit64), corrupting trees; ACP-prodigal was not deterministic.
+//    Otherwise search results are bit-identical to v2.
+//  * Packed playouts: one 32-lane group serves up to slotsPerGroup children. Lanes that finish
+//    a playout take the next one from a groupshared counter, so a lane no longer idles until the
+//    longest playout of its child ends. Each playout keeps its own RNG stream (slot, index), so
+//    results do not depend on slotsPerGroup.
+//  * Playout move choice works on the "next free cell" bitmask (no per-column loop).
+//  * Terminal children are scored without simulation; thrifty enqueues A slots and launches
+//    ceil(A / slotsPerGroup) groups (dispatchArgs[3] = A).
+//  * Counters and root statistics are device-local; the host copies them back once per submit.
+//  * Command buffers are recorded once per batch size and replayed: the per-iteration seed is
+//    derived here from searchParams (binding 18) and the iteration's offset in the batch, with
+//    the same formula the host used before, so results are unchanged.
 //
 // =============================================================================
 
@@ -24,6 +40,7 @@ static const int CB_STRIDE = 5;           // [0,1]=pos lo/hi  [2,3]=mask lo/hi  
 static const int PLAYOUTS_PER_CHILD = 32;
 static const int SEL_TPB = 8;
 static const int REDUCE_TPB = 64;
+static const int MAX_SLOTS_PER_GROUP = 8;
 
 static const int FLAG_LEAF = 1;
 static const int STATUS_ONGOING = 0;
@@ -61,18 +78,21 @@ static const int CTR_PLIES_MAXSUM = 12;   // sum over real blocks of max plies i
 [[vk::binding(13, 0)]] RWStructuredBuffer<int> rootStats;
 [[vk::binding(14, 0)]] RWStructuredBuffer<int> treeB;        // device-local now
 [[vk::binding(15, 0)]] RWStructuredBuffer<int> blockMap;     // device-local now, written by expand (thrifty)
-[[vk::binding(16, 0)]] RWStructuredBuffer<int> counters;     // host-visible
-[[vk::binding(17, 0)]] RWStructuredBuffer<int> dispatchArgs; // [3] indirect args {A,1,1}; needs INDIRECT_BUFFER usage
+[[vk::binding(16, 0)]] RWStructuredBuffer<int> counters;     // device-local, copied back by the host
+[[vk::binding(17, 0)]] RWStructuredBuffer<int> dispatchArgs; // [0..2] indirect playout grid {G,1,1}, [3] = A (queued slots)
+[[vk::binding(18, 0)]] RWStructuredBuffer<uint> searchParams; // [0] cfg seed, [1] call seed, [2] iterations done before this batch
 
 struct PushConsts
 {
     int numTrees;
     int maxNodes;
-    uint seed;
-    int rootTurn;
+    int iterOffset;      // iteration index within the batch (baked into the recorded command buffer)
+    int rootTurn;        // unused: the side to move is encoded in rootBoard
     float ucbC;
     int thrifty;
     int collect;
+    int slotsPerGroup;   // children served by one playout group, 1..MAX_SLOTS_PER_GROUP
+    int slotsPerTree;    // prodigal grid: MAX_ACTIONS (ACP) or 1 (OCP)
 };
 [[vk::push_constant]] ConstantBuffer<PushConsts> pc;
 
@@ -80,14 +100,36 @@ struct PushConsts
 // GAME: Connect Four bitboards. Bit index = col*7 + row (row 0 = bottom, row 6 = sentinel).
 // A position is (pos, mask): mask = all stones, pos = stones of the player to move.
 // =============================================================================
-uint64_t bottomOf(int c) { return uint64_t(1) << (c * 7); }
-uint64_t topOf(int c)    { return uint64_t(1) << (c * 7 + 5); }
-uint64_t colMask(int c)  { return uint64_t(0x3F) << (c * 7); }
-uint64_t topAll()
+//
+// No 64-bit shift in this file uses a run-time shift amount. On the NVIDIA driver used for the
+// paper (610.60, RTX 3050 Laptop) `uint64_t(1) << (th * 7 + 5)` evaluated wrongly in the ACP expand
+// kernel: thread 3 saw a full column as legal and created an 8th child, corrupting the tree
+// (ACP-prodigal became non-deterministic and diverged from ACP-thrifty). Single bits are now built
+// from 32-bit halves, and legal moves are extracted with constant shifts only.
+static const uint64_t TOP_ALL = 0x810204081020;   // row 5 of every column
+static const uint64_t BOTTOM_ALL = 0x40810204081; // row 0 of every column
+static const uint64_t BOARD_ALL = 0xfdfbf7efdfbf; // rows 0..5 of every column (no sentinels)
+
+// 64-bit value with only bit s set (0 <= s < 64), from two 32-bit shifts
+uint64_t bit64(int s)
 {
-    uint64_t m = 0;
-    for (int c = 0; c < COLS; c++) m |= topOf(c);
-    return m;
+    uint u = uint(s);
+    uint lo = (u < 32u) ? (1u << (u & 31u)) : 0u;
+    uint hi = (u < 32u) ? 0u : (1u << (u & 31u));
+    return (uint64_t(hi) << 32) | uint64_t(lo);
+}
+uint64_t bottomOf(int c) { return bit64(c * 7); }
+uint64_t colMask(int c)  { return bit64(c * 7 + 6) - bit64(c * 7); }   // rows 0..5 of column c
+
+// bit c set iff column c is not full (constant shifts only)
+int legalMoves(uint64_t mask)
+{
+    uint64_t f = ~mask & TOP_ALL;
+    uint lo = uint(f & uint64_t(0xFFFFFFFF));
+    uint hi = uint(f >> 32);
+    uint b = ((lo >> 5) & 1u) | ((lo >> 11) & 2u) | ((lo >> 17) & 4u) | ((lo >> 23) & 8u)
+           | ((hi << 3) & 16u) | ((hi >> 3) & 32u) | ((hi >> 9) & 64u);   // bits 33, 40, 47
+    return int(b);
 }
 
 bool alignment(uint64_t p)
@@ -102,8 +144,6 @@ bool alignment(uint64_t p)
     if ((m & (m >> 2)) != 0) return true;
     return false;
 }
-
-bool colLegal(uint64_t mask, int c) { return (mask & topOf(c)) == 0; }
 
 // advance a position by a (legal) move without win detection (path replay)
 void applyMove(inout uint64_t pos, inout uint64_t mask, int col)
@@ -120,8 +160,7 @@ void childOf(uint64_t pos, uint64_t mask, int a, out uint64_t cpos, out uint64_t
     bool win = alignment(pos | mv);
     cmask = mask | mv;
     cpos = pos ^ mask;
-    uint64_t ta = topAll();
-    status = win ? STATUS_WIN : (((cmask & ta) == ta) ? STATUS_DRAW : STATUS_ONGOING);
+    status = win ? STATUS_WIN : (((cmask & TOP_ALL) == TOP_ALL) ? STATUS_DRAW : STATUS_ONGOING);
 }
 
 uint64_t join64(int lo, int hi) { return (uint64_t(uint(hi)) << 32) | uint64_t(uint(lo)); }
@@ -137,6 +176,22 @@ void writeRecord(int rec, uint64_t cpos, uint64_t cmask, int status)
     childBoards[rec + 4] = status;
 }
 // =============================================================================
+
+// same as hash32 in mcts_gpu.cpp
+uint hash32(uint x)
+{
+    x ^= x >> 16; x *= 0x7feb352du;
+    x ^= x >> 15; x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+// seed of global iteration (searchParams[2] + iterOffset), 1-based as on the host before
+uint iterSeed()
+{
+    uint iter = searchParams[2] + uint(pc.iterOffset) + 1u;
+    return hash32(searchParams[0] ^ hash32(searchParams[1] + 0x9E3779B9u * iter));
+}
 
 uint pcg(uint v)
 {
@@ -182,10 +237,12 @@ void mctsSelect(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
         dispatchArgs[0] = 0;
         dispatchArgs[1] = 1;
         dispatchArgs[2] = 1;
+        dispatchArgs[3] = 0;
     }
 
     int node = 0;
     int depth = 0;
+    uint seed = iterSeed();
     if (th == 0) selPath[t * PATH_STRIDE] = 0;
 
     while ((nodeFlags[base + node] & FLAG_LEAF) == 0)
@@ -213,7 +270,7 @@ void mctsSelect(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
         sh_ucb[th] = ucb;
         sh_child[th] = child;
         sh_act[th] = th;
-        sh_prio[th] = pcg(pc.seed ^ pcg(uint(t) * 4096u + uint(depth) * 8u + uint(th) + 0x2545F491u));
+        sh_prio[th] = pcg(seed ^ pcg(uint(t) * 4096u + uint(depth) * 8u + uint(th) + 0x2545F491u));
         GroupMemoryBarrierWithGroupSync();
 
         for (int stride = SEL_TPB >> 1; stride > 0; stride >>= 1)
@@ -259,8 +316,8 @@ void mctsSelect(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
 }
 
 // expand (ACP): 1 workgroup per tree, thread a creates the child for action a ------
-groupshared uint64_t sh_pos;
-groupshared uint64_t sh_mask;
+groupshared uint sh_pos[2];    // leaf position as 32-bit halves
+groupshared uint sh_mask[2];
 groupshared int sh_status;
 groupshared int sh_nextId;
 
@@ -291,8 +348,8 @@ void mctsExpand(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
             uint64_t pos = join64(rootBoard[0], rootBoard[1]);
             uint64_t mask = join64(rootBoard[2], rootBoard[3]);
             for (int d = 0; d < depth; d++) applyMove(pos, mask, selActs[t * PATH_STRIDE + d]);
-            sh_pos = pos;
-            sh_mask = mask;
+            sh_pos[0] = uint(pos & uint64_t(0xFFFFFFFF)); sh_pos[1] = uint(pos >> 32);
+            sh_mask[0] = uint(mask & uint64_t(0xFFFFFFFF)); sh_mask[1] = uint(mask >> 32);
         }
     }
     GroupMemoryBarrierWithGroupSync();
@@ -309,23 +366,17 @@ void mctsExpand(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
         return;
     }
 
-    uint64_t pos = sh_pos;
-    uint64_t mask = sh_mask;
+    uint64_t pos = (uint64_t(sh_pos[1]) << 32) | uint64_t(sh_pos[0]);
+    uint64_t mask = (uint64_t(sh_mask[1]) << 32) | uint64_t(sh_mask[0]);
     int nextId = sh_nextId;
 
-    // every thread computes the same count; ord = number of legal actions below a
-    int count = 0;
-    int ord = 0;
-    for (int a = 0; a < MAX_ACTIONS; a++)
-    {
-        if (colLegal(mask, a))
-        {
-            if (a < th) ord++;
-            count++;
-        }
-    }
+    // count, ord (legal actions below th) and the "create a child" test all come from one mask,
+    // so they cannot disagree
+    int legal = legalMoves(mask);
+    int count = int(countbits(uint(legal)));
+    int ord = int(countbits(uint(legal) & ((1u << uint(th)) - 1u)));
 
-    if (th < MAX_ACTIONS && colLegal(mask, th))
+    if (th < MAX_ACTIONS && ((legal >> th) & 1) != 0)
     {
         int a = th;
         uint64_t cpos, cmask;
@@ -356,8 +407,9 @@ void mctsExpand(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
         if (pc.thrifty != 0 && count > 0)
         {
             int off;
-            InterlockedAdd(dispatchArgs[0], count, off);   // reserve `count` playout blocks
+            InterlockedAdd(dispatchArgs[3], count, off);   // reserve `count` playout slots
             for (int k = 0; k < count; k++) blockMap[off + k] = t * MAX_ACTIONS + k;
+            InterlockedMax(dispatchArgs[0], (off + count + pc.slotsPerGroup - 1) / pc.slotsPerGroup);
         }
         if (pc.collect != 0)
         {
@@ -401,9 +453,10 @@ void mctsExpandOcp(uint3 dtid : SV_DispatchThreadID)
 
     int untried[MAX_ACTIONS];
     int u = 0;
+    int legal = legalMoves(mask);
     for (int a = 0; a < MAX_ACTIONS; a++)
     {
-        if (colLegal(mask, a) && trees[(base + node) * NODE_ROW + 1 + a] < 0)
+        if (((legal >> a) & 1) != 0 && trees[(base + node) * NODE_ROW + 1 + a] < 0)
         {
             untried[u] = a;
             u++;
@@ -417,7 +470,7 @@ void mctsExpandOcp(uint3 dtid : SV_DispatchThreadID)
         return;
     }
 
-    uint rng = pcg(pc.seed ^ pcg(uint(t) + 0x51ed270bu));
+    uint rng = pcg(iterSeed() ^ pcg(uint(t) + 0x51ed270bu));
     int act = untried[int(pcg(rng) % uint(u))];
 
     uint64_t cpos, cmask;
@@ -443,8 +496,9 @@ void mctsExpandOcp(uint3 dtid : SV_DispatchThreadID)
     if (pc.thrifty != 0)
     {
         int off;
-        InterlockedAdd(dispatchArgs[0], 1, off);
+        InterlockedAdd(dispatchArgs[3], 1, off);
         blockMap[off] = t * MAX_ACTIONS;
+        InterlockedMax(dispatchArgs[0], (off + 1 + pc.slotsPerGroup - 1) / pc.slotsPerGroup);
     }
     if (pc.collect != 0)
     {
@@ -454,121 +508,174 @@ void mctsExpandOcp(uint3 dtid : SV_DispatchThreadID)
 }
 
 // playout ----------------------------------------------------------------------
-groupshared int sh_score[PLAYOUTS_PER_CHILD];
-groupshared int sh_plies[PLAYOUTS_PER_CHILD];
-groupshared int sh_pmax[PLAYOUTS_PER_CHILD];
+// One 32-lane group serves up to slotsPerGroup child slots (S). Thread i < S claims candidate i:
+// terminal children are scored at once (virtual playouts), ongoing ones are queued in groupshared
+// memory. The group then runs nSim * 32 playouts; a lane that finishes takes the next playout
+// index from sh_next. Playout w belongs to queued slot w / 32 and uses RNG stream
+// (slot * 32 + w % 32), exactly as v2, so per-child sums do not depend on S or on which lane ran it.
+groupshared int sh_qslot[MAX_SLOTS_PER_GROUP];
+groupshared uint sh_qbb[MAX_SLOTS_PER_GROUP * 4];   // pos lo, pos hi, mask lo, mask hi
+groupshared int sh_qsum[MAX_SLOTS_PER_GROUP];
+groupshared int sh_nSim;
+groupshared uint sh_next;
+groupshared int sh_pliesSum;
+groupshared int sh_pliesMax;
+groupshared int sh_nVirtual;
+
+// credit a child with its PLAYOUTS_PER_CHILD playouts (sum = total score in half-points)
+void finishSlot(int slot, int sum)
+{
+    childScores[slot] = sum;
+    int t = slot / MAX_ACTIONS;
+    int act = actionsExp[slot];
+    int node = selNode[t];
+    int child = trees[(t * pc.maxNodes + node) * NODE_ROW + 1 + act];
+    nodeN[t * pc.maxNodes + child] = PLAYOUTS_PER_CHILD;
+    nodeWins[t * pc.maxNodes + child] = sum;
+}
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
 void mctsPlayout(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
 {
-    int t;
-    int slot;
-    if (pc.thrifty != 0)
-    {
-        slot = blockMap[gid.x];
-        t = slot / MAX_ACTIONS;
-    }
-    else
-    {
-        t = int(gid.x);
-        slot = t * MAX_ACTIONS + int(gid.y);
-    }
     int th = int(tid.x);
-
-    int act = actionsExp[slot];
-    if (act < 0) return;
-
-    int rec = slot * CB_STRIDE;
-    uint64_t pos = join64(childBoards[rec + 0], childBoards[rec + 1]);   // stones of player to move at the child
-    uint64_t mask = join64(childBoards[rec + 2], childBoards[rec + 3]);
-    int status = childBoards[rec + 4];
-
-    // The first mover of the playout is the player to move at the child, i.e. NOT the
-    // player q who moved into it. So the mover of ply k is q iff k is even.
-    int score = 1;
-    int plies = 0;
-    if (status == STATUS_WIN)
-    {
-        score = 2;
-    }
-    else if (status == STATUS_DRAW)
-    {
-        score = 1;
-    }
-    else
-    {
-        uint rng = pcg(pc.seed ^ pcg(uint(slot) * 32u + uint(th) + 1u));
-        while (true)
-        {
-            int legalBits = 0;
-            for (int c = 0; c < COLS; c++)
-                if (colLegal(mask, c)) legalBits |= (1 << c);
-            if (legalBits == 0) { score = 1; break; }
-
-            int n = int(countbits(uint(legalBits)));
-            rng = pcg(rng);
-            int k = int(rng % uint(n));
-            int col = 0;
-            for (int c = 0; c < COLS; c++)
-            {
-                if (((legalBits >> c) & 1) != 0)
-                {
-                    if (k == 0) { col = c; break; }
-                    k--;
-                }
-            }
-
-            plies++;
-            uint64_t mv = (mask + bottomOf(col)) & colMask(col);
-            if (alignment(pos | mv))
-            {
-                score = ((plies & 1) == 0) ? 2 : 0;
-                break;
-            }
-            pos ^= mask;
-            mask |= mv;
-        }
-    }
-
-    sh_score[th] = score;
-    sh_plies[th] = plies;
-    sh_pmax[th] = plies;
-    GroupMemoryBarrierWithGroupSync();
-    for (int stride = PLAYOUTS_PER_CHILD >> 1; stride > 0; stride >>= 1)
-    {
-        if (th < stride)
-        {
-            sh_score[th] += sh_score[th + stride];
-            sh_plies[th] += sh_plies[th + stride];
-            sh_pmax[th] = max(sh_pmax[th], sh_pmax[th + stride]);
-        }
-        GroupMemoryBarrierWithGroupSync();
-    }
+    int S = pc.slotsPerGroup;
+    uint seed = iterSeed();
 
     if (th == 0)
     {
-        int sum = sh_score[0];
-        childScores[slot] = sum;
+        sh_nSim = 0;
+        sh_next = 0u;
+        sh_pliesSum = 0;
+        sh_pliesMax = 0;
+        sh_nVirtual = 0;
+    }
+    GroupMemoryBarrierWithGroupSync();
 
-        int node = selNode[t];
-        int child = trees[(t * pc.maxNodes + node) * NODE_ROW + 1 + act];
-        nodeN[t * pc.maxNodes + child] = PLAYOUTS_PER_CHILD;
-        nodeWins[t * pc.maxNodes + child] = sum;
-
-        if (pc.collect != 0)
+    if (th < S)
+    {
+        int idx = int(gid.x) * S + th;
+        int slot = -1;
+        if (pc.thrifty != 0)
         {
+            if (idx < dispatchArgs[3]) slot = blockMap[idx];
+        }
+        else if (idx < pc.numTrees * pc.slotsPerTree)
+        {
+            slot = (idx / pc.slotsPerTree) * MAX_ACTIONS + (idx % pc.slotsPerTree);
+        }
+        if (slot >= 0 && actionsExp[slot] >= 0)
+        {
+            int rec = slot * CB_STRIDE;
+            int status = childBoards[rec + 4];
             if (status == STATUS_ONGOING)
             {
-                InterlockedAdd(counters[CTR_BLOCKS_REAL], 1);
-                InterlockedAdd(counters[CTR_PLIES_SUM], sh_plies[0]);
-                InterlockedAdd(counters[CTR_PLIES_MAXSUM], sh_pmax[0]);
+                int k;
+                InterlockedAdd(sh_nSim, 1, k);
+                sh_qslot[k] = slot;
+                sh_qbb[k * 4 + 0] = uint(childBoards[rec + 0]);
+                sh_qbb[k * 4 + 1] = uint(childBoards[rec + 1]);
+                sh_qbb[k * 4 + 2] = uint(childBoards[rec + 2]);
+                sh_qbb[k * 4 + 3] = uint(childBoards[rec + 3]);
+                sh_qsum[k] = 0;
             }
             else
             {
-                InterlockedAdd(counters[CTR_BLOCKS_VIRTUAL], 1);
+                // the mover into the child won (2 per playout) or the board is full (1 per playout)
+                finishSlot(slot, (status == STATUS_WIN) ? 2 * PLAYOUTS_PER_CHILD : PLAYOUTS_PER_CHILD);
+                if (pc.collect != 0) InterlockedAdd(sh_nVirtual, 1);
             }
         }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    uint total = uint(sh_nSim) * uint(PLAYOUTS_PER_CHILD);
+
+    // The first mover of the playout is the player to move at the child, i.e. NOT the
+    // player q who moved into it. So the mover of ply k is q iff k is even.
+    bool busy = false;
+    int k = 0;
+    uint64_t pos = 0;
+    uint64_t mask = 0;
+    uint rng = 0u;
+    int plies = 0;
+    int lanePlies = 0;
+    while (true)
+    {
+        if (!busy)
+        {
+            uint w;
+            InterlockedAdd(sh_next, 1u, w);
+            if (w >= total) break;
+            k = int(w / uint(PLAYOUTS_PER_CHILD));
+            int j = int(w % uint(PLAYOUTS_PER_CHILD));
+            pos = (uint64_t(sh_qbb[k * 4 + 1]) << 32) | uint64_t(sh_qbb[k * 4 + 0]);
+            mask = (uint64_t(sh_qbb[k * 4 + 3]) << 32) | uint64_t(sh_qbb[k * 4 + 2]);
+            rng = pcg(seed ^ pcg(uint(sh_qslot[k]) * 32u + uint(j) + 1u));
+            plies = 0;
+            busy = true;
+        }
+
+        int score = -1;
+        // Next free cell of every non-full column. Bits are ordered by column, so the r-th set bit
+        // is the r-th legal column: the same move v2 picked from its legal-column list.
+        uint64_t moves = (mask + BOTTOM_ALL) & BOARD_ALL;
+        uint mlo = uint(moves & uint64_t(0xFFFFFFFF));
+        uint mhi = uint(moves >> 32);
+        int n = int(countbits(mlo) + countbits(mhi));
+        if (n == 0)
+        {
+            score = 1;
+        }
+        else
+        {
+            rng = pcg(rng);
+            int r = int(rng % uint(n));
+            for (int i = 0; i < r; i++)            // drop the r lowest candidate cells
+            {
+                if (mlo != 0u) mlo &= mlo - 1u;
+                else mhi &= mhi - 1u;
+            }
+            uint64_t mv = (mlo != 0u) ? uint64_t(mlo & (0u - mlo)) : (uint64_t(mhi & (0u - mhi)) << 32);
+
+            plies++;
+            if (alignment(pos | mv))
+            {
+                score = ((plies & 1) == 0) ? 2 : 0;
+            }
+            else
+            {
+                pos ^= mask;
+                mask |= mv;
+            }
+        }
+
+        if (score >= 0)
+        {
+            InterlockedAdd(sh_qsum[k], score);
+            lanePlies += plies;
+            busy = false;
+        }
+    }
+
+    if (pc.collect != 0)
+    {
+        InterlockedAdd(sh_pliesSum, lanePlies);
+        InterlockedMax(sh_pliesMax, lanePlies);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (th < sh_nSim) finishSlot(sh_qslot[th], sh_qsum[th]);
+
+    if (th == 0 && pc.collect != 0)
+    {
+        if (sh_nSim > 0)
+        {
+            InterlockedAdd(counters[CTR_BLOCKS_REAL], sh_nSim);
+            InterlockedAdd(counters[CTR_PLIES_SUM], sh_pliesSum);
+            InterlockedAdd(counters[CTR_PLIES_MAXSUM], sh_pliesMax);   // lane-time of the busiest lane
+        }
+        if (sh_nVirtual > 0) InterlockedAdd(counters[CTR_BLOCKS_VIRTUAL], sh_nVirtual);
     }
 }
 
@@ -603,10 +710,10 @@ void mctsBackup(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
             sh_SR = 2 * N - sq;
         }
 
-        // thrifty: record this iteration's grid size (dispatchArgs is stable until next select)
-        if (t == 0 && pc.thrifty != 0)
+        // thrifty: record this iteration's queued slots (dispatchArgs is stable until next select)
+        if (t == 0 && pc.thrifty != 0 && pc.collect != 0)
         {
-            int A = dispatchArgs[0];
+            int A = dispatchArgs[3];
             InterlockedAdd(counters[CTR_SUM_A], A);
             InterlockedMax(counters[CTR_MAX_A], A);
         }
@@ -677,7 +784,7 @@ void mctsReduceActions()
     int bestN = -1;
     int bestW = -1;
     int nTies = 0;
-    uint rng = pcg(pc.seed ^ 0xC0FFEE11u);
+    uint rng = pcg(iterSeed() ^ 0xC0FFEE11u);
     for (int a = 0; a < MAX_ACTIONS; a++)
     {
         int n = rootStats[2 * a];

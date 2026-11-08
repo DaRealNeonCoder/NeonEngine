@@ -47,6 +47,14 @@ std::vector<uint32_t> SlangRuntimeCompiler::compileEntryPoint(
     const std::string& sourcePath,
     const std::string& includeDir,
     const std::string& entryName) {
+    return compileEntryPoint(sourcePath, includeDir, entryName, {});
+}
+
+std::vector<uint32_t> SlangRuntimeCompiler::compileEntryPoint(
+    const std::string& sourcePath,
+    const std::string& includeDir,
+    const std::string& entryName,
+    const std::vector<std::pair<std::string, std::string>>& defines) {
 
     // Same settings as the slangc command line in shaders/ML/tests/compile_digit_recognizer.ps1
     slang::TargetDesc target{};
@@ -72,6 +80,10 @@ std::vector<uint32_t> SlangRuntimeCompiler::compileEntryPoint(
     sessionDesc.searchPathCount = 1;
     sessionDesc.compilerOptionEntries = options;
     sessionDesc.compilerOptionEntryCount = static_cast<uint32_t>(std::size(options));
+    std::vector<slang::PreprocessorMacroDesc> macros;
+    for (const auto& d : defines) macros.push_back({ d.first.c_str(), d.second.c_str() });
+    sessionDesc.preprocessorMacros = macros.empty() ? nullptr : macros.data();
+    sessionDesc.preprocessorMacroCount = static_cast<SlangInt>(macros.size());
 
     // A session is created per call: each call loads the module under the same name,
     // and a fresh session avoids collisions between entry points from the same file.

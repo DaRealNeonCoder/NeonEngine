@@ -27,6 +27,10 @@
 //                 JSONL logs (-> analyze_matches.py)
 //   5. counters : instrumentation counter overhead (enabled vs disabled)
 //   6. replay   : time-limited vs fixed-iteration determinism check
+//   7. verify   : results bit-identical for every slots/group setting
+//   8. determinism : repeated identical searches give identical visits
+//   2b. ncbench : timing with the exact protocol of MCTS-NC/src/bench_mctsnc.py
+// Command line: see src/headless/mcts_main.cpp (MctsBench target).
 // =============================================================================
 
 namespace lve {
@@ -46,9 +50,11 @@ namespace lve {
         constexpr bool RUN_COUNTER_COST = true;
         constexpr bool RUN_REPLAY_CHECK = true;
 
-        constexpr int NUM_TREES = 64;
-        constexpr int MAX_ITERS = 4000;        // node-pool cap; matches log how often it was hit (must be rare)
+        int DET_IPS = 64;
+        int NUM_TREES = 64;                    // --trees overrides
+        constexpr int MAX_ITERS = 10000;       // node-pool cap; matches log how often it was hit (must be rare). OCP runs ~6500 iterations in 200 ms
         constexpr int ITERS_PER_SUBMIT = 50;
+        int SLOTS_PER_GROUP = MctsGpu::Config{}.slotsPerGroup;   // --slots overrides
         constexpr float UCB_C = 1.4f;          // MUST equal the CPU reference's c when comparing against it
         constexpr uint32_t EXP_SEED = 20241;
 
@@ -61,7 +67,7 @@ namespace lve {
         constexpr int OPENING_PLIES = 4;       // random plies before the engines take over
         constexpr bool INCLUDE_SELFPLAY = false;
 
-        const char* SHADER_PATH = "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\mcts_connect4.slang.spv";  // adjust; must be the NEW build
+        std::string SHADER_PATH = "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\NeonEngine\\shaders\\mcts_connect4.slang.spv";  // --shader overrides
         const char* OUT_DIR = "C:\\Users\\ZyBros\\Downloads\\NeonEngine\\mcts_results";  // created if missing; "" = current working dir
         const char* OUT_PREFIX = "mcts_";      // output files: <prefix><expid>_meta.json / _games.jsonl / _moves.jsonl
 
@@ -219,6 +225,66 @@ namespace lve {
         }
 
         // ============================================================================
+        // 2b. NC-MATCHED BENCHMARK: same protocol as MCTS-NC/src/bench_mctsnc.py
+        //     (T = 64, m = 32, C = 1.4, 200 steps, 2 warm-ups, 10 timed reps, empty + midgame).
+        //     Counters and timestamps are off by default so the timing is the plain search.
+        // ============================================================================
+        void runNcBench(LveDevice& dev, bool profile, bool counters) {
+            constexpr int STEPS = 200, WARMUPS = 2, REPS = 10;
+            std::cout << "\n######## NC-MATCHED BENCH (T=" << NUM_TREES << ", " << STEPS << " steps, " << REPS
+                << " reps, slots/group=" << SLOTS_PER_GROUP << ", profile=" << profile << ", counters=" << counters
+                << ") ########\n";
+            const Board mid = parseBoard({ ".......", ".......", "...O...", "..XX...", "..OXO..", ".XOXOX." });
+            const std::vector<std::pair<const char*, std::pair<Board, int>>> positions = {
+                { "empty", { Board{}, +1 } }, { "midgame", { mid, -1 } } };
+            std::vector<std::string> kernelLines;
+            for (Algo a : ALGOS) {
+                MctsGpu::Config cfg;
+                cfg.algo = a; cfg.numTrees = NUM_TREES; cfg.maxIterations = STEPS;
+                cfg.itersPerSubmit = STEPS; cfg.ucbC = UCB_C; cfg.seed = EXP_SEED;
+                cfg.shaderPath = SHADER_PATH; cfg.slotsPerGroup = SLOTS_PER_GROUP; cfg.profile = profile; cfg.collectCounters = counters;
+                MctsGpu e(dev, cfg);
+                for (const auto& p : positions) {
+                    for (int i = 0; i < WARMUPS; i++) e.search(p.second.first, p.second.second, iterLimits(STEPS));
+                    Acc wall, cred, gpu, laneEff, plen, rec;
+                    double kms[kStatsKernels] = {};
+                    for (int i = 0; i < REPS; i++) {
+                        auto r = e.search(p.second.first, p.second.second, iterLimits(STEPS));
+                        const auto& s = r.stats;
+                        wall.add(s.wallMs); gpu.add(s.gpuMs); laneEff.add(s.laneEff);
+                        plen.add(s.playoutLenMean); rec.add(s.recordMs);
+                        // credited playouts = root visits summed over trees (same quantity as MCTS-NC's root_ns)
+                        double credited = 0;
+                        for (int c = 0; c < COLS; c++) credited += r.visits[c];
+                        cred.add(credited / (s.wallMs * 1e-3));
+                        for (int k = 0; k < kStatsKernels; k++) kms[k] += s.kernelMs[k] / REPS;
+                    }
+                    std::printf("%-13s %-8s wall %8.2f ms (sd %6.2f)  %12.0f credit pl/s", algoName(a), p.first,
+                        wall.mean(), wall.sd(), cred.mean());
+                    std::printf("  gpu %7.2f ms  rec %5.2f ms", gpu.mean(), rec.mean());
+                    if (counters) std::printf("  laneEff %.2f  len %.1f", laneEff.mean(), plen.mean());
+                    std::printf("\n");
+                    if (profile) {
+                        std::ostringstream o;
+                        char buf[256];
+                        std::snprintf(buf, sizeof(buf), "%-13s %-8s", algoName(a), p.first);
+                        o << buf;
+                        for (int k = 0; k < kStatsKernels; k++) {
+                            if (kms[k] <= 0) continue;
+                            std::snprintf(buf, sizeof(buf), "  %s=%.4f", kKernelNames[k], kms[k] / STEPS);
+                            o << buf;
+                        }
+                        kernelLines.push_back(o.str());
+                    }
+                }
+            }
+            if (profile) {
+                std::cout << "\nPer-kernel mean GPU ms per step:\n";
+                for (const auto& l : kernelLines) std::cout << l << "\n";
+            }
+        }
+
+        // ============================================================================
         // 3. BIAS: mirror symmetry. Connect Four is left-right symmetric, so searching a position and its
         //    mirror must give statistically identical (mirrored) visit shares, and the best action on the
         //    empty board must be symmetric in distribution.
@@ -277,26 +343,36 @@ namespace lve {
         // 5. COUNTER COST: same engine with instrumentation counters on vs off
         // ============================================================================
         void runCounterCost(LveDevice& dev) {
-            std::cout << "\n######## 5. COUNTER COST (collectCounters on vs off) ########\n";
+            std::cout << "\n######## 5. COUNTER COST (collectCounters on vs off, interleaved reps) ########\n";
             const Board mid = parseBoard({ ".......", ".......", "...O...", "..XX...", "..OXO..", ".XOXOX." });
-            std::printf("%-13s %10s %10s %9s\n", "algo", "on ms", "off ms", "cost %");
+            std::printf("%-13s %10s %10s %9s %9s\n", "algo", "on ms", "off ms", "cost %", "(+-95%)");
             for (Algo a : ALGOS) {
-                double ms[2] = { 0, 0 }; // [0] counters off, [1] counters on
+                std::unique_ptr<MctsGpu> e[2];   // [0] counters off, [1] counters on
                 for (int on = 0; on < 2; on++) {
                     MctsGpu::Config cfg;
                     cfg.algo = a; cfg.numTrees = NUM_TREES; cfg.maxIterations = MAX_ITERS;
                     cfg.itersPerSubmit = ITERS_PER_SUBMIT; cfg.ucbC = UCB_C; cfg.seed = EXP_SEED;
-                    cfg.shaderPath = SHADER_PATH;
+                    cfg.shaderPath = SHADER_PATH; cfg.slotsPerGroup = SLOTS_PER_GROUP;
                     cfg.collectCounters = (on == 1);
-                    MctsGpu e(dev, cfg);
-                    for (int i = 0; i < 3; i++) e.search(mid, -1, iterLimits(BENCH_ITERS));
-                    Acc w;
-                    for (int i = 0; i < BENCH_REPS * 3; i++)
-                        w.add(e.search(mid, -1, iterLimits(BENCH_ITERS)).stats.wallMs);
-                    ms[on] = w.mean();
+                    cfg.profile = false;              // time the search only, not per-kernel timestamps
+                    e[on] = std::make_unique<MctsGpu>(dev, cfg);
+                    for (int i = 0; i < 3; i++) e[on]->search(mid, -1, iterLimits(BENCH_ITERS));
                 }
-                const double cost = ms[0] > 0.0 ? 100.0 * (ms[1] - ms[0]) / ms[0] : 0.0;
-                std::printf("%-13s %10.2f %10.2f %8.1f%%\n", algoName(a), ms[1], ms[0], cost);
+                // alternate the two engines so clock / thermal drift hits both equally;
+                // the cost is the mean of the paired differences
+                Acc w[2], d;
+                for (int i = 0; i < BENCH_REPS * 4; i++) {
+                    const int first = i & 1;
+                    double ms[2];
+                    ms[first] = e[first]->search(mid, -1, iterLimits(BENCH_ITERS)).stats.wallMs;
+                    ms[1 - first] = e[1 - first]->search(mid, -1, iterLimits(BENCH_ITERS)).stats.wallMs;
+                    w[0].add(ms[0]); w[1].add(ms[1]);
+                    d.add(ms[1] - ms[0]);
+                }
+                const double base = w[0].mean();
+                const double cost = base > 0.0 ? 100.0 * d.mean() / base : 0.0;
+                const double ci = base > 0.0 ? 100.0 * 1.96 * d.sd() / std::sqrt(double(d.n)) / base : 0.0;
+                std::printf("%-13s %10.2f %10.2f %8.1f%% %8.1f%%\n", algoName(a), w[1].mean(), w[0].mean(), cost, ci);
             }
         }
 
@@ -320,6 +396,78 @@ namespace lve {
                 }
                 std::printf("%-13s %d/%d replays identical %s\n", nameOf(*e), REPS - bad, REPS,
                     bad ? "[MISMATCH]" : "[ok]");
+            }
+        }
+
+        // ============================================================================
+        // 7. VERIFY: search results must not depend on slotsPerGroup (packed playouts keep every
+        //    playout's RNG stream), so visits and best action are compared bit for bit with S = 1.
+        // ============================================================================
+        void runVerify(LveDevice& dev) {
+            std::cout << "\n######## 7. VERIFY (results identical for every slots/group) ########\n";
+            const Board mid = parseBoard({ ".......", ".......", "...O...", "..XX...", "..OXO..", ".XOXOX." });
+            const Board win = parseBoard({ ".......", ".......", ".......", ".......", ".......", "XXX.OOO" });
+            const std::vector<std::pair<Board, int>> positions = { { Board{}, +1 }, { mid, -1 }, { win, +1 } };
+            const int slotsList[] = { 1, 1, 2, 3, 4, 5, 7, 8 };
+            int bad = 0, total = 0;
+            for (Algo a : ALGOS) {
+                std::vector<std::array<int, COLS>> ref;
+                std::vector<int> refBest;
+                for (const int& S : slotsList) {
+                    MctsGpu::Config cfg;
+                    cfg.algo = a; cfg.numTrees = NUM_TREES; cfg.maxIterations = 300;
+                    cfg.itersPerSubmit = 64; cfg.ucbC = UCB_C; cfg.seed = EXP_SEED;
+                    cfg.shaderPath = SHADER_PATH; cfg.slotsPerGroup = S; cfg.profile = false;
+                    MctsGpu e(dev, cfg);
+                    int idx = 0, mism = 0;
+                    for (const auto& p : positions) {
+                        for (uint32_t seed = 0; seed < 3; seed++) {
+                            auto r = e.search(p.first, p.second, iterLimits(300), mix3(EXP_SEED, 99, seed));
+                            if (ref.size() < positions.size() * 3) { ref.push_back(r.visits); refBest.push_back(r.bestAction); }
+                            else {
+                                total++;
+                                if (r.visits != ref[idx] || r.bestAction != refBest[idx]) {
+                                    mism++; bad++;
+                                    std::printf("   pos %d seed %u:", idx / 3, seed);
+                                    for (int c = 0; c < COLS; c++) std::printf(" %d/%d", r.visits[c], ref[idx][c]);
+                                    std::printf("\n");
+                                }
+                            }
+                            if (r.stats.anomalies != 0) { mism++; bad++; }
+                            idx++;
+                        }
+                    }
+                    std::printf("%-13s slots/group=%d  %s\n", algoName(a), S,
+                        (&S == &slotsList[0]) ? "(reference)" : (mism ? "[MISMATCH]" : "[identical]"));
+                }
+            }
+            std::printf("verify: %d/%d searches identical to slots/group=1 %s\n", total - bad, total, bad ? "[FAIL]" : "[ok]");
+        }
+
+        // ============================================================================
+        // 8. DETERMINISM: the same (seed, iterations) must give the same visits every time
+        // ============================================================================
+        void runDeterminism(LveDevice& dev) {
+            std::cout << "\n######## 8. DETERMINISM (repeat identical searches) ########\n";
+            const Board mid = parseBoard({ ".......", ".......", "...O...", "..XX...", "..OXO..", ".XOXOX." });
+            const int itersList[] = { 10, 25, 50, 100, 150, 200, 300 };
+            for (Algo a : ALGOS) {
+                MctsGpu::Config cfg;
+                cfg.algo = a; cfg.numTrees = NUM_TREES; cfg.maxIterations = 300;
+                cfg.itersPerSubmit = DET_IPS; cfg.ucbC = UCB_C; cfg.seed = EXP_SEED;
+                cfg.shaderPath = SHADER_PATH; cfg.slotsPerGroup = SLOTS_PER_GROUP; cfg.profile = false;
+                MctsGpu e(dev, cfg);
+                std::printf("%-13s", algoName(a));
+                for (int it : itersList) {
+                    auto r0 = e.search(mid, -1, iterLimits(it), 12345u);
+                    int diff = 0;
+                    for (int k = 0; k < 6; k++) {
+                        auto r = e.search(mid, -1, iterLimits(it), 12345u);
+                        if (r.visits != r0.visits) diff++;
+                    }
+                    std::printf("  it=%d:%s", it, diff ? "DIFF" : "ok");
+                }
+                std::printf("\n");
             }
         }
 
@@ -508,7 +656,7 @@ namespace lve {
             cfg.itersPerSubmit = ITERS_PER_SUBMIT;
             cfg.ucbC = UCB_C;
             cfg.seed = EXP_SEED;
-            cfg.shaderPath = SHADER_PATH;
+            cfg.shaderPath = SHADER_PATH; cfg.slotsPerGroup = SLOTS_PER_GROUP;
             engines.push_back(std::make_unique<MctsGpu>(lveDevice, cfg));
         }
 
@@ -519,6 +667,44 @@ namespace lve {
         if (RUN_COUNTER_COST) runCounterCost(lveDevice);
         if (RUN_REPLAY_CHECK) runReplayCheck(engines);
 
+        std::cout << "\nDone.\n";
+    }
+
+    void MctsApp::run(const std::vector<std::string>& args) {
+        if (args.empty()) { run(); return; }
+        bool profile = false, counters = false;
+        std::vector<std::string> modes;
+        for (size_t i = 0; i < args.size(); i++) {
+            if (args[i] == "--profile") profile = true;
+            else if (args[i] == "--counters") counters = true;
+            else if (args[i] == "--shader" && i + 1 < args.size()) SHADER_PATH = args[++i];
+            else if (args[i] == "--slots" && i + 1 < args.size()) SLOTS_PER_GROUP = std::stoi(args[++i]);
+            else if (args[i] == "--trees" && i + 1 < args.size()) NUM_TREES = std::stoi(args[++i]);
+            else if (args[i] == "--ips" && i + 1 < args.size()) DET_IPS = std::stoi(args[++i]);
+            else modes.push_back(args[i]);
+        }
+        auto has = [&](const char* m) { return std::find(modes.begin(), modes.end(), m) != modes.end(); };
+
+        Engines engines;
+        auto needEngines = [&]() {
+            if (!engines.empty()) return;
+            for (Algo a : ALGOS) {
+                MctsGpu::Config cfg;
+                cfg.algo = a; cfg.numTrees = NUM_TREES; cfg.maxIterations = MAX_ITERS;
+                cfg.itersPerSubmit = ITERS_PER_SUBMIT; cfg.ucbC = UCB_C; cfg.seed = EXP_SEED;
+                cfg.shaderPath = SHADER_PATH; cfg.slotsPerGroup = SLOTS_PER_GROUP;
+                engines.push_back(std::make_unique<MctsGpu>(lveDevice, cfg));
+            }
+        };
+        if (has("sanity")) { needEngines(); runSanity(engines); }
+        if (has("verify")) runVerify(lveDevice);
+        if (has("determinism")) runDeterminism(lveDevice);
+        if (has("ncbench")) runNcBench(lveDevice, profile, counters);
+        if (has("bench")) { needEngines(); runBench(engines); }
+        if (has("bias")) { needEngines(); runBias(engines); }
+        if (has("replay")) { needEngines(); runReplayCheck(engines); }
+        if (has("counters")) runCounterCost(lveDevice);
+        if (has("matches")) { needEngines(); runMatches(lveDevice, engines); }
         std::cout << "\nDone.\n";
     }
 

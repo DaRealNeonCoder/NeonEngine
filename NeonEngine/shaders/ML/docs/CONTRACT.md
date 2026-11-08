@@ -405,3 +405,20 @@ For every entry point, document:
 * forward/backward saved tensors and numerical tolerances;
 * a **Profiling checklist** with exact benchmark shapes, dtypes, and expected
   throughput/bandwidth.
+
+## 16. LLM kernel families
+
+The `quant`, `llm` and `linear_attention` families (inference only) follow this
+ABI with three extra rules, documented in `LLM_ROADMAP.md`:
+
+* tensors are contiguous and 16-byte aligned, with rows that are multiples of
+  32 elements; dims and strides are hot scalars, and descriptors are used only
+  for `dataAddress + baseOffset`;
+* 128-bit global accesses use `sml_ld_*` / `sml_st_*` from `slangml-llm.slang`
+  (`loadAligned<16>`), because scalar layout otherwise emits `Aligned 4`;
+* addresses are formed as integer byte offsets from `sml_base(...)` and cast
+  to a pointer once, and fp16 data is stored as packed 32-bit words (both
+  required for correct code on the AMD iGPU driver);
+* quantized weights use the block formats in `quant.md` (Q4 and MXFP4 use
+  split-nibble order within each 32-element block, which deliberately differs
+  from the generic packed-int4 rule in section 12).

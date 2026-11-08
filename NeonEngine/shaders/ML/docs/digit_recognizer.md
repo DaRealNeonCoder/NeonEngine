@@ -12,9 +12,9 @@ The fixed architecture is:
 ```text
 27x27 grayscale input = 729 features
         -> Linear(729, 128)
-        -> ReLU
+        -> sigmoid
         -> Linear(128, 10)
-        -> stable softmax
+        -> sigmoid
 ```
 
 The two weight matrices are stored as fp16 or bf16 and decoded to fp32 before
@@ -37,9 +37,13 @@ dispatch.y = 1
 dispatch.z = 1
 ```
 
-The kernel writes ten probabilities and one integer prediction per image. The
-prediction is the argmax of the logits, while probabilities are computed with
-a max-subtracted softmax for numerical stability.
+This is the same feedforward as Nielsen's `network.py`, and training
+(`digit_recognizer_train.slang`) uses the same algorithm: quadratic cost, plain
+mini-batch SGD, and N(0, 1) initialization of weights and biases.
+
+The kernel writes ten output activations and one integer prediction per image.
+The outputs are independent sigmoids in (0, 1), so they do not sum to one; the
+prediction is their argmax.
 
 ## Tensor table
 
@@ -52,7 +56,7 @@ The host must bind seven descriptors in this order:
 | 2 | bias1 | `[128]` | fp32 | read |
 | 3 | weight2 | `[128, 10]` | fp16 or bf16 | read |
 | 4 | bias2 | `[10]` | fp32 | read |
-| 5 | probabilities | `[batch, 10]` | fp32 | write |
+| 5 | probabilities (sigmoid outputs) | `[batch, 10]` | fp32 | write |
 | 6 | prediction | `[batch]` | uint32/int32 bits | write |
 
 Weights use row-major logical indexing. The host supplies strides in elements,
@@ -101,11 +105,11 @@ consumer reads probabilities or prediction. Inputs, weights, biases, and
 outputs must not alias. The output tensors are fully overwritten for each
 dispatched batch element, so no prior clear is required.
 
-The current kernel intentionally fuses both GEMM layers, ReLU, softmax, and
-argmax into one dispatch. Hidden activations and logits stay in workgroup
+The current kernel intentionally fuses both GEMM layers, both sigmoids, and
+argmax into one dispatch. Hidden and output activations stay in workgroup
 memory, avoiding intermediate global-memory round trips. The fixed 729x128
 and 128x10 shapes make this appropriate for inference latency; larger models
-should use the general GEMM and softmax families.
+should use the general GEMM and elementwise families.
 
 ## Compilation
 

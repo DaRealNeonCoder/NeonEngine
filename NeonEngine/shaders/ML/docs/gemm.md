@@ -228,6 +228,12 @@ matrices.
 
 ## Cooperative-matrix contract
 
+> Update (2026-11): the same Slang 2025.17.2 compiler does support `CoopMat`
+> load/store from BDA pointers and groupshared arrays. A real tensor-core GEMM
+> (fp16 x fp16 -> fp32, with on-the-fly Q4/Q8/BF16 weight dequant) now lives in
+> `slangml/quant/gemm_quant_coopmat.slang`; see `quant.md`. The entry below is
+> still the scalar fallback.
+
 The cooperative entry point name is reserved for the 16x16x16 fp16/fp32 path.
 With the local `slangc 2025.17.2` SDK compiler, public BDA `CoopMat.Load/Store`
 overloads are not exposed, so the current source uses a correct fp16/fp32

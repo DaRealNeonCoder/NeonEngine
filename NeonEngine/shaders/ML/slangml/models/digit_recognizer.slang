@@ -1,7 +1,8 @@
 import slangml_common;
 
 // Fixed inference shape for the requested 27x27 MNIST-style recognizer.
-// Architecture: 729 input pixels -> 128 ReLU features -> 10 classes.
+// Architecture: 729 input pixels -> 128 sigmoid features -> 10 sigmoid outputs,
+// the same feedforward as Nielsen's network.py.
 public static const uint SML_DIGIT_INPUT_FEATURES = 27u * 27u;
 public static const uint SML_DIGIT_HIDDEN_FEATURES = 128u;
 public static const uint SML_DIGIT_CLASSES = 10u;
@@ -31,7 +32,12 @@ struct DigitRecognizerParams
 ConstantBuffer<KernelPushConstants> smlDigitRecognizerPush;
 
 groupshared float smlDigitHidden[SML_DIGIT_HIDDEN_FEATURES];
-groupshared float smlDigitLogits[SML_DIGIT_CLASSES];
+groupshared float smlDigitOutputs[SML_DIGIT_CLASSES];
+
+float sml_digit_sigmoid(float z)
+{
+    return 1.0f / (1.0f + exp(-z));
+}
 
 uint sml_digit_storage_bits(uint64_t address)
 {
@@ -115,11 +121,11 @@ void sml_digit_recognizer_forward(uint3 gid, uint lane, uint storageDtype)
                 sml_digit_load_weight(weight1, weightOffset, storageDtype),
                 value);
         }
-        smlDigitHidden[lane] = max(value, 0.0f);
+        smlDigitHidden[lane] = sml_digit_sigmoid(value);
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Ten lanes compute the class logits from the ReLU hidden layer.
+    // Ten lanes compute the sigmoid class outputs from the hidden layer.
     if (lane < SML_DIGIT_CLASSES)
     {
         float value = sml_digit_load_bias(bias2, int(lane) * p.bias2Stride);
@@ -132,37 +138,27 @@ void sml_digit_recognizer_forward(uint3 gid, uint lane, uint storageDtype)
                 sml_digit_load_weight(weight2, weightOffset, storageDtype),
                 value);
         }
-        smlDigitLogits[lane] = value;
+        smlDigitOutputs[lane] = sml_digit_sigmoid(value);
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // The output head is only ten values, so one lane performs the stable
-    // softmax and argmax. This avoids a second dispatch and keeps the host
-    // integration to one inference pipeline.
+    // The output head is only ten values, so one lane writes the sigmoid
+    // activations and their argmax. This avoids a second dispatch and keeps the
+    // host integration to one inference pipeline.
     if (lane == 0u)
     {
         float maximum = -asfloat(0x7F800000u);
         uint bestClass = 0u;
         for (uint classIndex = 0u; classIndex < SML_DIGIT_CLASSES; ++classIndex)
         {
-            if (smlDigitLogits[classIndex] > maximum)
+            float value = smlDigitOutputs[classIndex];
+            if (value > maximum)
             {
-                maximum = smlDigitLogits[classIndex];
+                maximum = value;
                 bestClass = classIndex;
             }
+            sml_digit_store_probability(probabilities, p, batch, classIndex, value);
         }
-
-        float sum = 0.0f;
-        for (uint classIndex = 0u; classIndex < SML_DIGIT_CLASSES; ++classIndex)
-            sum += exp(smlDigitLogits[classIndex] - maximum);
-
-        for (uint classIndex = 0u; classIndex < SML_DIGIT_CLASSES; ++classIndex)
-            sml_digit_store_probability(
-                probabilities,
-                p,
-                batch,
-                classIndex,
-                exp(smlDigitLogits[classIndex] - maximum) / sum);
         sml_digit_store_prediction(prediction, p, batch, bestClass);
     }
 }

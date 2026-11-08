@@ -25,9 +25,6 @@ constexpr uint32_t OFF_B2 = OFF_W2 + HID * OUT;     // 94720
 constexpr uint32_t PARAM_COUNT = OFF_B2 + OUT;      // 94730
 constexpr uint32_t THREADS = 256u;
 
-constexpr float BETA1 = 0.9f;
-constexpr float BETA2 = 0.999f;
-
 uint32_t ceilDiv(uint32_t a, uint32_t b) { return (a + b - 1u) / b; }
 
 // Copies host bytes into a device-local buffer through a temporary staging buffer.
@@ -100,12 +97,9 @@ void DigitRecognizerTrainer::createBuffers() {
     buffers[Order] = hostVisible(n * sizeof(uint32_t));
     buffers[Params] = deviceLocal(PARAM_COUNT * sizeof(float));
     buffers[Grads] = deviceLocal(PARAM_COUNT * sizeof(float));
-    buffers[AdamM] = deviceLocal(PARAM_COUNT * sizeof(float));
-    buffers[AdamV] = deviceLocal(PARAM_COUNT * sizeof(float));
-    buffers[HiddenPre] = deviceLocal(batch * HID * sizeof(float));
     buffers[HiddenAct] = deviceLocal(batch * HID * sizeof(float));
     buffers[HiddenGrad] = deviceLocal(batch * HID * sizeof(float));
-    buffers[LogitGrad] = deviceLocal(batch * OUT * sizeof(float));
+    buffers[OutputGrad] = deviceLocal(batch * OUT * sizeof(float));
     // Two floats (loss, correct) per sample, for every minibatch of one epoch.
     buffers[Stats] = hostVisible(static_cast<size_t>(stepsPerEpoch) * batch * 2 * sizeof(float));
 }
@@ -152,7 +146,7 @@ void DigitRecognizerTrainer::createPipelines() {
         "sml_model_digit_recognizer_train_hidden_bwd",
         "sml_model_digit_recognizer_train_grad_output",
         "sml_model_digit_recognizer_train_grad_hidden",
-        "sml_model_digit_recognizer_train_adam",
+        "sml_model_digit_recognizer_train_sgd",
     };
 
     SlangRuntimeCompiler compiler;
@@ -191,25 +185,16 @@ void DigitRecognizerTrainer::uploadTrainingSet(const MnistSplit& split) {
     uploadBytes(device, *buffers[TrainLabels], labels.data(), labels.size() * sizeof(uint32_t));
 }
 
-// Xavier-uniform weights, zero biases, zero gradients and Adam moments.
-// Draws from rng in the same order as the reference CPU trainer, so the initial
-// weights match for a given seed.
+// Weights and biases drawn from N(0, 1), like Nielsen's network.py; gradients start at zero.
 void DigitRecognizerTrainer::initializeParameters(std::mt19937& rng) {
-    std::vector<float> params(PARAM_COUNT, 0.0f);
-    auto xavier = [&rng, &params](uint32_t offset, uint32_t count, float fanIn, float fanOut) {
-        const float scale = std::sqrt(6.0f / (fanIn + fanOut));
-        std::uniform_real_distribution<float> dist(-scale, scale);
-        for (uint32_t k = 0; k < count; ++k) params[offset + k] = dist(rng);
-    };
-    xavier(OFF_W1, IN * HID, float(IN), float(HID));
-    xavier(OFF_W2, HID * OUT, float(HID), float(OUT));
+    std::vector<float> params(PARAM_COUNT);
+    std::normal_distribution<float> dist(0.0f, 1.0f);
+    for (float& p : params) p = dist(rng);
 
     const std::vector<float> zeros(PARAM_COUNT, 0.0f);
     const size_t bytes = PARAM_COUNT * sizeof(float);
     uploadBytes(device, *buffers[Params], params.data(), bytes);
     uploadBytes(device, *buffers[Grads], zeros.data(), bytes);
-    uploadBytes(device, *buffers[AdamM], zeros.data(), bytes);
-    uploadBytes(device, *buffers[AdamV], zeros.data(), bytes);
 }
 
 void DigitRecognizerTrainer::dispatchStage(
@@ -223,14 +208,14 @@ void DigitRecognizerTrainer::dispatchStage(
     computeBarrier(cb);
 }
 
-// One minibatch: forward, loss, backward, gradient reductions, Adam.
+// One minibatch: forward, loss, backward, gradient reductions, SGD.
 void DigitRecognizerTrainer::recordStep(VkCommandBuffer cb, const DigitTrainPushConstants& pc) {
     dispatchStage(cb, HiddenFwd, pc, pc.batchCount * HID);
     dispatchStage(cb, OutputFwd, pc, pc.batchCount);
     dispatchStage(cb, HiddenBwd, pc, pc.batchCount * HID);
     dispatchStage(cb, GradOutput, pc, HID * OUT + OUT);
     dispatchStage(cb, GradHidden, pc, IN * HID + HID);
-    dispatchStage(cb, Adam, pc, PARAM_COUNT);
+    dispatchStage(cb, Sgd, pc, PARAM_COUNT);
 }
 
 MlpParams DigitRecognizerTrainer::train() {
@@ -241,8 +226,6 @@ MlpParams DigitRecognizerTrainer::train() {
     std::vector<uint32_t> order(trainCount);
     std::iota(order.begin(), order.end(), 0u);
 
-    float beta1Pow = 1.0f;
-    float beta2Pow = 1.0f;
     const auto startTime = std::chrono::steady_clock::now();
 
     for (uint32_t epoch = 0; epoch < cfg.train.epochs; ++epoch) {
@@ -257,18 +240,11 @@ MlpParams DigitRecognizerTrainer::train() {
             const uint32_t batchStart = step * batchSize;
             const uint32_t batchCount = std::min<uint32_t>(batchSize, static_cast<uint32_t>(trainCount) - batchStart);
 
-            beta1Pow *= BETA1;
-            beta2Pow *= BETA2;
-
             DigitTrainPushConstants pc{};
             pc.batchStart = batchStart;
             pc.batchCount = batchCount;
             pc.statsOffset = step * batchSize;
             pc.learningRate = cfg.train.learningRate;
-            pc.beta1 = BETA1;
-            pc.beta2 = BETA2;
-            pc.beta1Pow = beta1Pow;
-            pc.beta2Pow = beta2Pow;
             pc.invBatch = 1.0f / float(batchCount);
             recordStep(cb, pc);
         }
@@ -288,7 +264,7 @@ MlpParams DigitRecognizerTrainer::train() {
             }
         }
 
-        std::printf("epoch %2u/%u  train_loss=%.4f  train_acc(running)=%.4f\n", epoch + 1, cfg.train.epochs,
+        std::printf("epoch %2u/%u  train_quadratic_cost=%.4f  train_acc(running)=%.4f\n", epoch + 1, cfg.train.epochs,
             epochLoss / double(trainCount), double(correct) / double(trainCount));
     }
 

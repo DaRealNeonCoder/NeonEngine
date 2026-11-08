@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace lve {
@@ -22,6 +23,13 @@ public:
         const std::string& sourcePath,
         const std::string& includeDir,
         const std::string& entryName);
+
+    // Same, with preprocessor defines (-D name=value).
+    std::vector<uint32_t> compileEntryPoint(
+        const std::string& sourcePath,
+        const std::string& includeDir,
+        const std::string& entryName,
+        const std::vector<std::pair<std::string, std::string>>& defines);
 
 private:
     Slang::ComPtr<slang::IGlobalSession> globalSession;

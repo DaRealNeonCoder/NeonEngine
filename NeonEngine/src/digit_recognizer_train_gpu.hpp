@@ -21,10 +21,6 @@ struct DigitTrainPushConstants {
     uint32_t statsOffset;
     uint32_t reserved;
     float learningRate;
-    float beta1;
-    float beta2;
-    float beta1Pow;
-    float beta2Pow;
     float invBatch;
 };
 
@@ -34,7 +30,8 @@ struct DigitTrainerConfig {
     TrainConfig train;           // epochs, batch size, learning rate, seed
 };
 
-// Trains the 729 -> 128 -> 10 MLP entirely on the GPU with Vulkan compute.
+// Trains the 729 -> 128 -> 10 sigmoid MLP entirely on the GPU with Vulkan compute,
+// using the same algorithm as Nielsen's network.py (quadratic cost, plain mini-batch SGD).
 // The training split is uploaded once; each epoch the host only shuffles an index
 // array and records one command buffer covering every minibatch of that epoch.
 class DigitRecognizerTrainer {
@@ -55,12 +52,9 @@ private:
         Order,
         Params,
         Grads,
-        AdamM,
-        AdamV,
-        HiddenPre,
         HiddenAct,
         HiddenGrad,
-        LogitGrad,
+        OutputGrad,
         Stats,
         NumBindings
     };
@@ -71,7 +65,7 @@ private:
         HiddenBwd,
         GradOutput,
         GradHidden,
-        Adam,
+        Sgd,
         NumStages
     };
 

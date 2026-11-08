@@ -34,9 +34,9 @@ namespace lve {
         CtrPliesSum = 7,
         CtrAnomalies = 8,
         CtrFinalTies = 9,
-        CtrPliesMaxSum = 10,
-        CtrSumA = 11,
-        CtrMaxA = 12,
+        CtrSumA = 10,
+        CtrMaxA = 11,
+        CtrPliesMaxSum = 12,
     };
 
     inline const char* const kKernelNames[kStatsKernels] = {
@@ -69,6 +69,8 @@ namespace lve {
         double wallMs = 0.0;
         double gpuMs = 0.0;
         double hostMapMs = 0.0;
+        double recordMs = 0.0;      // host time spent recording command buffers
+        int slotsPerGroup = 1;
         double kernelMs[kStatsKernels] = {};
 
         // ---- raw counters from the GPU ------------------------------------------
@@ -236,6 +238,8 @@ namespace lve {
                 << ",\"wall_ms\":" << wallMs
                 << ",\"gpu_ms\":" << gpuMs
                 << ",\"host_map_ms\":" << hostMapMs
+                << ",\"record_ms\":" << recordMs
+                << ",\"slots_per_group\":" << slotsPerGroup
                 << ",\"overhead_ms\":" << overheadMs
                 << ",\"overhead_frac\":" << overheadFrac;
 

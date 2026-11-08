@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,15 +26,17 @@ namespace lve {
         return "unknown";
     }
 
-    // Must match PushConsts in mcts_connect4.slang (7 x 4 bytes)
+    // Must match PushConsts in mcts_connect4.slang (9 x 4 bytes)
     struct MctsPush {
         int32_t numTrees;
         int32_t maxNodes;
-        uint32_t seed;
-        int32_t rootTurn;
+        int32_t iterOffset;     // iteration index within the batch (baked at record time)
+        int32_t rootTurn;       // unused by the shader
         float ucbC;
         int32_t thrifty;
         int32_t collect;
+        int32_t slotsPerGroup;
+        int32_t slotsPerTree;
     };
 
     // GPU MCTS for Connect Four, all four MCTS-NC variants.
@@ -49,6 +52,10 @@ namespace lve {
         static constexpr int PATH_STRIDE = 44;
         static constexpr int INFO_STRIDE = 4;
         static constexpr int CB_STRIDE = 5;
+        static constexpr int MAX_SLOTS_PER_GROUP = 8;   // == MAX_SLOTS_PER_GROUP in the .slang file
+        // readback buffer: [0, 2*MAX_ACTIONS] rootStats, then the counters
+        static constexpr int kReadbackCountersOffset = 2 * MAX_ACTIONS + 1;
+        static constexpr int kReadbackInts = kReadbackCountersOffset + kNumCounters;
 
         struct Config {
             Algo algo = Algo::AcpProdigal;
@@ -57,7 +64,12 @@ namespace lve {
             int itersPerSubmit = 50;
             float ucbC = 1.4f;
             uint32_t seed = 1234;
-            bool profile = true;
+            // Children served by one 32-lane playout group (1..8, 0 = auto). Lanes that finish early
+            // take the next playout, so S > 1 cuts warp-divergence idle time, but it also cuts the
+            // number of warps; it only pays off once the playout grid oversubscribes the GPU.
+            // Search results do not depend on it.
+            int slotsPerGroup = 0;
+            bool profile = true;            // per-kernel timestamps (total GPU time is always measured)
             bool collectCounters = true;
             std::string shaderPath = "shaders/mcts_connect4.spv";
         };
@@ -119,6 +131,7 @@ namespace lve {
             BlockMap,
             Counters,
             DispatchArgs,
+            SearchParams,   // {cfg seed, call seed, iterations done}, written per submit
             NumBindings
         };
 
@@ -139,13 +152,29 @@ namespace lve {
         void createDescriptors();
         void createPipelines();
         void createQueryPool();
+        void recordReadback(VkCommandBuffer cb);
+
+        // A batch of B iterations (+ root reduction + readback) is recorded once and replayed.
+        struct BatchCb {
+            VkCommandBuffer cb = VK_NULL_HANDLE;
+            std::vector<int> kernels;   // kernel timed by query i (profile mode), queries start at 2
+            uint32_t queries = 0;       // queries written by this batch
+        };
+        const BatchCb& batchCommands(int iterations, double& recordMs);
 
         LveDevice& device;
         Config cfg;
         int maxNodes = 0;
+        int slotsPerGroup = 1;          // resolved cfg.slotsPerGroup
         uint32_t seedCounter = 0;
 
+        VkCommandPool cmdPool = VK_NULL_HANDLE;
+        VkCommandBuffer prologueCb = VK_NULL_HANDLE;   // re-recorded every submit (a few commands)
+        VkFence fence = VK_NULL_HANDLE;
+        std::map<int, BatchCb> batches;
+
         std::vector<std::unique_ptr<LveBuffer>> buffers;
+        std::unique_ptr<LveBuffer> readback;   // host-visible copy of rootStats + counters
         std::unique_ptr<LveDescriptorSetLayout> setLayout;
         std::unique_ptr<LveDescriptorPool> pool;
         VkDescriptorSet descSet = VK_NULL_HANDLE;
@@ -155,7 +184,8 @@ namespace lve {
         VkPipeline pipelines[NumKernels]{};
 
         VkQueryPool queryPool = VK_NULL_HANDLE;
-        bool profileOk = false;
+        bool timingOk = false;    // start/end timestamps per submit
+        bool profileOk = false;   // per-kernel timestamps
         float tsPeriodNs = 1.0f;
         int maxQueries = 0;
     };

@@ -244,18 +244,7 @@ std::vector<float> generateSyntheticDigit(int digit, float noise = 0.1f) {
     return img;
 }
 
-// Softmax for reference CPU implementation
-std::vector<float> softmax(const std::vector<float>& logits) {
-    std::vector<float> result(logits.size());
-    float maxVal = *std::max_element(logits.begin(), logits.end());
-    float sum = 0.0f;
-    for (size_t i = 0; i < logits.size(); ++i) {
-        result[i] = std::exp(logits[i] - maxVal);
-        sum += result[i];
-    }
-    for (float& v : result) v /= sum;
-    return result;
-}
+float sigmoid(float z) { return 1.0f / (1.0f + std::exp(-z)); }
 
 // Simple CPU reference implementation for verification
 std::vector<float> cpuForward(const std::vector<float>& input,
@@ -278,7 +267,7 @@ std::vector<float> cpuForward(const std::vector<float>& input,
         return (sign ? -1.0f : 1.0f) * std::ldexp(1.0f + mantissa / 1024.0f, exponent - 15);
     };
 
-    // Layer 1: input (729) -> hidden (128) with ReLU
+    // Layer 1: input (729) -> hidden (128) with sigmoid
     std::vector<float> hidden(HIDDEN_FEATURES);
     for (uint32_t h = 0; h < HIDDEN_FEATURES; ++h) {
         float val = bias1[h];
@@ -286,21 +275,21 @@ std::vector<float> cpuForward(const std::vector<float>& input,
             uint16_t w = weight1_f16[i * HIDDEN_FEATURES + h];
             val += input[i] * f16tof32(w);
         }
-        hidden[h] = std::max(val, 0.0f);  // ReLU
+        hidden[h] = sigmoid(val);
     }
 
-    // Layer 2: hidden (128) -> output (10)
-    std::vector<float> logits(CLASSES);
+    // Layer 2: hidden (128) -> output (10) with sigmoid
+    std::vector<float> outputs(CLASSES);
     for (uint32_t c = 0; c < CLASSES; ++c) {
         float val = bias2[c];
         for (uint32_t h = 0; h < HIDDEN_FEATURES; ++h) {
             uint16_t w = weight2_f16[h * CLASSES + c];
             val += hidden[h] * f16tof32(w);
         }
-        logits[c] = val;
+        outputs[c] = sigmoid(val);
     }
 
-    return softmax(logits);
+    return outputs;
 }
 
 // Print probabilities nicely
@@ -343,12 +332,19 @@ void DigitRecognizerApp::run() {
 
     // Train on the GPU with the Slang training kernels and write the weights the loader below reads back.
     if (RUN_TRAIN && haveMnist) {
-        std::cout << "######## TRAINING (Vulkan/Slang, 729-128-10 MLP, Adam) ########\n";
+        std::cout << "######## TRAINING (Vulkan/Slang, 729-128-10 sigmoid MLP, quadratic cost, SGD) ########\n";
         DigitTrainerConfig trainCfg;
         trainCfg.slangSource = SLANG_TRAIN_SOURCE;
         trainCfg.slangIncludeDir = SLANG_INCLUDE_DIR;
-        DigitRecognizerTrainer trainer(lveDevice, trainCfg, mnist);
+        std::printf("epochs=%u  batch=%u  eta=%.3f  seed=%u\n", trainCfg.train.epochs, trainCfg.train.batchSize,
+            trainCfg.train.learningRate, trainCfg.train.seed);
+        const auto setupStart = std::chrono::steady_clock::now();
+        DigitRecognizerTrainer trainer(lveDevice, trainCfg, mnist);  // compiles shaders, uploads the train split
+        const double setupSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - setupStart).count();
         const MlpParams trained = trainer.train();
+        const double totalSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - setupStart).count();
+        std::printf("GPU trainer setup (shader compile + upload): %.2f s; setup + training: %.2f s\n",
+            setupSeconds, totalSeconds);
         if (!saveWeights(WEIGHTS_DIR, trained)) {
             throw std::runtime_error("failed to write weights to WEIGHTS_DIR");
         }
